@@ -20,6 +20,132 @@ interface DispatchArgs {
   configOwnerUserId: string
 }
 
+const CLIENT_MODE_BLOCK =
+  'ATENCAO - MODO CLIENTE (prioridade maxima, sobrepoe QUALQUER instrucao de qualificacao acima): este contato JA E CLIENTE do escritorio, nao e um lead novo. NUNCA faca qualificacao com ele: nao pergunte o nome, nao pergunte o valor da divida, nao peca dados, nao aplique criterio de valor e nao envie link de agendamento. Trate como atendimento de cliente: acolha com empatia, confirme que recebemos a mensagem e informe que a equipe/o advogado responsavel vai verificar o andamento do caso dele e retornar em breve. Responda em no maximo 2 frases curtas e cordiais. Nao prometa prazos nem resultados, nao invente nada sobre o processo. Mesmo que o cliente esteja aflito ou reclamando, RESPONDA com esse acolhimento - NAO use o protocolo de transferencia ([[HANDOFF]]); o encaminhamento para um humano e feito automaticamente pelo sistema depois da sua resposta.'
+
+/**
+ * A contact counts as "returning" if their newest-but-one message in the
+ * (reused) conversation is at least this far before the current inbound —
+ * i.e. they went quiet and came back, rather than double-texting.
+ */
+const RETURNING_GAP_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Contact tags that represent qualification we already did — echoed back
+ * to the model so it doesn't re-ask what the funnel already knows. (Life-
+ * cycle tags like "Novo Lead" / "Agendou" / "Cliente" are handled by the
+ * state logic, not listed here.)
+ */
+const QUAL_TAGS = ['Superqualificado', 'Desqualificado', 'Bancário', 'Tributário', 'PF', 'PJ']
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Pull a usable first name from the stored contact name. The inbound
+ * webhook stores the WhatsApp profile name in `contacts.name`, falling
+ * back to the phone when the profile has none — so a "name" that is just
+ * the phone (or otherwise has no letters) is treated as illegible.
+ */
+export function legibleFirstName(
+  name?: string | null,
+  phone?: string | null,
+): string | null {
+  if (!name) return null
+  const n = name.trim()
+  if (n.length < 2) return null
+  if (!/\p{L}/u.test(n)) return null // no letters → junk / a bare number
+  const digitsOnly = (s: string) => s.replace(/\D/g, '')
+  if (phone && digitsOnly(n) && digitsOnly(n) === digitsOnly(phone)) return null
+  const token = n.split(/\s+/)[0]
+  // Normalise an ALL-CAPS or all-lower token to Title case for the
+  // greeting ("DANUZE" → "Danuze"); leave mixed-case names untouched.
+  if (token === token.toUpperCase() || token === token.toLowerCase()) {
+    return token.charAt(0).toUpperCase() + token.slice(1).toLowerCase()
+  }
+  return token
+}
+
+/**
+ * Build the per-conversation context block appended to the system prompt.
+ * Mirrors the CLIENT_MODE_BLOCK pattern: it augments the account's saved
+ * SDR prompt with what we already know about THIS contact, without
+ * editing it.
+ *
+ * States (highest first): client (its own block), already-had-a-meeting,
+ * known/returning lead (has data but hasn't closed), brand-new. The whole
+ * point: never re-ask data the CRM already has, and never treat a known
+ * contact as a first-timer.
+ */
+export function buildContactContextBlock(args: {
+  firstName: string | null
+  email: string | null
+  qualTags: string[]
+  isClient: boolean
+  hasMeeting: boolean
+  isReturning: boolean
+}): string | null {
+  const { firstName, email, qualTags, isClient, hasMeeting, isReturning } = args
+
+  // Client mode already has CLIENT_MODE_BLOCK — just give it the name.
+  if (isClient) {
+    if (!firstName) return null
+    return (
+      'CONTEXTO DO CONTATO (prioridade alta):\n' +
+      `- O nome do contato (pelo WhatsApp) é "${firstName}". Trate-o pelo primeiro nome.`
+    )
+  }
+
+  const knownLead =
+    hasMeeting || isReturning || !!email || qualTags.length > 0
+
+  // Brand-new inbound: only the WhatsApp name is known.
+  if (!knownLead) {
+    if (!firstName) return null
+    return (
+      'CONTEXTO DO CONTATO (prioridade alta):\n' +
+      `- O nome do contato (identificado pelo WhatsApp) é "${firstName}". Trate-o pelo primeiro nome e NÃO pergunte o nome — você já o conhece (isto SOBREPÕE qualquer instrução acima de pedir o nome).`
+    )
+  }
+
+  // Known lead: list what we already have and forbid re-collecting it.
+  const lines: string[] = [
+    'DADOS QUE JÁ TEMOS DESTE CONTATO (use isto; NÃO peça de novo o que já está aqui e NÃO recomece a qualificação do zero — continue de onde parou):',
+  ]
+  if (firstName) lines.push(`- Nome: ${firstName} — trate pelo nome; não pergunte o nome.`)
+  if (email) lines.push(`- E-mail: ${email} — não peça de novo.`)
+  if (qualTags.length > 0)
+    lines.push(`- Já classificado: ${qualTags.join(', ')} — não repita essa qualificação.`)
+
+  if (hasMeeting) {
+    lines.push(
+      `- Situação: JÁ agendou/teve uma reunião com o escritório. Não requalifique. Se for dúvida simples/logística (reagendar, horário, documentos), ajude com naturalidade; se for sobre o caso/andamento ou precisar do advogado, acolha e explique que a equipe responsável vai retornar — nunca invente nada sobre o processo.`,
+    )
+  } else {
+    lines.push(
+      `- Situação: já falou com o escritório antes e ainda não fechou. Cumprimente reconhecendo o retorno${firstName ? ` (ex.: "Que bom te ver de novo, ${firstName}!")` : ''}; não recomece a coleta de dados; ajude a avançar — se ainda não há reunião marcada, conduza ao agendamento; se tiver dúvida, responda ou encaminhe.`,
+    )
+  }
+
+  return lines.join('\n')
+}
+
+/**
+ * Split an AI reply into separate WhatsApp bubbles on blank lines, so the
+ * bot can send e.g. a greeting and then a question as two messages, like a
+ * human types. Capped so a long reply cannot fan out into a wall of pings;
+ * overflow is merged back into the last bubble rather than dropped.
+ */
+function splitBubbles(text: string): string[] {
+  const parts = text
+    .split(/\n\s*\n/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (parts.length <= 1) return [text.trim()]
+  const MAX = 4
+  if (parts.length <= MAX) return parts
+  return [...parts.slice(0, MAX - 1), parts.slice(MAX - 1).join('\n\n')]
+}
+
 /**
  * AI auto-reply for a freshly-arrived inbound message.
  *
@@ -106,11 +232,87 @@ export async function dispatchInboundToAiReply(
       latestUserMessage(messages),
     )
 
-    const systemPrompt = buildSystemPrompt({
+    // One read of this contact's tags drives three things: existing
+    // clients (tag "Cliente") never get lead qualification; contacts who
+    // already booked/attended a meeting (tag "Agendou") must not be
+    // re-qualified; and any qualification tags are echoed back so the
+    // model doesn't re-ask what we already know.
+    let isClient = false
+    let hasMeeting = false
+    let qualTags: string[] = []
+    {
+      const { data: tagRows } = await db
+        .from('contact_tags')
+        .select('tags!inner(name)')
+        .eq('contact_id', contactId)
+      const names = new Set<string>()
+      for (const r of tagRows ?? []) {
+        const t = (r as { tags?: { name?: string } | { name?: string }[] }).tags
+        if (Array.isArray(t)) t.forEach((x) => x?.name && names.add(x.name))
+        else if (t?.name) names.add(t.name)
+      }
+      isClient = names.has('Cliente')
+      hasMeeting = names.has('Agendou')
+      qualTags = QUAL_TAGS.filter((t) => names.has(t))
+    }
+
+    // Contact's WhatsApp name + e-mail (used to greet by name and skip the
+    // data-collection steps we already have) and whether they're returning.
+    const { data: contactRow } = await db
+      .from('contacts')
+      .select('name, phone, email')
+      .eq('id', contactId)
+      .maybeSingle()
+    const firstName = legibleFirstName(contactRow?.name, contactRow?.phone)
+    const email = contactRow?.email?.trim() || null
+
+    let isReturning = false
+    if (!isClient && !hasMeeting) {
+      // (a) we reached them in a past broadcast (e.g. a re-engagement
+      //     disparo) and now they're replying.
+      const { data: bc } = await db
+        .from('broadcast_recipients')
+        .select('id')
+        .eq('contact_id', contactId)
+        .in('status', ['sent', 'delivered', 'read', 'replied'])
+        .limit(1)
+      if (bc && bc.length > 0) isReturning = true
+
+      // (b) or there's an earlier message session in this reused
+      //     conversation (a real gap before the current inbound).
+      if (!isReturning) {
+        const { data: msgs } = await db
+          .from('messages')
+          .select('created_at')
+          .eq('conversation_id', conversationId)
+          .order('created_at', { ascending: false })
+          .limit(50)
+        if (msgs && msgs.length > 1) {
+          const newest = new Date(msgs[0].created_at).getTime()
+          isReturning = msgs
+            .slice(1)
+            .some(
+              (m) => newest - new Date(m.created_at).getTime() > RETURNING_GAP_MS,
+            )
+        }
+      }
+    }
+
+    let systemPrompt = buildSystemPrompt({
       userPrompt: config.systemPrompt,
       mode: 'auto_reply',
       knowledge,
     })
+    if (isClient) systemPrompt += '\n\n' + CLIENT_MODE_BLOCK
+    const contextBlock = buildContactContextBlock({
+      firstName,
+      email,
+      qualTags,
+      isClient,
+      hasMeeting,
+      isReturning,
+    })
+    if (contextBlock) systemPrompt += '\n\n' + contextBlock
 
     const { text, handoff, usage } = await generateReply({
       config,
@@ -179,14 +381,35 @@ export async function dispatchInboundToAiReply(
     }
     if (claimed !== true) return // lost the per-conversation cap race
 
-    await engineSendText({
-      accountId,
-      userId: configOwnerUserId,
-      conversationId,
-      contactId,
-      text,
-      aiGenerated: true,
-    })
+    // Send as one or more WhatsApp bubbles. The model separates bubbles
+    // with a blank line (e.g. greeting, then the question). This is still
+    // ONE logical reply — the per-conversation slot was claimed once
+    // above, so extra bubbles do NOT each consume a slot. A short gap
+    // between sends preserves order and feels human.
+    const bubbles = splitBubbles(text)
+    for (let i = 0; i < bubbles.length; i++) {
+      await engineSendText({
+        accountId,
+        userId: configOwnerUserId,
+        conversationId,
+        contactId,
+        text: bubbles[i],
+        aiGenerated: true,
+      })
+      if (i < bubbles.length - 1) await sleep(900)
+    }
+
+    // Existing client: the AI acknowledged in client mode; now hand the
+    // thread to a human - the bot must not field questions about the case.
+    if (isClient) {
+      const clientUpdate: Record<string, unknown> = {
+        ai_autoreply_disabled: true,
+        ai_handoff_summary:
+          'Cliente existente - atendimento sobre o caso. A IA acolheu e encaminhou para um humano (nao qualifica cliente).',
+      }
+      if (config.handoffAgentId) clientUpdate.assigned_agent_id = config.handoffAgentId
+      await db.from('conversations').update(clientUpdate).eq('id', conversationId)
+    }
   } catch (err) {
     console.error('[ai auto-reply] dispatch failed:', err)
   }

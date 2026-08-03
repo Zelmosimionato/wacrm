@@ -15,6 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+import { parseContactCsv } from '@/lib/contacts/parse-contact-csv';
 
 type AudienceType = 'all' | 'tags' | 'custom_field' | 'csv';
 type CustomFieldOperator = 'is' | 'is_not' | 'contains';
@@ -387,6 +388,45 @@ export function Step2SelectAudience({
                 className="h-9 rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-primary focus:ring-1 focus:ring-primary"
               />
             </div>
+          )}
+        </div>
+      )}
+
+      {audience.type === 'csv' && (
+        <div className="space-y-3 rounded-xl border border-border bg-card/50 p-4">
+          <p className="text-sm font-medium text-foreground">
+            {t('selectAudience.method.csv')}
+          </p>
+          <label className="group flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-muted/40 px-4 py-6 text-center transition-colors hover:border-primary">
+            <div className="flex size-10 items-center justify-center rounded-lg bg-muted/80 ring-1 ring-border/80 transition-colors group-hover:bg-muted">
+              <Upload className="size-5 text-muted-foreground group-hover:text-foreground" />
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {t('selectAudience.csvDesc')}
+            </p>
+            <p className="text-[11px] text-muted-foreground">
+              CSV com coluna phone (e name opcional).
+            </p>
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={async (e) => {
+                const selected = e.target.files?.[0];
+                if (!selected) return;
+                const text = await selected.text();
+                const { rows } = parseContactCsv(text);
+                onUpdate({
+                  ...audience,
+                  csvContacts: rows.map((r) => ({ phone: r.phone, name: r.name })),
+                });
+              }}
+            />
+          </label>
+          {audience.csvContacts && audience.csvContacts.length > 0 && (
+            <p className="text-xs text-primary">
+              {audience.csvContacts.length} contato(s) reconhecido(s).
+            </p>
           )}
         </div>
       )}

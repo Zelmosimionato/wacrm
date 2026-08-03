@@ -9,7 +9,10 @@ import { MessageTemplate } from '@/types';
 import { Step1ChooseTemplate } from '@/components/broadcasts/step1-choose-template';
 import { Step2SelectAudience } from '@/components/broadcasts/step2-select-audience';
 import { Step3Personalize } from '@/components/broadcasts/step3-personalize';
-import { Step4ScheduleSend } from '@/components/broadcasts/step4-schedule-send';
+import {
+  Step4ScheduleSend,
+  type BroadcastSchedule,
+} from '@/components/broadcasts/step4-schedule-send';
 import { useBroadcastSending } from '@/hooks/use-broadcast-sending';
 import { Check } from 'lucide-react';
 import { useTranslations } from 'next-intl';
@@ -25,7 +28,7 @@ export default function NewBroadcastPage() {
   const router = useRouter();
   const t = useTranslations('Broadcasts.new');
   const { accountId } = useAuth();
-  const { createAndSendBroadcast, isProcessing, progress } = useBroadcastSending();
+  const { createBroadcast, isProcessing, progress } = useBroadcastSending();
 
   const [currentStep, setCurrentStep] = useState(0);
   const [template, setTemplate] = useState<MessageTemplate | null>(null);
@@ -46,11 +49,11 @@ export default function NewBroadcastPage() {
   const [headerMediaUrl, setHeaderMediaUrl] = useState('');
   const [name, setName] = useState('');
 
-  async function handleSend() {
+  async function handleSubmit(schedule: BroadcastSchedule) {
     if (!template) return;
 
     try {
-      const broadcastId = await createAndSendBroadcast({
+      const broadcastId = await createBroadcast({
         name,
         template,
         audience: {
@@ -62,11 +65,20 @@ export default function NewBroadcastPage() {
         },
         variables,
         headerMediaUrl,
+        scheduledAt: schedule.scheduledAt,
+        intervalMinSeconds: schedule.intervalMinSeconds,
+        intervalMaxSeconds: schedule.intervalMaxSeconds,
       });
+
+      const isScheduled =
+        new Date(schedule.scheduledAt).getTime() > Date.now() + 30_000;
+      toast.success(
+        isScheduled
+          ? 'Disparo agendado. O CRM envia sozinho na hora marcada.'
+          : 'Disparo criado — o envio vai começar em instantes.',
+      );
       router.push(`/broadcasts/${broadcastId}`);
     } catch (err) {
-      // Previously swallowed with console.error — the wizard would
-      // just no-op, leaving the user confused. Surface the reason.
       const message = err instanceof Error ? err.message : 'Broadcast failed';
       console.error('Broadcast failed:', err);
       toast.error(message);
@@ -75,12 +87,7 @@ export default function NewBroadcastPage() {
 
   /**
    * Writes a draft broadcast row — no recipients, no sending. The user
-   * can revisit it via the list page to finish the flow later. We
-   * don't persist the in-progress audience/variable config here
-   * because the current schema doesn't carry it past `audience_filter`
-   * and `template_variables`; those are enough for the user to
-   * recognize the draft but not to exactly round-trip into the wizard.
-   * A full resume-draft UX is a future polish.
+   * can revisit it via the list page to finish the flow later.
    */
   async function handleSaveDraft() {
     if (!template || !name.trim()) {
@@ -221,7 +228,7 @@ export default function NewBroadcastPage() {
               onNameChange={setName}
               template={template}
               audience={audience}
-              onSend={handleSend}
+              onSubmit={handleSubmit}
               onSaveDraft={handleSaveDraft}
               onBack={() => setCurrentStep(2)}
               isProcessing={isProcessing}
