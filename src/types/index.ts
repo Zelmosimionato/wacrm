@@ -439,7 +439,8 @@ export type AutomationTriggerType =
   | 'time_based'
   /** Customer tapped a reply button / list row whose id matches; lets
    *  multi-step menus be chained across automations. */
-  | 'interactive_reply';
+  | 'interactive_reply'
+  | 'deal_stage_changed';
 
 export type AutomationStepType =
   | 'send_message'
@@ -479,12 +480,20 @@ export interface InteractiveReplyTriggerConfig {
   reply_ids: string[];
 }
 
+export interface DealStageTriggerConfig {
+  /** Optional pipeline scope; if set, only fires for this pipeline. */
+  pipeline_id?: string;
+  /** The stage the card must enter to fire. */
+  stage_id: string;
+}
+
 export type AutomationTriggerConfig =
   | Record<string, never>
   | KeywordMatchTriggerConfig
   | TagTriggerConfig
   | TimeBasedTriggerConfig
   | InteractiveReplyTriggerConfig
+  | DealStageTriggerConfig
   | Record<string, unknown>;
 
 export interface SendMessageStepConfig {

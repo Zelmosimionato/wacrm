@@ -5,7 +5,13 @@ import {
   type ChatMessage,
   type GenerateResult,
 } from './types'
-import { HANDOFF_SENTINEL, aiRequestTimeoutMs } from './defaults'
+import {
+  HANDOFF_SENTINEL,
+  QUALIFIED_SENTINEL,
+  SUPER_SENTINEL,
+  REAGENDAR_SENTINEL,
+  aiRequestTimeoutMs,
+} from './defaults'
 import { generateOpenAi } from './providers/openai'
 import { generateAnthropic } from './providers/anthropic'
 
@@ -63,6 +69,15 @@ export function parseGeneration(
   usage: AiUsage | null = null,
 ): GenerateResult {
   const handoff = raw.includes(HANDOFF_SENTINEL)
-  const text = raw.split(HANDOFF_SENTINEL).join('').trim()
-  return { text, handoff, usage }
+  const move: GenerateResult['move'] = raw.includes(SUPER_SENTINEL)
+    ? 'super'
+    : raw.includes(QUALIFIED_SENTINEL)
+      ? 'qualified'
+      : raw.includes(REAGENDAR_SENTINEL)
+        ? 'reagendar'
+        : null
+  const text = [HANDOFF_SENTINEL, SUPER_SENTINEL, QUALIFIED_SENTINEL, REAGENDAR_SENTINEL]
+    .reduce((acc, s) => acc.split(s).join(''), raw)
+    .trim()
+  return { text, handoff, move, usage }
 }

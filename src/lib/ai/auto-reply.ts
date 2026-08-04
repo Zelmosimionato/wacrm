@@ -9,6 +9,86 @@ import { logAiUsage } from './usage'
 import { latestUserMessage } from './query'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
+import { runAutomationsForTrigger } from '@/lib/automations/engine'
+
+// Fase 3: the AI moves the deal card from the conversation (qualified /
+// super / reschedule). The templates are sent by the STAGE automations;
+// here we only MOVE the card and fire the stage trigger so they run.
+const AI_VENDAS_PIPELINE = '8e89e154-763c-4cf8-b73b-42f7368c59c3'
+const AI_STAGE_NOVO = 'f6c4e8c1-f13a-442a-9668-414cadb81c01'
+const AI_STAGE_QUALIFICADO = '57bed09e-bc01-4691-8272-dcd8c3c078df'
+const AI_STAGE_REAGENDAR = 'f2b7e7f6-c7d6-4d2b-ac6d-ad7842ab7045'
+const AI_TAG_SUPER = 'b9298582-dcc7-46a3-ae34-f54b3c6fece1'
+
+async function applyAiCardMove(
+  db: ReturnType<typeof supabaseAdmin>,
+  args: {
+    accountId: string
+    contactId: string
+    move: 'qualified' | 'super' | 'reagendar'
+  },
+): Promise<void> {
+  const { accountId, contactId, move } = args
+  const { data: deals } = await db
+    .from('deals')
+    .select('id, stage_id')
+    .eq('contact_id', contactId)
+    .eq('pipeline_id', AI_VENDAS_PIPELINE)
+    .eq('status', 'open')
+    .order('created_at', { ascending: false })
+    .limit(1)
+  const deal = (deals as { id: string; stage_id: string }[] | null)?.[0]
+  if (!deal) return
+
+  if (move === 'super') {
+    const { count } = await db
+      .from('contact_tags')
+      .select('id', { count: 'exact', head: true })
+      .eq('contact_id', contactId)
+      .eq('tag_id', AI_TAG_SUPER)
+    if (!count) {
+      await db
+        .from('contact_tags')
+        .insert({ contact_id: contactId, tag_id: AI_TAG_SUPER })
+    }
+    // Alert the team by email - the CRM has no SMTP, so relay via the
+    // intake mailer (shared secret). Fire-and-forget; never blocks.
+    const notifySecret = process.env.AUTOMATION_ENGINE_SECRET
+    if (notifySecret) {
+      const { data: c } = await db
+        .from('contacts')
+        .select('name, phone')
+        .eq('id', contactId)
+        .maybeSingle()
+      const contact = c as { name: string | null; phone: string | null } | null
+      void fetch('http://127.0.0.1:3001/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-engine-secret': notifySecret },
+        body: JSON.stringify({
+          subject: `Lead SUPERQUALIFICADO (IA): ${contact?.name ?? 'sem nome'}`,
+          body: `A IA identificou um lead SUPERQUALIFICADO (divida >= R$ 500 mil) na conversa. Nome: ${contact?.name ?? '-'} | WhatsApp: ${contact?.phone ?? '-'} | Card em Lead Qualificado + tag Superqualificado. Ver: https://crm.simionatoadvogados.com.br`,
+        }),
+      }).catch(() => {})
+    }
+  }
+
+  let target: string | null = null
+  if (move === 'qualified' || move === 'super') {
+    // Only advance from the initial stage; never drag a booked lead back.
+    if (deal.stage_id === AI_STAGE_NOVO) target = AI_STAGE_QUALIFICADO
+  } else if (move === 'reagendar') {
+    if (deal.stage_id !== AI_STAGE_REAGENDAR) target = AI_STAGE_REAGENDAR
+  }
+  if (!target) return
+
+  await db.from('deals').update({ stage_id: target }).eq('id', deal.id)
+  await runAutomationsForTrigger({
+    accountId,
+    triggerType: 'deal_stage_changed',
+    contactId,
+    context: { stage_id: target, pipeline_id: AI_VENDAS_PIPELINE },
+  })
+}
 
 interface DispatchArgs {
   /** Tenancy key — drives config, contact, and whatsapp_config lookups. */
@@ -314,7 +394,7 @@ export async function dispatchInboundToAiReply(
     })
     if (contextBlock) systemPrompt += '\n\n' + contextBlock
 
-    const { text, handoff, usage } = await generateReply({
+    const { text, handoff, move, usage } = await generateReply({
       config,
       systemPrompt,
       messages,
@@ -397,6 +477,15 @@ export async function dispatchInboundToAiReply(
         aiGenerated: true,
       })
       if (i < bubbles.length - 1) await sleep(900)
+    }
+
+    // Fase 3: act on the AI's card-move marker (after the reply is sent).
+    if (move && !isClient) {
+      try {
+        await applyAiCardMove(db, { accountId, contactId, move })
+      } catch (err) {
+        console.error('[ai auto-reply] card move failed:', err)
+      }
     }
 
     // Existing client: the AI acknowledged in client mode; now hand the

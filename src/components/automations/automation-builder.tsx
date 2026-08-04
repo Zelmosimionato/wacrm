@@ -138,6 +138,7 @@ const TRIGGER_OPTIONS: { value: AutomationTriggerType }[] = [
   { value: "conversation_assigned" },
   { value: "tag_added" },
   { value: "time_based" },
+  { value: "deal_stage_changed" },
 ]
 
 function cid(): string {
@@ -859,6 +860,14 @@ function TriggerCard({
                   t={t}
                 />
               </div>
+            )}
+            {type === "deal_stage_changed" && (
+              <DealPipelineFields
+                pipelineId={(config.pipeline_id as string) ?? ""}
+                stageId={(config.stage_id as string) ?? ""}
+                onChange={(patch) => onConfigChange({ ...config, ...patch })}
+                t={t}
+              />
             )}
             {type === "time_based" && (
               <div>

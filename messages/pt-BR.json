@@ -353,6 +353,7 @@
     },
     "detailView": {
       "tabs": {
+        "tags": "Etiquetas",
         "details": "Detalhes",
         "activity": "Atividade",
         "notes": "Notas",
@@ -864,6 +865,10 @@
         "tag_added": {
           "label": "Etiqueta adicionada",
           "hint": "Quando uma etiqueta é adicionada a um contato"
+        },
+        "deal_stage_changed": {
+          "label": "Card entrou na etapa",
+          "hint": "Quando um card entra na etapa escolhida do funil"
         },
         "time_based": {
           "label": "Baseado em tempo",

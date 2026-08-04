@@ -353,6 +353,7 @@
     },
     "detailView": {
       "tabs": {
+        "tags": "Tags",
         "details": "Details",
         "activity": "Activity",
         "notes": "Notes",
@@ -864,6 +865,10 @@
         "tag_added": {
           "label": "Tag Added",
           "hint": "When a tag is added to a contact"
+        },
+        "deal_stage_changed": {
+          "label": "Card Entered Stage",
+          "hint": "When a card enters the chosen pipeline stage"
         },
         "time_based": {
           "label": "Time-Based",

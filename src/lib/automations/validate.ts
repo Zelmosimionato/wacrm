@@ -185,6 +185,10 @@ export function validateTriggerForActivation(
     if (!nonEmpty(cfg.tag_id)) {
       issues.push({ path: 'trigger.tag_id', message: 'tag is required' })
     }
+  } else if (triggerType === 'deal_stage_changed') {
+    if (!nonEmpty(cfg.stage_id)) {
+      issues.push({ path: 'trigger.stage_id', message: 'stage is required' })
+    }
   } else if (triggerType === 'interactive_reply') {
     const ids = cfg.reply_ids
     if (!Array.isArray(ids) || ids.length === 0) {

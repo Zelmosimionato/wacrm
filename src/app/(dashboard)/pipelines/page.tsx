@@ -227,6 +227,9 @@ export default function PipelinesPage() {
       if (error) {
         toast.error(t("toastFailedMoveDeal"));
         refreshDeals();
+      } else {
+        // Native automation dispatch: fire deal_stage_changed in-process.
+        void fetch(`/api/deals/${dealId}/stage-changed`, { method: "POST" }).catch(() => {});
       }
     },
     [supabase, refreshDeals, t],

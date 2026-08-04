@@ -6,6 +6,7 @@ import type {
   ConditionStepConfig,
   KeywordMatchTriggerConfig,
   InteractiveReplyTriggerConfig,
+  DealStageTriggerConfig,
   SendMessageStepConfig,
   SendButtonsStepConfig,
   SendListStepConfig,
@@ -39,6 +40,10 @@ export interface AutomationContext {
   agent_id?: string
   /** Button / list-row id the customer tapped, for interactive_reply. */
   interactive_reply_id?: string
+  /** The stage a deal entered, for deal_stage_changed. */
+  stage_id?: string
+  /** The deal's pipeline, for deal_stage_changed scoping. */
+  pipeline_id?: string
 }
 
 export interface DispatchInput {
@@ -389,24 +394,75 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       if (!args.contactId) throw new Error('send_template needs a contact')
       if (!cfg.template_name) throw new Error('send_template needs template_name')
       const conversationId = await resolveConversationId(args)
+      // Personalisation: resolve {{contact.*}} / {{name}} / {{nome}} tokens
+      // in the template variables against the contact — so a native
+      // automation can send e.g. {{1}} = the contact's first name. Values
+      // with no token are kept verbatim (static), preserving old behaviour.
+      let tplContact: {
+        name: string | null
+        phone: string | null
+        email: string | null
+        company: string | null
+      } | null = null
+      // Auto-fill: if the automation left the template variables empty,
+      // default {{1}} to the contact's first name -- so "just move the card"
+      // works without configuring the variable on every automation.
+      const tplVars: Record<string, unknown> =
+        cfg.variables && Object.keys(cfg.variables).length > 0
+          ? cfg.variables
+          : { '1': '{{nome}}' }
+      const varsHaveToken = Object.values(tplVars).some(
+        (v) => typeof v === 'string' && v.includes('{{'),
+      )
+      if (varsHaveToken) {
+        const { data } = await db
+          .from('contacts')
+          .select('name, phone, email, company')
+          .eq('id', args.contactId)
+          .maybeSingle()
+        tplContact =
+          (data as {
+            name: string | null
+            phone: string | null
+            email: string | null
+            company: string | null
+          } | null) ?? null
+      }
+      const tpl = tplContact
+      const resolveTplVar = (raw: unknown): string => {
+        const s = String(raw ?? '')
+        const c = tpl
+        if (!c) return s
+        const firstName = c.name ? c.name.trim().split(/\s+/)[0] : ''
+        return s
+          .replace(
+            /\{\{\s*contact\.(name|phone|email|company)\s*\}\}/gi,
+            (_m, f: string) =>
+              String((c as Record<string, unknown>)[f] ?? ''),
+          )
+          .replace(
+            /\{\{\s*(first_name|primeiro_nome|nome)\s*\}\}/gi,
+            () => firstName,
+          )
+          .replace(/\{\{\s*name\s*\}\}/gi, () => c.name ?? '')
+      }
+
       // Meta templates use positional {{1}}, {{2}}, … placeholders, so
       // we MUST emit params in strict numeric order. Lexicographic sort
       // of "1", "2", …, "10" yields "1", "10", "2", … which silently
       // scrambles every template with ≥10 variables.
-      const params = cfg.variables
-        ? Object.keys(cfg.variables)
-            .sort((a, b) => {
-              const na = Number(a)
-              const nb = Number(b)
-              const aNum = Number.isFinite(na)
-              const bNum = Number.isFinite(nb)
-              if (aNum && bNum) return na - nb
-              if (aNum) return -1
-              if (bNum) return 1
-              return a.localeCompare(b)
-            })
-            .map((k) => String(cfg.variables![k]))
-        : []
+      const params = Object.keys(tplVars)
+        .sort((a, b) => {
+          const na = Number(a)
+          const nb = Number(b)
+          const aNum = Number.isFinite(na)
+          const bNum = Number.isFinite(nb)
+          if (aNum && bNum) return na - nb
+          if (aNum) return -1
+          if (bNum) return 1
+          return a.localeCompare(b)
+        })
+        .map((k) => resolveTplVar(tplVars[k]))
       const { whatsapp_message_id } = await engineSendTemplate({
         accountId: args.automation.account_id,
         userId: args.automation.user_id,
@@ -640,6 +696,14 @@ export function triggerMatches(automation: Automation, ctx: AutomationContext | 
       return false
     }
     return cfg.reply_ids.includes(replyId)
+  }
+
+  if (automation.trigger_type === 'deal_stage_changed') {
+    const cfg = automation.trigger_config as DealStageTriggerConfig
+    if (!cfg?.stage_id) return false
+    if (ctx?.stage_id !== cfg.stage_id) return false
+    if (cfg.pipeline_id && ctx?.pipeline_id && ctx.pipeline_id !== cfg.pipeline_id) return false
+    return true
   }
 
   return true

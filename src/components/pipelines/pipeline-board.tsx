@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -55,6 +55,42 @@ export function PipelineBoard({
     return map;
   }, [sortedStages, deals]);
 
+  const boardRef = useRef<HTMLDivElement>(null);
+  const topScrollRef = useRef<HTMLDivElement>(null);
+  const topSpacerRef = useRef<HTMLDivElement>(null);
+  const syncingScroll = useRef(false);
+
+  // Mirror scroll between the top bar and the board without a feedback
+  // loop: skip the handler that fires from our own programmatic scroll
+  // (flag cleared next frame). Without this the two ping-pong and the bar
+  // trembles / jams after a couple of drags.
+  const syncScroll = (from: "top" | "board") => {
+    if (syncingScroll.current) return;
+    const b = boardRef.current;
+    const tp = topScrollRef.current;
+    if (!b || !tp) return;
+    syncingScroll.current = true;
+    if (from === "top") b.scrollLeft = tp.scrollLeft;
+    else tp.scrollLeft = b.scrollLeft;
+    requestAnimationFrame(() => {
+      syncingScroll.current = false;
+    });
+  };
+
+  // Keep a horizontal scrollbar at the TOP of the board (synced with the
+  // real scroll container below) so a tall, full column does not force the
+  // user to scroll to the very bottom just to pan sideways.
+  useEffect(() => {
+    function measure() {
+      const b = boardRef.current;
+      const sp = topSpacerRef.current;
+      if (b && sp) sp.style.width = `${b.scrollWidth}px`;
+    }
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [sortedStages, deals]);
+
   const sensors = useSensors(
     // 5px activation distance avoids clicks being interpreted as drags.
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -103,7 +139,21 @@ export function PipelineBoard({
           natural layout. The board can still overflow horizontally on
           lg+ once a pipeline has many stages (columns keep a 260px
           min-width), so a thin scrollbar stays visible on desktop. */}
-      <div className="pipeline-scroll flex snap-x snap-mandatory gap-3 overflow-x-auto pb-4 lg:snap-none">
+      {/* Top synced horizontal scrollbar (desktop) - mirrors the board
+          below so users can pan sideways without scrolling to the bottom. */}
+      <div
+        ref={topScrollRef}
+        aria-hidden="true"
+        onScroll={() => syncScroll("top")}
+        className="pipeline-scroll mb-1 overflow-x-auto overflow-y-hidden"
+      >
+        <div ref={topSpacerRef} className="h-px" />
+      </div>
+      <div
+        ref={boardRef}
+        onScroll={() => syncScroll("board")}
+        className="board-scroll flex snap-x snap-mandatory gap-3 overflow-x-auto pb-4 lg:snap-none"
+      >
         {sortedStages.map((stage) => {
           const stageDeals = dealsByStage.get(stage.id) ?? [];
           const totalValue = stageDeals.reduce(
@@ -147,6 +197,16 @@ export function PipelineBoard({
       <style jsx>{`
         .pipeline-scroll {
           scroll-behavior: smooth;
+        }
+        /* Board scrolls horizontally but hides its OWN scrollbar - the
+           only visible one is the synced bar at the TOP of the board. */
+        .board-scroll {
+          scroll-behavior: smooth;
+          scrollbar-width: none;
+        }
+        .board-scroll::-webkit-scrollbar {
+          height: 0;
+          display: none;
         }
         /* On touch devices the peek/snap layout already signals there's
            more to swipe, so the scrollbar is hidden for a clean look.

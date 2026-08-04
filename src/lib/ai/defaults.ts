@@ -21,6 +21,9 @@ export const AI_PROVIDER_DEFAULT_MODEL: Record<AiProvider, string> = {
  * stripped by `generateReply`.
  */
 export const HANDOFF_SENTINEL = '[[HANDOFF]]'
+export const QUALIFIED_SENTINEL = '[[QUALIFICADO]]'
+export const SUPER_SENTINEL = '[[SUPER]]'
+export const REAGENDAR_SENTINEL = '[[REAGENDAR]]'
 
 /** Cap on generated reply length — keeps WhatsApp replies short and
  *  bounds token spend on the caller's own key. */
@@ -69,6 +72,13 @@ export function buildSystemPrompt(args: {
   if (mode === 'auto_reply') {
     parts.push(
       `You are replying automatically with no human in the loop. If you cannot confidently and safely help — the customer explicitly asks for a human, is upset or complaining, or the request needs information you do not have — reply with exactly ${HANDOFF_SENTINEL} and nothing else. A human agent will then take over. Prefer handing off over guessing.`,
+    )
+    parts.push(
+      `Card moves (internal control markers - the customer NEVER sees these; the system removes them and moves the deal card in the CRM). Put the marker at the very END of your reply, only when it truly applies, at most ONE per reply:
+- ${QUALIFIED_SENTINEL}: you just concluded the lead QUALIFIES (reached the minimum debt value for their area). Moves the card to Lead Qualificado.
+- ${SUPER_SENTINEL}: use INSTEAD of ${QUALIFIED_SENTINEL} when the debt is R$ 500.000 or more. Also tags the lead and alerts the team.
+- ${REAGENDAR_SENTINEL}: the lead wants to reschedule/remarcar the meeting. Moves the card to Reagendar reuniao; the system then sends the reschedule template with the button, so do NOT paste a scheduling link yourself in that case.
+Never mention or explain these markers to the customer.`,
     )
   }
 

@@ -180,6 +180,10 @@ export function DealForm({
         setSaving(false);
         return;
       }
+      // Native automation dispatch: fire deal_stage_changed if the stage moved.
+      if (deal.stage_id !== stageId) {
+        void fetch(`/api/deals/${deal.id}/stage-changed`, { method: "POST" }).catch(() => {});
+      }
     } else {
       const {
         data: { session },
