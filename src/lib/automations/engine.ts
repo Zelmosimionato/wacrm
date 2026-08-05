@@ -582,6 +582,30 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
     case 'create_deal': {
       const cfg = step.step_config as CreateDealStepConfig
       if (!cfg.pipeline_id || !cfg.stage_id) throw new Error('create_deal needs pipeline + stage')
+      // Guard (added): do not double-card. Skip when the contact already
+      // has an open deal (e.g. a lead that arrived via the form intake
+      // already got one) or is a client (tag "Cliente") — clients are
+      // not new leads. Applies to every create_deal automation.
+      if (args.contactId) {
+        const { data: openDeal } = await db
+          .from('deals')
+          .select('id')
+          .eq('contact_id', args.contactId)
+          .eq('status', 'open')
+          .limit(1)
+        if (openDeal && openDeal.length > 0) return 'deal skipped (open deal exists)'
+        const { data: tagRows } = await db
+          .from('contact_tags')
+          .select('tags!inner(name)')
+          .eq('contact_id', args.contactId)
+        let isClient = false
+        for (const r of tagRows ?? []) {
+          const t = (r as { tags?: { name?: string } | { name?: string }[] }).tags
+          if (Array.isArray(t)) { if (t.some((x) => x?.name === 'Cliente')) isClient = true }
+          else if (t?.name === 'Cliente') isClient = true
+        }
+        if (isClient) return 'deal skipped (contact is a client)'
+      }
       // Match the account's configured default currency rather than
       // the static `deals.currency` DB default — keeps automation-
       // created deals consistent with the one-currency-per-account
