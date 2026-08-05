@@ -43,6 +43,9 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
   const [editDeal, setEditDeal] = useState<Deal | null>(null);
   const [formStages, setFormStages] = useState<PipelineStage[]>([]);
   const [dealFormOpen, setDealFormOpen] = useState(false);
+  // Pipeline to use when creating a fresh deal from the inbox (create mode,
+  // editDeal === null). Set by openCreateDeal to the lead funnel (Vendas).
+  const [createPipelineId, setCreatePipelineId] = useState("");
 
   const fetchContactData = useCallback(async () => {
     if (!contact) return;
@@ -139,6 +142,33 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
     setEditDeal(deal);
     setDealFormOpen(true);
   }, []);
+
+  // Create a fresh deal for this contact straight from the inbox — for
+  // contacts that arrived without a card (e.g. a WhatsApp lead that never
+  // went through the form intake). Opens the deal form in create mode,
+  // pre-filled with this contact, on the lead funnel (Vendas). The user
+  // picks the stage — including "Perdido" — so no-deal contacts are
+  // triageable without leaving the conversation.
+  const openCreateDeal = useCallback(async () => {
+    if (!contact) return;
+    const supabase = createClient();
+    const { data: pipes } = await supabase
+      .from("pipelines")
+      .select("id, name")
+      .order("created_at", { ascending: true });
+    const list = (pipes ?? []) as { id: string; name: string }[];
+    const pipe = list.find((p) => /venda/i.test(p.name)) ?? list[0];
+    if (!pipe) return;
+    const { data: stageRows } = await supabase
+      .from("pipeline_stages")
+      .select("*")
+      .eq("pipeline_id", pipe.id)
+      .order("position");
+    setFormStages((stageRows ?? []) as PipelineStage[]);
+    setCreatePipelineId(pipe.id);
+    setEditDeal(null);
+    setDealFormOpen(true);
+  }, [contact]);
 
   if (!contact) {
     return (
@@ -276,6 +306,18 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
                   </button>
                 ))
               )}
+              {/* Create a card for this contact — makes no-deal contacts
+                  (e.g. WhatsApp leads without a card) actionable: create,
+                  then move/lose as any other deal. */}
+              <button
+                type="button"
+                onClick={openCreateDeal}
+                className="flex w-full items-center justify-center gap-1 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                title="Criar negócio para este contato"
+              >
+                <Plus className="h-3 w-3" />
+                Criar negócio
+              </button>
             </div>
           </div>
 
@@ -331,8 +373,10 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
         open={dealFormOpen}
         onOpenChange={setDealFormOpen}
         deal={editDeal}
-        pipelineId={editDeal?.pipeline_id ?? ""}
+        pipelineId={editDeal?.pipeline_id ?? createPipelineId}
         stages={formStages}
+        defaultContactId={contact.id}
+        defaultTitle={contact.name || contact.phone}
         onSaved={() => {
           setDealFormOpen(false);
           fetchContactData();

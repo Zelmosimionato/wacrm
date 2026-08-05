@@ -41,6 +41,11 @@ interface DealFormProps {
   pipelineId: string;
   stages: PipelineStage[];
   defaultStageId?: string;
+  /** Pre-fill the contact in create mode (deal is null) — used when the
+   *  form is opened from a specific contact's context (e.g. the inbox). */
+  defaultContactId?: string;
+  /** Pre-fill the deal title in create mode. */
+  defaultTitle?: string;
   onSaved: () => void;
 }
 
@@ -51,6 +56,8 @@ export function DealForm({
   pipelineId,
   stages,
   defaultStageId,
+  defaultContactId,
+  defaultTitle,
   onSaved,
 }: DealFormProps) {
   const t = useTranslations("Pipelines.form");
@@ -95,16 +102,16 @@ export function DealForm({
       setExpectedCloseDate(deal.expected_close_date ?? "");
       setNotes(deal.notes ?? "");
     } else {
-      setTitle("");
+      setTitle(defaultTitle ?? "");
       setValue("");
       setCurrency(defaultCurrency);
-      setContactId("");
+      setContactId(defaultContactId ?? "");
       setStageId(defaultStageId || stages[0]?.id || "");
       setAssignedTo("");
       setExpectedCloseDate("");
       setNotes("");
     }
-  }, [open, deal, defaultStageId, stages, defaultCurrency]);
+  }, [open, deal, defaultStageId, defaultContactId, defaultTitle, stages, defaultCurrency]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // Load supporting data once the sheet is open
