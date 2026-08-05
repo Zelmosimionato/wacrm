@@ -8,7 +8,12 @@ import {
   type ProviderArgs,
 } from './shared'
 
-const OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
+// Base URL configurável: aponta o provider "openai" a QUALQUER endpoint compatível com OpenAI.
+// Para usar o hermes local via Ollama na VPS, definir no ambiente do servidor:
+//   OPENAI_BASE_URL=http://localhost:11434/v1
+// Sem a variável, mantém o comportamento original (OpenAI na nuvem). Server-only (não NEXT_PUBLIC).
+const OPENAI_BASE = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '')
+const OPENAI_URL = `${OPENAI_BASE}/chat/completions`
 
 interface OpenAiResponse {
   choices?: { message?: { content?: string } }[]

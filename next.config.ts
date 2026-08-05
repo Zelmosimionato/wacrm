@@ -126,6 +126,10 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  turbopack: {
+    root: __dirname,
+  },
+  allowedDevOrigins: ["54.232.189.113"],
 };
 
 export default withNextIntl(nextConfig);
