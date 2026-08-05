@@ -244,6 +244,14 @@ export default function ContactsPage() {
     setDetailOpen(true);
   }
 
+  // Deep-link: /contacts?contact=<id> opens that contact's detail — powers
+  // "click the name" navigation coming from the inbox/conversation.
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("contact");
+    if (id) openDetail(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function confirmDelete(contact: Contact) {
     setDeleteTarget(contact);
     setDeleteConfirmOpen(true);

@@ -1,10 +1,12 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
-import type { Contact, Deal, ContactNote, Tag } from "@/types";
+import type { Contact, Deal, ContactNote, Tag, PipelineStage } from "@/types";
+import { DealForm } from "@/components/pipelines/deal-form";
 import {
   Phone,
   Mail,
@@ -36,6 +38,11 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
   const [tags, setTags] = useState<(Tag & { contact_tag_id: string })[]>([]);
   const [newNote, setNewNote] = useState("");
   const [addingNote, setAddingNote] = useState(false);
+  // Deal editor opened from the conversation sidebar (change stage, edit,
+  // link to conversation) — so the lead's card is actionable from the inbox.
+  const [editDeal, setEditDeal] = useState<Deal | null>(null);
+  const [formStages, setFormStages] = useState<PipelineStage[]>([]);
+  const [dealFormOpen, setDealFormOpen] = useState(false);
 
   const fetchContactData = useCallback(async () => {
     if (!contact) return;
@@ -119,6 +126,20 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
     setAddingNote(false);
   }, [contact, newNote, accountId]);
 
+  // Open the deal editor for a deal shown in the sidebar. Loads that
+  // deal's pipeline stages so the stage dropdown works.
+  const openDeal = useCallback(async (deal: Deal) => {
+    const supabase = createClient();
+    const { data } = await supabase
+      .from("pipeline_stages")
+      .select("*")
+      .eq("pipeline_id", deal.pipeline_id)
+      .order("position");
+    setFormStages((data ?? []) as PipelineStage[]);
+    setEditDeal(deal);
+    setDealFormOpen(true);
+  }, []);
+
   if (!contact) {
     return (
       <div className="flex h-full w-70 items-center justify-center border-l border-border bg-card">
@@ -147,9 +168,13 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
                 initials
               )}
             </div>
-            <h3 className="mt-3 text-sm font-semibold text-foreground">
+            <Link
+              href={`/contacts?contact=${contact.id}`}
+              className="mt-3 text-sm font-semibold text-foreground hover:text-primary hover:underline"
+              title="Abrir contato"
+            >
               {displayName}
-            </h3>
+            </Link>
             {contact.company && (
               <p className="text-xs text-muted-foreground">{contact.company}</p>
             )}
@@ -221,9 +246,12 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
                 <p className="px-1 text-xs text-muted-foreground">{tSidebar("noDeals")}</p>
               ) : (
                 deals.map((deal) => (
-                  <div
+                  <button
                     key={deal.id}
-                    className="rounded-lg bg-muted px-3 py-2"
+                    type="button"
+                    onClick={() => openDeal(deal)}
+                    className="w-full rounded-lg bg-muted px-3 py-2 text-left transition-colors hover:bg-muted/70"
+                    title="Abrir card"
                   >
                     <p className="text-sm font-medium text-foreground">
                       {deal.title}
@@ -245,7 +273,7 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
                         </span>
                       )}
                     </div>
-                  </div>
+                  </button>
                 ))
               )}
             </div>
@@ -298,6 +326,18 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
           </div>
         </div>
       </ScrollArea>
+
+      <DealForm
+        open={dealFormOpen}
+        onOpenChange={setDealFormOpen}
+        deal={editDeal}
+        pipelineId={editDeal?.pipeline_id ?? ""}
+        stages={formStages}
+        onSaved={() => {
+          setDealFormOpen(false);
+          fetchContactData();
+        }}
+      />
     </div>
   );
 }

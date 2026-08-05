@@ -5,7 +5,9 @@ import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { formatCurrency } from '@/lib/currency';
 import { toast } from 'sonner';
-import type { Contact, Tag, ContactTag, ContactNote, CustomField, ContactCustomValue, Deal, MessageTemplate } from '@/types';
+import Link from 'next/link';
+import type { Contact, Tag, ContactTag, ContactNote, CustomField, ContactCustomValue, Deal, MessageTemplate, PipelineStage } from '@/types';
+import { DealForm } from '@/components/pipelines/deal-form';
 import {
   TemplatePicker,
   type TemplateSendValues,
@@ -38,6 +40,7 @@ import {
   X,
   DollarSign,
   LayoutTemplate,
+  MessageSquare,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
@@ -188,6 +191,43 @@ export function ContactDetailView({
       fetchDeals();
     }
   }, [open, contactId, fetchContact, fetchTags, fetchNotes, fetchCustomFields, fetchDeals]);
+
+  // Newest conversation for this contact — powers the "Ver conversa" link.
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [editDeal, setEditDeal] = useState<Deal | null>(null);
+  const [formStages, setFormStages] = useState<PipelineStage[]>([]);
+  const [dealFormOpen, setDealFormOpen] = useState(false);
+  const openDeal = useCallback(async (deal: Deal) => {
+    const { data } = await supabase
+      .from('pipeline_stages')
+      .select('*')
+      .eq('pipeline_id', deal.pipeline_id)
+      .order('position');
+    setFormStages((data ?? []) as PipelineStage[]);
+    setEditDeal(deal);
+    setDealFormOpen(true);
+  }, [supabase]);
+  useEffect(() => {
+    if (!open || !contactId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setConversationId(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from('conversations')
+        .select('id')
+        .eq('contact_id', contactId)
+        .order('last_message_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!cancelled) setConversationId((data as { id: string } | null)?.id ?? null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, contactId, supabase]);
 
   async function copyPhone() {
     if (!contact) return;
@@ -438,7 +478,7 @@ export function ContactDetailView({
                   </div>
                 </div>
               </div>
-              <div className="mt-3">
+              <div className="mt-3 flex flex-wrap gap-2">
                 <Button
                   size="sm"
                   onClick={() => setTemplatePickerOpen(true)}
@@ -452,6 +492,15 @@ export function ContactDetailView({
                   )}
                   {t('sendTemplateBtn')}
                 </Button>
+                {conversationId && (
+                  <Link
+                    href={`/inbox?c=${conversationId}`}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-foreground hover:bg-muted"
+                  >
+                    <MessageSquare className="size-4" />
+                    Ver conversa
+                  </Link>
+                )}
               </div>
             </SheetHeader>
 
@@ -705,9 +754,12 @@ export function ContactDetailView({
                 ) : (
                   <div className="space-y-2">
                     {deals.map((deal) => (
-                      <div
+                      <button
                         key={deal.id}
-                        className="rounded-lg border border-border bg-muted/50 p-3"
+                        type="button"
+                        onClick={() => openDeal(deal)}
+                        className="w-full rounded-lg border border-border bg-muted/50 p-3 text-left transition-colors hover:bg-muted"
+                        title="Abrir card"
                       >
                         <div className="flex items-start justify-between gap-2">
                           <p className="text-sm font-medium text-foreground">
@@ -745,7 +797,7 @@ export function ContactDetailView({
                             </span>
                           )}
                         </div>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 )}
@@ -755,6 +807,17 @@ export function ContactDetailView({
         )}
       </SheetContent>
     </Sheet>
+    <DealForm
+      open={dealFormOpen}
+      onOpenChange={setDealFormOpen}
+      deal={editDeal}
+      pipelineId={editDeal?.pipeline_id ?? ''}
+      stages={formStages}
+      onSaved={() => {
+        setDealFormOpen(false);
+        fetchDeals();
+      }}
+    />
     <TemplatePicker
       open={templatePickerOpen}
       onOpenChange={setTemplatePickerOpen}

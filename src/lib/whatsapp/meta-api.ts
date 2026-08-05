@@ -833,6 +833,76 @@ export async function sendInteractiveButtons(
   return { messageId: data.messages[0].id }
 }
 
+export interface SendInteractiveCtaUrlArgs {
+  phoneNumberId: string
+  accessToken: string
+  to: string
+  /** Body text shown above the CTA button. */
+  bodyText: string
+  /** Visible button label (Meta caps this near 20 chars). */
+  buttonText: string
+  /** Absolute http(s) URL the button opens. */
+  url: string
+  headerText?: string
+  footerText?: string
+}
+
+/**
+ * Send an interactive call-to-action message with a single button that
+ * opens a URL (interactive.type = "cta_url"). Free-form / session message
+ * — no template, so it only delivers inside the 24h customer window.
+ */
+export async function sendInteractiveCtaUrl(
+  args: SendInteractiveCtaUrlArgs
+): Promise<MetaSendResult> {
+  const {
+    phoneNumberId, accessToken, to,
+    bodyText, buttonText, url, headerText, footerText,
+  } = args
+  validateInteractiveBody(bodyText)
+  validateInteractiveHeaderFooter(headerText, footerText)
+  if (!buttonText || buttonText.length > 20) {
+    throw new Error(`CTA button text must be 1-20 chars (got ${buttonText?.length ?? 0}).`)
+  }
+  if (!/^https?:\/\//i.test(url)) {
+    throw new Error('CTA button url must be an absolute http(s) URL.')
+  }
+
+  const interactive: Record<string, unknown> = {
+    type: 'cta_url',
+    body: { text: bodyText },
+    action: {
+      name: 'cta_url',
+      parameters: { display_text: buttonText, url },
+    },
+  }
+  if (headerText) interactive.header = { type: 'text', text: headerText }
+  if (footerText) interactive.footer = { text: footerText }
+
+  const payload: Record<string, unknown> = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive,
+  }
+
+  const endpoint = `${META_API_BASE}/${phoneNumberId}/messages`
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+  const data = await response.json()
+  return { messageId: data.messages[0].id }
+}
+
 export interface InteractiveListRow {
   /** Stable id sent back in the webhook when tapped (≤ 200 chars). */
   id: string

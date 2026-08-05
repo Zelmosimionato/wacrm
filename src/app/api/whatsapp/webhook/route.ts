@@ -8,6 +8,7 @@ import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
+import { isVesperaButton, handleVesperaButton } from '@/lib/appointments/vespera-buttons'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import {
   handleTemplateWebhookChange,
@@ -46,6 +47,8 @@ interface WhatsAppMessage {
   sticker?: { id: string; mime_type: string }
   location?: { latitude: number; longitude: number; name?: string; address?: string }
   reaction?: { message_id: string; emoji: string }
+  /** Presente quando o cliente toca um botão quick-reply de um TEMPLATE. */
+  button?: { text?: string; payload?: string }
   /**
    * Set when the customer taps a button or list row on an interactive
    * message we sent. `button_reply.id` / `list_reply.id` is whatever id
@@ -801,6 +804,23 @@ async function processMessage(
   // the account has enabled it. Awaited inside `after()` (same reason as
   // the webhook dispatch below); `dispatchInboundToAiReply` owns its
   // eligibility gates + try/catch and never throws.
+  // Botões do lembrete de véspera (quick-reply de template) — trato aqui,
+  // deterministicamente. A IA nem entra (interactiveReplyId setado no parse).
+  if (isVesperaButton(contentText)) {
+    try {
+      await handleVesperaButton({
+        accountId,
+        userId: configOwnerUserId,
+        conversationId: conversation.id,
+        contactId: contactRecord.id,
+        buttonText: contentText as string,
+        contactName: (contactRecord as { name?: string | null }).name ?? null,
+      })
+    } catch (err) {
+      console.error('[vespera-button dispatch]', err)
+    }
+  }
+
   if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
     await dispatchInboundToAiReply({
       accountId,
@@ -961,6 +981,18 @@ async function parseMessageContent(
         }
       }
       return { ...empty, contentText: '[Interactive reply]' }
+    }
+
+    case 'button': {
+      // Quick-reply de TEMPLATE (ex.: lembrete de véspera). Chega como
+      // type:'button' { text, payload }. Guardo o texto e seto o
+      // interactiveReplyId pra a IA NÃO responder (é um tap, não conversa).
+      const t = message.button?.text || message.button?.payload || '[botão]'
+      return {
+        ...empty,
+        contentText: t,
+        interactiveReplyId: message.button?.payload || message.button?.text || null,
+      }
     }
 
     default:

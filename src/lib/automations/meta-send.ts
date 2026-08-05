@@ -12,6 +12,9 @@ import {
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils'
 import { supabaseAdmin } from './admin-client'
+// Re-export: o handler da vespera importa daqui; a implementacao vive no
+// engine dos Flows (mesmo lookup/retry/persistencia dos outros senders).
+export { engineSendCtaUrl } from '@/lib/flows/meta-send'
 
 // ------------------------------------------------------------
 // Automation-side Meta sender.
@@ -105,6 +108,40 @@ type SendInput =
   | (SendTextArgs & { kind: 'text' })
   | (SendTemplateArgs & { kind: 'template' })
 
+// Render the template body (local message_templates row) with the
+// positional params so the inbox shows what was actually sent — the
+// UI send path stores this, the engine path used to store null (blank
+// bubble). Degrades to null (old behaviour) if the row isn't found.
+async function renderTemplateContentText(
+  db: ReturnType<typeof supabaseAdmin>,
+  accountId: string,
+  name: string,
+  language: string | undefined,
+  params: string[],
+): Promise<string | null> {
+  let body = ''
+  const { data } = await db
+    .from('message_templates')
+    .select('body_text')
+    .eq('account_id', accountId)
+    .eq('name', name)
+    .eq('language', language || 'pt_BR')
+    .maybeSingle()
+  body = ((data as { body_text?: string } | null)?.body_text) || ''
+  if (!body) {
+    const { data: any2 } = await db
+      .from('message_templates')
+      .select('body_text')
+      .eq('account_id', accountId)
+      .eq('name', name)
+      .limit(1)
+      .maybeSingle()
+    body = ((any2 as { body_text?: string } | null)?.body_text) || ''
+  }
+  if (!body) return null
+  return body.replace(/\{\{(\d+)\}\}/g, (_m, raw) => params[Number(raw) - 1] ?? `{{${raw}}}`)
+}
+
 async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: string }> {
   const db = supabaseAdmin()
 
@@ -192,7 +229,16 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
   // Meta message id. sender_type='bot' distinguishes automation sends
   // from manual agent sends.
   const content_type = input.kind === 'template' ? 'template' : 'text'
-  const content_text = input.kind === 'text' ? input.text : null
+  const content_text =
+    input.kind === 'text'
+      ? input.text
+      : await renderTemplateContentText(
+          db,
+          input.accountId,
+          input.templateName,
+          input.language,
+          input.params ?? [],
+        )
   const template_name = input.kind === 'template' ? input.templateName : null
 
   const { error: msgErr } = await db.from('messages').insert({
