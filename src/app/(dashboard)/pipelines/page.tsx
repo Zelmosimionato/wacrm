@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { GitBranch, Plus, ChevronDown, Settings } from "lucide-react";
+import { GitBranch, Plus, ChevronDown, Settings, Search } from "lucide-react";
 import { toast } from "sonner";
 import { useCan } from "@/hooks/use-can";
 import { useAuth } from "@/hooks/use-auth";
@@ -54,6 +54,8 @@ export default function PipelinesPage() {
 
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
   const [selectedPipelineId, setSelectedPipelineId] = useState<string>("");
+  // Busca por nome/telefone/título dentro do funil selecionado (client-side).
+  const [search, setSearch] = useState("");
   const [stages, setStages] = useState<PipelineStage[]>([]);
   const [deals, setDeals] = useState<Deal[]>([]);
   const [loading, setLoading] = useState(true);
@@ -300,6 +302,24 @@ export default function PipelinesPage() {
 
   const selectedPipeline = pipelines.find((p) => p.id === selectedPipelineId);
 
+  // Filter the board by the search term — matches the contact's name, the
+  // contact's phone (digits only), or the deal title. Analytics stays on the
+  // full set; only the board is filtered.
+  const q = search.trim().toLowerCase();
+  const qDigits = q.replace(/\D/g, "");
+  const filteredDeals = q
+    ? deals.filter((d) => {
+        const name = (d.contact?.name ?? "").toLowerCase();
+        const phone = (d.contact?.phone ?? "").replace(/\D/g, "");
+        const title = (d.title ?? "").toLowerCase();
+        return (
+          name.includes(q) ||
+          title.includes(q) ||
+          (qDigits.length >= 3 && phone.includes(qDigits))
+        );
+      })
+    : deals;
+
   if (loading) {
     return (
       <div className="space-y-6">
@@ -367,6 +387,17 @@ export default function PipelinesPage() {
               )}
             </DropdownMenuContent>
           </DropdownMenu>
+
+          {/* Search leads by name or phone within the selected funnel */}
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar por nome ou telefone…"
+              className="h-9 w-56 border-border bg-card pl-8 text-foreground"
+            />
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
@@ -418,7 +449,7 @@ export default function PipelinesPage() {
           <PipelineAnalytics stages={stages} deals={deals} />
           <PipelineBoard
             stages={stages}
-            deals={deals}
+            deals={filteredDeals}
             onDealMoved={handleDealMoved}
             onAddDeal={handleAddDeal}
             onEditDeal={handleEditDeal}
