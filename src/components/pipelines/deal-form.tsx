@@ -10,6 +10,7 @@ import type {
   Conversation,
   Deal,
   DealStatus,
+  Pipeline,
   PipelineStage,
   Profile,
 } from "@/types";
@@ -69,6 +70,12 @@ export function DealForm({
   const [currency, setCurrency] = useState(defaultCurrency);
   const [contactId, setContactId] = useState("");
   const [stageId, setStageId] = useState("");
+  // Funnel switching: the deal can be moved to another pipeline from the card
+  // itself. pipelineIdState/stagesState start from the props and change when
+  // the user picks a different funnel in the dropdown.
+  const [pipelineIdState, setPipelineIdState] = useState(pipelineId);
+  const [stagesState, setStagesState] = useState<PipelineStage[]>(stages);
+  const [allPipelines, setAllPipelines] = useState<Pipeline[]>([]);
   const [assignedTo, setAssignedTo] = useState("");
   const [expectedCloseDate, setExpectedCloseDate] = useState("");
   const [notes, setNotes] = useState("");
@@ -90,6 +97,8 @@ export function DealForm({
   useEffect(() => {
     if (!open) return;
     setConfirmDelete(false);
+    setPipelineIdState(deal?.pipeline_id ?? pipelineId);
+    setStagesState(stages);
     if (deal) {
       setTitle(deal.title);
       setValue(String(deal.value ?? ""));
@@ -111,7 +120,7 @@ export function DealForm({
       setExpectedCloseDate("");
       setNotes("");
     }
-  }, [open, deal, defaultStageId, defaultContactId, defaultTitle, stages, defaultCurrency]);
+  }, [open, deal, defaultStageId, defaultContactId, defaultTitle, pipelineId, stages, defaultCurrency]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // Load supporting data once the sheet is open
@@ -119,13 +128,15 @@ export function DealForm({
     if (!open) return;
     let cancelled = false;
     (async () => {
-      const [c, p] = await Promise.all([
+      const [c, p, pl] = await Promise.all([
         supabase.from("contacts").select("*").order("name"),
         supabase.from("profiles").select("*").order("full_name"),
+        supabase.from("pipelines").select("*").order("created_at"),
       ]);
       if (cancelled) return;
       setContacts((c.data ?? []) as Contact[]);
       setProfiles((p.data ?? []) as Profile[]);
+      setAllPipelines((pl.data ?? []) as Pipeline[]);
     })();
     return () => {
       cancelled = true;
@@ -158,6 +169,20 @@ export function DealForm({
     };
   }, [open, contactId, supabase]);
 
+  // Switch the deal to another funnel: load that pipeline's stages and
+  // default the stage to its first one.
+  async function changePipeline(pid: string) {
+    setPipelineIdState(pid);
+    const { data } = await supabase
+      .from("pipeline_stages")
+      .select("*")
+      .eq("pipeline_id", pid)
+      .order("position");
+    const st = (data ?? []) as PipelineStage[];
+    setStagesState(st);
+    setStageId(st[0]?.id ?? "");
+  }
+
   async function handleSave() {
     if (!title.trim() || !contactId || !stageId) {
       toast.error(t("toastRequired"));
@@ -170,7 +195,7 @@ export function DealForm({
       value: parseFloat(value) || 0,
       currency,
       contact_id: contactId,
-      pipeline_id: pipelineId,
+      pipeline_id: pipelineIdState,
       stage_id: stageId,
       assigned_to: assignedTo || null,
       notes: notes.trim() || null,
@@ -347,13 +372,28 @@ export function DealForm({
             </div>
 
             <div className="grid gap-2">
+              <Label className="text-muted-foreground">Funil</Label>
+              <select
+                value={pipelineIdState}
+                onChange={(e) => changePipeline(e.target.value)}
+                className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary"
+              >
+                {allPipelines.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid gap-2">
               <Label className="text-muted-foreground">{t("stage")}</Label>
               <select
                 value={stageId}
                 onChange={(e) => setStageId(e.target.value)}
                 className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary"
               >
-                {stages.map((s) => (
+                {stagesState.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name}
                   </option>
