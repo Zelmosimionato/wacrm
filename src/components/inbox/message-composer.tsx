@@ -73,8 +73,9 @@ export interface SendMediaPayload {
   kind: ComposerMediaKind;
   /** Public chat-media URL Meta fetches at send time. */
   mediaUrl: string;
-  /** Storage object path — lets the caller GC the object if the send fails. */
-  path: string;
+  /** Storage object path — lets the caller GC the object if the send fails.
+   *  Absent for a quick reply's fixed attachment, which is shared and must survive. */
+  path?: string;
   /** Optional caption (image/video/document only). */
   caption?: string;
   /** Original file name — surfaced to the recipient for documents. */
@@ -103,10 +104,16 @@ const PICKER_ACCEPT: Record<"image" | "video" | "document", string> = {
 interface MediaDraft {
   kind: ComposerMediaKind;
   mediaUrl: string;
-  /** Storage path — used to GC the object if the draft is discarded. */
-  path: string;
+  /** Storage path — used to GC the object if the draft is discarded.
+   *  ⛔ Left undefined for a quick reply's fixed attachment: that object is
+   *  shared by every send of the snippet, so discarding one draft must never
+   *  delete it. `removeStaged` skips when there's no path. */
+  path?: string;
   filename: string;
   caption: string;
+  /** Fixed attachment of a quick reply: the snippet's own text is the message,
+   *  so the caption field would be a second, redundant place to type. */
+  semLegenda?: boolean;
 }
 
 interface MessageComposerProps {
@@ -354,6 +361,30 @@ export function MessageComposer({
     }
   }, [interactivePayload, t]);
 
+  // A quick reply's fixed attachment lives at `quick-replies/<id>.<ext>` in
+  // chat-media. Keyed by id, not title, so renaming the snippet doesn't break
+  // the link. Absent file → the snippet simply sends as text.
+  const anexoFixo = useCallback(async (qr: QuickReply) => {
+    const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    if (!base) return;
+    const url = `${base}/storage/v1/object/public/${CHAT_MEDIA_BUCKET}/quick-replies/${qr.id}.pdf`;
+    try {
+      const res = await fetch(url, { method: "HEAD" });
+      if (!res.ok) return;
+      setDraft({
+        kind: "document",
+        mediaUrl: url,
+        // ⛔ sem `path`: o objeto é compartilhado por todos os envios do
+        //    snippet — descartar o rascunho não pode apagá-lo do bucket.
+        filename: `${qr.title}.pdf`,
+        caption: "",
+        semLegenda: true,
+      });
+    } catch {
+      /* rede fora: segue só com o texto, sem travar o atendimento */
+    }
+  }, []);
+
   // A picked quick reply: text fills the composer; interactive opens the
   // builder pre-filled so the agent can tweak before sending.
   const handlePickQuickReply = useCallback(
@@ -369,6 +400,10 @@ export function MessageComposer({
       setText((prev) =>
         prev && !/\s$/.test(prev) ? `${prev}\n${body}` : `${prev}${body}`,
       );
+      // Fixed attachment: a snippet may keep a PDF under its own id. The
+      // checklist snippets already read "os documentos constantes do arquivo
+      // anexo", so the file has to ride along or the message lies.
+      void anexoFixo(qr);
       requestAnimationFrame(() => {
         adjustHeight();
         const el = textareaRef.current;
@@ -378,7 +413,7 @@ export function MessageComposer({
         }
       });
     },
-    [openInteractiveBuilder, adjustHeight],
+    [openInteractiveBuilder, adjustHeight, anexoFixo],
   );
 
   // Upload a captured file to chat-media and stage it as a draft.
@@ -874,7 +909,7 @@ function MediaDraftPreview({
       </div>
 
       <div className="mt-2 flex items-end gap-2">
-        {draft.kind !== "audio" && (
+        {draft.kind !== "audio" && !draft.semLegenda && (
           <input
             value={draft.caption}
             maxLength={MEDIA_CAPTION_MAX}
@@ -897,7 +932,7 @@ function MediaDraftPreview({
           onClick={onSend}
           className={cn(
             "h-9 w-9 shrink-0 bg-primary p-0 hover:bg-primary/90 disabled:opacity-40",
-            draft.kind === "audio" && "ml-auto",
+            (draft.kind === "audio" || draft.semLegenda) && "ml-auto",
           )}
         >
           <Send className="h-4 w-4" />
