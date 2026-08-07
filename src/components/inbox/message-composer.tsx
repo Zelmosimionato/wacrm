@@ -229,8 +229,30 @@ export function MessageComposer({
 
   const handleSend = useCallback(async () => {
     const trimmed = text.trim();
-    if (!trimmed || sending || sessionExpired) return;
+    if (sending || sessionExpired) return;
 
+    // Anexo fixo de mensagem pronta: o texto da caixa vai como LEGENDA do
+    // documento. No WhatsApp isso é uma mensagem só — mandar em duas faria o
+    // cliente receber o arquivo solto e a explicação depois, em balões
+    // separados. Por isso o botão da linha manda os dois juntos.
+    if (draftRef.current?.semLegenda) {
+      const d = draftRef.current;
+      onSendMedia({
+        kind: d.kind,
+        mediaUrl: d.mediaUrl,
+        path: d.path,
+        caption: trimmed || undefined,
+        filename: d.kind === "document" ? d.filename : undefined,
+        replyToId: replyTo?.id,
+      });
+      setDraft(null);
+      setText("");
+      if (textareaRef.current) textareaRef.current.style.height = "auto";
+      onClearReply?.();
+      return;
+    }
+
+    if (!trimmed) return;
     setSending(true);
     try {
       onSend(trimmed, replyTo?.id);
@@ -241,7 +263,7 @@ export function MessageComposer({
     } finally {
       setSending(false);
     }
-  }, [text, sending, sessionExpired, onSend, replyTo?.id]);
+  }, [text, sending, sessionExpired, onSend, replyTo?.id, onSendMedia, onClearReply]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -630,7 +652,25 @@ export function MessageComposer({
         }}
       />
 
-      {draft ? (
+      {/* Anexo fixo de mensagem pronta: faixa fina ACIMA da linha, não painel
+          no lugar dela. O painel cheio some com a caixa de texto e com o botão
+          de enviar — o atendente perde de vista o que vai mandar junto. */}
+      {draft?.semLegenda && (
+        <div className="mb-2 flex w-fit max-w-full items-center gap-2 rounded-lg border border-border bg-muted px-2.5 py-1.5">
+          <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span className="truncate text-xs text-foreground">{draft.filename}</span>
+          <button
+            type="button"
+            onClick={discardDraft}
+            aria-label={t("removeAttachment")}
+            className="rounded p-0.5 text-muted-foreground hover:bg-card hover:text-foreground"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
+      {draft && !draft.semLegenda ? (
         <MediaDraftPreview
           draft={draft}
           busy={busy}
@@ -789,7 +829,7 @@ export function MessageComposer({
             size="sm"
             canAct={!readOnly}
             gateReason="send messages"
-            disabled={!text.trim() || sessionExpired || sending}
+            disabled={(!text.trim() && !draft?.semLegenda) || sessionExpired || sending}
             onClick={handleSend}
             className="h-9 w-9 shrink-0 bg-primary p-0 hover:bg-primary/90 disabled:opacity-40"
           >
