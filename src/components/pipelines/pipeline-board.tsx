@@ -52,6 +52,20 @@ export function PipelineBoard({
       const bucket = map.get(deal.stage_id);
       if (bucket) bucket.push(deal);
     }
+    // Quem tem reunião marcada sobe, da mais próxima para a mais distante —
+    // numa etapa de agenda, o topo tem de ser o próximo compromisso, e não o
+    // card criado por último. Sem data, mantém a ordem que veio (created_at
+    // decrescente), abaixo dos agendados.
+    for (const bucket of map.values()) {
+      bucket.sort((a, b) => {
+        const ra = a.reuniao_em ?? null;
+        const rb = b.reuniao_em ?? null;
+        if (ra && rb) return ra < rb ? -1 : ra > rb ? 1 : 0;
+        if (ra) return -1;
+        if (rb) return 1;
+        return 0;
+      });
+    }
     return map;
   }, [sortedStages, deals]);
 

@@ -373,6 +373,12 @@ export interface Deal {
   status?: DealStatus;
   created_at: string;
   updated_at?: string;
+  /**
+   * Data/hora ISO da reunião do contato. ⚠️ Não é coluna de `deals`: vem de
+   * `contact_custom_values` e é anexada ao carregar o funil, para a etapa de
+   * agenda ordenar pela próxima reunião em vez da criação do card.
+   */
+  reuniao_em?: string | null;
   contact?: Contact;
   stage?: PipelineStage;
   assignee?: Profile;

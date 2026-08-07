@@ -4,6 +4,9 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type { Pipeline, PipelineStage, Deal } from "@/types";
 import { PipelineBoard } from "@/components/pipelines/pipeline-board";
+/** Campo personalizado com a data/hora ISO da reunião (o mesmo que dispara os
+ *  lembretes em `lib/reminders/dispatch.ts`). Preenchido pelo Cal.com. */
+const CF_DATA_REUNIAO = "e482845b-8ed4-4f4d-ae0e-0eed9dafbe4e";
 import { PipelineSettings } from "@/components/pipelines/pipeline-settings";
 import { DealForm } from "@/components/pipelines/deal-form";
 import { PipelineAnalytics } from "@/components/pipelines/pipeline-analytics";
@@ -106,7 +109,27 @@ export default function PipelinesPage() {
         .select("*, contact:contacts(*), assignee:profiles!deals_assigned_to_fkey(*)")
         .eq("pipeline_id", pipelineId)
         .order("created_at", { ascending: false });
-      return (data ?? []) as Deal[];
+      const deals = (data ?? []) as Deal[];
+
+      // Data da reunião, para a etapa de agenda ordenar pela próxima e não
+      // pela mais recém-criada. Mora em contact_custom_values (mesmo campo que
+      // alimenta os lembretes de véspera e de 1h), não no negócio — daí a
+      // segunda consulta em vez de um order() direto.
+      const contatos = [...new Set(deals.map((d) => d.contact_id).filter(Boolean))];
+      if (contatos.length > 0) {
+        const { data: agendas } = await supabase
+          .from("contact_custom_values")
+          .select("contact_id, value")
+          .eq("custom_field_id", CF_DATA_REUNIAO)
+          .in("contact_id", contatos as string[]);
+        const porContato = new Map(
+          (agendas ?? []).map((a) => [a.contact_id as string, a.value as string]),
+        );
+        for (const d of deals) {
+          if (d.contact_id) d.reuniao_em = porContato.get(d.contact_id) ?? null;
+        }
+      }
+      return deals;
     },
     [supabase],
   );
