@@ -57,8 +57,10 @@ export function buildSystemPrompt(args: {
   mode: 'draft' | 'auto_reply'
   /** Knowledge-base excerpts retrieved for the current question. */
   knowledge?: string[]
+  /** Horários livres REAIS, lidos do Cal.com momentos antes desta resposta. */
+  horarios?: string[]
 }): string {
-  const { userPrompt, mode, knowledge } = args
+  const { userPrompt, mode, knowledge, horarios } = args
   const parts: string[] = [
     'You are a customer-messaging assistant for a business that uses a WhatsApp CRM. ' +
       'You are shown the recent WhatsApp conversation between the business (assistant) and a customer (user). ' +
@@ -77,8 +79,32 @@ export function buildSystemPrompt(args: {
       `Card moves (internal control markers - the customer NEVER sees these; the system removes them and moves the deal card in the CRM). Put the marker at the very END of your reply, only when it truly applies, at most ONE per reply:
 - ${QUALIFIED_SENTINEL}: you just concluded the lead QUALIFIES (reached the minimum debt value for their area). Moves the card to Lead Qualificado.
 - ${SUPER_SENTINEL}: use INSTEAD of ${QUALIFIED_SENTINEL} when the debt is R$ 500.000 or more. Also tags the lead and alerts the team.
-- ${REAGENDAR_SENTINEL}: the lead wants to reschedule/remarcar the meeting. Moves the card to Reagendar reuniao; the system then sends the reschedule template with the button, so do NOT paste a scheduling link yourself in that case.
+- ${REAGENDAR_SENTINEL}: the lead wants to change the meeting — remarcar, adiar, ANTECIPAR, or asking whether another day/time is available. Moves the card to Reagendar reuniao; the system then sends the reschedule template with the button, so do NOT paste a scheduling link yourself in that case.
+  ⚠️ "Tem horário no dia X?" from someone who ALREADY has a meeting is this case — the lead is trying to move it, and wanting it EARLIER is a buying signal, never a reason to close the subject. If you were given the agenda above, offer real times first and mark ${REAGENDAR_SENTINEL} at the end.
 Never mention or explain these markers to the customer.`,
+    )
+  }
+
+  // AGENDA — a lista abaixo vem do Cal.com, lida agora. É a única fonte de horário.
+  //
+  // ⚠️ Sem ela, o modelo preenche o vazio: em 07/08/2026 uma lead com reunião em 11/08
+  // perguntou se havia horário no dia 10/08 e ouviu "por enquanto só temos agenda aberta
+  // para esta semana" — inventado, e 10/08 era segunda DESSA semana. Quem queria
+  // ANTECIPAR foi mandada embora. Dizer horário de verdade é o que fecha esse buraco;
+  // mandar só o link, para quem já tem reunião marcada, é devolver a pessoa ao formulário.
+  if (horarios && horarios.length > 0) {
+    parts.push(
+      'Agenda do escritório — horários REALMENTE livres, lidos agora do sistema de ' +
+        'agendamento. Se o cliente perguntar sobre data, horário, antecipar ou remarcar, ' +
+        'ofereça DESTES e no máximo três, deixando ele escolher. ⛔ Não invente outros, ' +
+        'não afirme que a agenda está fechada, não prometa avisar quando abrir vaga.\n' +
+        horarios.map((h) => `- ${h}`).join('\n'),
+    )
+  } else {
+    parts.push(
+      '⛔ Você NÃO tem a agenda nesta resposta. Não diga horário, não afirme que há ou não ' +
+        'vaga, não diga que a agenda está aberta ou fechada, e não prometa avisar depois. ' +
+        'Se o assunto for data ou horário, siga o protocolo de reagendamento.',
     )
   }
 

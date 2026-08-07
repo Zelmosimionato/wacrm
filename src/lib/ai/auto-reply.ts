@@ -10,6 +10,18 @@ import { latestUserMessage } from './query'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
+import { horariosLivres } from '@/lib/appointments/calcom-slots'
+
+/** Horários livres do escritório, em rótulo pronto para a frase. Silencioso por
+ *  desenho: sem chave, sem tipo de evento ou com a API fora, devolve [] e a IA
+ *  simplesmente não fala de horário. */
+async function horariosDoEscritorio(): Promise<string[]> {
+  const chave = process.env.CALCOM_API_KEY
+  const evento = process.env.CALCOM_EVENT_TYPE_ID
+  if (!chave || !evento) return []
+  const slots = await horariosLivres(evento, chave)
+  return slots.map((s) => s.rotulo)
+}
 
 // Fase 3: the AI moves the deal card from the conversation (qualified /
 // super / reschedule). The templates are sent by the STAGE automations;
@@ -378,10 +390,16 @@ export async function dispatchInboundToAiReply(
       }
     }
 
+    // AGENDA REAL — lida antes de responder, para a IA DIZER horário em vez de inventar.
+    // ⛔ Falha na consulta devolve lista vazia, e o prompt então a proíbe de falar de
+    // horário: melhor responder sem horário nenhum do que com horário que não existe.
+    const horarios = await horariosDoEscritorio()
+
     let systemPrompt = buildSystemPrompt({
       userPrompt: config.systemPrompt,
       mode: 'auto_reply',
       knowledge,
+      horarios,
     })
     if (isClient) systemPrompt += '\n\n' + CLIENT_MODE_BLOCK
     const contextBlock = buildContactContextBlock({
