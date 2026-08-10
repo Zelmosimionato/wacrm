@@ -1104,8 +1104,24 @@ async function findOrCreateContact(
   )
 
   if (existingContact) {
-    // Update name if it changed
-    if (name && name !== existingContact.name) {
+    // ⛔ NOME DADO DE PROPOSITO VENCE NOME DE PERFIL.
+    //
+    // O `name` que chega aqui e o nome do PERFIL do WhatsApp - como a pessoa
+    // se apresenta socialmente: emoji, apelido, nome da loja, letra decorativa.
+    // O nome que ja esta no cadastro pode ter vindo de um FORMULARIO ou de uma
+    // RESERVA no Cal.com, onde a pessoa se identificou formalmente.
+    //
+    // Em 10/08/2026 o intake criou o contato com o nome completo vindo da
+    // reserva; nove minutos depois a pessoa respondeu no WhatsApp, cujo perfil
+    // era so um emoji, e o CRM trocou o nome real pelo emoji. Buscar pelo nome
+    // deixou de encontrar o contato.
+    //
+    // Entao so preenchemos o que esta VAZIO ou e placeholder (o proprio
+    // telefone, ou algo sem letra nenhuma). Nome com letras nunca e
+    // sobrescrito por nome de perfil.
+    const atual = (existingContact.name ?? '').trim()
+    const ehPlaceholder = !atual || atual === phone || !/\p{L}/u.test(atual)
+    if (name && name !== atual && ehPlaceholder) {
       await supabaseAdmin()
         .from('contacts')
         .update({ name, updated_at: new Date().toISOString() })
