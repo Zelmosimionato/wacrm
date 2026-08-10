@@ -12,6 +12,8 @@ export interface SendRecipientArgs {
   phoneNumberId: string;
   /** Already-decrypted Meta access token. */
   accessToken: string;
+  /** ⭐ Identidade de quem recebe. `phone` é só o endereço de entrega. */
+  contactId: string;
   phone: string;
   templateName: string;
   language: string;
@@ -50,6 +52,7 @@ export async function sendTemplateToRecipient(
         phoneNumberId: args.phoneNumberId,
         accessToken: args.accessToken,
         to: variant,
+        contactId: args.contactId,
         templateName: args.templateName,
         language: args.language,
         template: args.templateRow ?? undefined,

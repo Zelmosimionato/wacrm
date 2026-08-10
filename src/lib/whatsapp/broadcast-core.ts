@@ -58,6 +58,9 @@ export interface CreateBroadcastParams {
 
 interface PlannedRecipient {
   recipientRowId: string;
+  /** ⭐ Resolvido por findOrCreateContact no createBroadcast. É ele que
+   *  decide permissão de envio; `phone` é só o endereço da Meta. */
+  contactId: string;
   phone: string;
   params: string[];
 }
@@ -231,7 +234,12 @@ export async function createBroadcast(
   const byContact = new Map(deduped.map((r) => [r.contactId, r]));
   const planned: PlannedRecipient[] = recipientRows.map((row) => {
     const r = byContact.get(row.contact_id as string)!;
-    return { recipientRowId: row.id as string, phone: r.phone, params: r.params };
+    return {
+      recipientRowId: row.id as string,
+      contactId: r.contactId,
+      phone: r.phone,
+      params: r.params,
+    };
   });
 
   return {
@@ -276,6 +284,7 @@ export async function deliverBroadcast(
           phoneNumberId: plan.phoneNumberId,
           accessToken: plan.accessToken,
           to: variant,
+          contactId: recipient.contactId,
           templateName: plan.templateName,
           language: plan.templateLanguage,
           template: plan.templateRow ?? undefined,

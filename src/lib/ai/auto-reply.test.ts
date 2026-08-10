@@ -1,5 +1,73 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { AiConfig } from './types'
+import { AFIRMA_QUE_AGENDOU, emailNaConversa } from './auto-reply'
+
+describe('emailNaConversa', () => {
+  // O e-mail chega colado em outra coisa, com maiúscula, ou sozinho. Ler do
+  // lugar errado custou 5 repetições da mesma frase numa conversa real: o
+  // titular mandou o e-mail e ouviu "preciso do seu e-mail" cinco vezes.
+  it('acha o e-mail mesmo colado a outro texto, e normaliza', () => {
+    expect(
+      emailNaConversa([
+        { role: 'assistant', content: 'Qual horário?' },
+        { role: 'user', content: '16:17 Zelmosimionato@gmail.com' },
+      ]),
+    ).toBe('zelmosimionato@gmail.com')
+  })
+
+  it('vale o último que a pessoa mandou', () => {
+    expect(
+      emailNaConversa([
+        { role: 'user', content: 'zelmo@aasp.org.br' },
+        { role: 'user', content: 'na verdade use contato@simionatoadvogados.com.br' },
+      ]),
+    ).toBe('contato@simionatoadvogados.com.br')
+  })
+
+  it('ignora e-mail que a própria IA escreveu', () => {
+    expect(
+      emailNaConversa([{ role: 'assistant', content: 'mande para contato@escritorio.com' }]),
+    ).toBeNull()
+  })
+
+  it('sem e-mail nenhum, devolve null', () => {
+    expect(emailNaConversa([{ role: 'user', content: 'pode ser quarta às 14h' }])).toBeNull()
+  })
+})
+
+// A trava que impede a IA de anunciar reunião que não marcou. Erro para os dois
+// lados é caro: deixar passar faz a pessoa aparecer para uma sala vazia; pegar
+// demais substitui mensagem legítima por um pedido de confirmação sem sentido.
+describe('AFIRMA_QUE_AGENDOU', () => {
+  it.each([
+    'Prontinho, Zelmo! Agendei para quarta-feira, 12/08, às 16:15.',
+    'Remarquei para quinta, tudo certo!',
+    'Sua reunião está confirmada para amanhã.',
+    'O convite com o link da videochamada já foi enviado para você.',
+    'Reservei o horário das 14h para você.',
+    // Escapou em 09/08/2026: ela respondeu isto a "tá agendada?" sem ter
+    // reservado nada — a lista de verbos não tinha "remarcada".
+    'Sua reunião está remarcada para quinta-feira, 20/08, às 13h.',
+    'Sua reunião segue confirmada para quarta.',
+    'A reunião ficou marcada para o dia 20.',
+  ])('pega a afirmação: %s', (frase) => {
+    expect(AFIRMA_QUE_AGENDOU.test(frase)).toBe(true)
+  })
+
+  it.each([
+    'Qual horário fica melhor para você?',
+    'Posso agendar para quarta às 14h?',
+    'Assim que você confirmar, eu reservo o horário.',
+    'Me passa seu e-mail que eu já deixo tudo certo.',
+    'Temos horários na quarta-feira: 14:00, 14:45 ou 15:30.',
+    'Vou verificar a agenda e te retorno.',
+    'Quer que eu já remarque para quinta às 13h?',
+    'Tenho quarta às 13h ou quinta às 13h — qual fica melhor?',
+    'Ainda não há horário reservado. Quer que eu marque agora?',
+  ])('não pega a frase legítima: %s', (frase) => {
+    expect(AFIRMA_QUE_AGENDOU.test(frase)).toBe(false)
+  })
+})
 
 // Shared, hoisted mock state so the module mocks can close over it.
 const h = vi.hoisted(() => ({
@@ -14,6 +82,11 @@ const h = vi.hoisted(() => ({
     claim: true as boolean,
     updatePayload: null as Record<string, unknown> | null,
     rpcCalls: [] as { name: string; args: unknown }[],
+    /** Linhas devolvidas por ultimaEntrada(); mesma resposta nas duas leituras
+     *  = nao chegou mensagem nova durante a espera = segue o fluxo. */
+    ultimaEntrada: [] as { id: string }[],
+    /** Linhas por tabela, para consultas sem campo dedicado. */
+    porTabela: {} as Record<string, unknown[]>,
   },
 }))
 
@@ -24,31 +97,36 @@ vi.mock('./generate', () => ({ generateReply: h.generateReply }))
 vi.mock('@/lib/flows/meta-send', () => ({ engineSendText: h.engineSendText }))
 vi.mock('./admin-client', () => ({
   supabaseAdmin: () => ({
+    // Encadeador GENERICO. Antes havia um ramo por tabela, e qualquer consulta
+    // nova no codigo derrubava o teste com "x is not a function" — foi assim
+    // que 5 testes ficaram vermelhos por dois dias, justo os do caminho de
+    // envio, que eram a rede da guarda de rajada. Agora a forma da consulta e
+    // livre; o teste controla so o DADO que cada tabela devolve.
     from: (table: string) => {
-      if (table === 'automations') {
-        // .select().eq().eq().in().limit() → active auto-responders
-        const chain = {
-          select: () => chain,
-          eq: () => chain,
-          in: () => chain,
-          limit: () =>
-            Promise.resolve({ data: h.state.autoResponders, error: null }),
-        }
-        return chain
+      const linhas = () => {
+        if (table === 'automations') return h.state.autoResponders
+        if (table === 'messages') return h.state.ultimaEntrada
+        return h.state.porTabela[table] ?? []
       }
-      // conversations
-      return {
-        select: () => ({
-          eq: () => ({
-            maybeSingle: () =>
-              Promise.resolve({ data: h.state.conv, error: null }),
-          }),
-        }),
-        update: (payload: Record<string, unknown>) => {
-          h.state.updatePayload = payload
-          return { eq: () => Promise.resolve({ error: null }) }
-        },
+      const chain: Record<string, unknown> = {}
+      for (const passo of ['select', 'eq', 'in', 'order', 'neq', 'gte', 'lte', 'not']) {
+        chain[passo] = () => chain
       }
+      chain.limit = () => Promise.resolve({ data: linhas(), error: null })
+      chain.maybeSingle = () =>
+        Promise.resolve({
+          data: table === 'conversations' ? h.state.conv : (linhas() as unknown[])[0] ?? null,
+          error: null,
+        })
+      chain.single = chain.maybeSingle
+      // await direto na consulta, sem .limit()/.maybeSingle()
+      chain.then = (ok: (v: unknown) => unknown, erro?: (e: unknown) => unknown) =>
+        Promise.resolve({ data: linhas(), error: null }).then(ok, erro)
+      chain.update = (payload: Record<string, unknown>) => {
+        h.state.updatePayload = payload
+        return { eq: () => Promise.resolve({ error: null }) }
+      }
+      return chain
     },
     rpc: (name: string, args: unknown) => {
       h.state.rpcCalls.push({ name, args })
@@ -82,6 +160,8 @@ function aiConfig(overrides: Partial<AiConfig> = {}): AiConfig {
 }
 
 beforeEach(() => {
+  // Zera a espera da rajada: o teste nao precisa dos 6s reais de produção.
+  vi.stubEnv('AI_ESPERA_RAJADA_MS', '0')
   h.state.conv = {
     assigned_agent_id: null,
     ai_autoreply_disabled: false,
@@ -91,6 +171,8 @@ beforeEach(() => {
   h.state.claim = true
   h.state.updatePayload = null
   h.state.rpcCalls = []
+  h.state.ultimaEntrada = [{ id: 'msg-entrada-1' }]
+  h.state.porTabela = {}
   h.loadAiConfig.mockResolvedValue(aiConfig())
   h.buildConversationContext.mockResolvedValue([{ role: 'user', content: 'hi' }])
   h.retrieveKnowledge.mockResolvedValue([])

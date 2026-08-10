@@ -178,6 +178,7 @@ async function processBroadcast(
       phoneNumberId: config.phone_number_id,
       accessToken,
       phone,
+      contactId: r.contact.id,
       templateName: b.template_name,
       language: b.template_language || 'en_US',
       templateRow: templateRow ?? undefined,

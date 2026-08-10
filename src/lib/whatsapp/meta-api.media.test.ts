@@ -26,6 +26,7 @@ const BASE = {
   phoneNumberId: "test-phone",
   accessToken: "test-token",
   to: "1234567890",
+  contactId: "contato-de-teste",
   link: "https://cdn.example.com/file",
 } as const;
 

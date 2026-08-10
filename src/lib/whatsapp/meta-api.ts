@@ -9,6 +9,8 @@
  * instead of a runtime rejection from Meta.
  */
 
+import { abortarSeBloqueado } from './blocklist'
+
 const META_API_VERSION = 'v21.0'
 const META_API_BASE = `https://graph.facebook.com/${META_API_VERSION}`
 
@@ -219,6 +221,11 @@ export interface SendTextMessageArgs {
   phoneNumberId: string
   accessToken: string
   to: string
+  /** ⭐ A identidade de quem recebe. `to` é só o endereço de entrega da
+   *  Meta; a permissão de envio é decidida por este id. Obrigatório de
+   *  propósito: assim o compilador — e não um grep — enumera quem ainda
+   *  não passa o contato. */
+  contactId: string
   text: string
   /** Meta's message_id of the message being replied to. Adds a `context` field
    *  so WhatsApp renders the new message as a reply with a quote preview. */
@@ -232,7 +239,8 @@ export interface SendTextMessageArgs {
 export async function sendTextMessage(
   args: SendTextMessageArgs
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, text, contextMessageId } = args
+  const { phoneNumberId, accessToken, to, contactId, text, contextMessageId } = args
+  abortarSeBloqueado(contactId, 'sendTextMessage', to)
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
@@ -265,6 +273,11 @@ export interface SendMediaMessageArgs {
   phoneNumberId: string
   accessToken: string
   to: string
+  /** ⭐ A identidade de quem recebe. `to` é só o endereço de entrega da
+   *  Meta; a permissão de envio é decidida por este id. Obrigatório de
+   *  propósito: assim o compilador — e não um grep — enumera quem ainda
+   *  não passa o contato. */
+  contactId: string
   kind: MediaKind
   /** Public URL Meta fetches at send time. */
   link: string
@@ -290,7 +303,8 @@ export interface SendMediaMessageArgs {
 export async function sendMediaMessage(
   args: SendMediaMessageArgs,
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, kind, link, caption, filename, contextMessageId } = args
+  const { phoneNumberId, accessToken, to, contactId, kind, link, caption, filename, contextMessageId } = args
+  abortarSeBloqueado(contactId, 'sendMediaMessage', to)
   if (!link) throw new Error('sendMediaMessage requires a link.')
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
 
@@ -335,6 +349,11 @@ export interface SendTemplateMessageArgs {
   phoneNumberId: string
   accessToken: string
   to: string
+  /** ⭐ A identidade de quem recebe. `to` é só o endereço de entrega da
+   *  Meta; a permissão de envio é decidida por este id. Obrigatório de
+   *  propósito: assim o compilador — e não um grep — enumera quem ainda
+   *  não passa o contato. */
+  contactId: string
   templateName: string
   language?: string
   /**
@@ -380,6 +399,7 @@ export async function sendTemplateMessage(
     phoneNumberId,
     accessToken,
     to,
+    contactId,
     templateName,
     language = 'en_US',
     params,
@@ -387,6 +407,7 @@ export async function sendTemplateMessage(
     messageParams,
     contextMessageId,
   } = args
+  abortarSeBloqueado(contactId, 'sendTemplateMessage', to)
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
 
   const templatePayload: Record<string, unknown> = {
@@ -667,6 +688,11 @@ export interface SendReactionMessageArgs {
   phoneNumberId: string
   accessToken: string
   to: string
+  /** ⭐ A identidade de quem recebe. `to` é só o endereço de entrega da
+   *  Meta; a permissão de envio é decidida por este id. Obrigatório de
+   *  propósito: assim o compilador — e não um grep — enumera quem ainda
+   *  não passa o contato. */
+  contactId: string
   /** Meta's message_id of the message being reacted to. */
   targetMessageId: string
   /** Single emoji, or empty string to remove an existing reaction. */
@@ -680,7 +706,8 @@ export interface SendReactionMessageArgs {
 export async function sendReactionMessage(
   args: SendReactionMessageArgs
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, targetMessageId, emoji } = args
+  const { phoneNumberId, accessToken, to, contactId, targetMessageId, emoji } = args
+  abortarSeBloqueado(contactId, 'sendReactionMessage', to)
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
   const response = await fetch(url, {
     method: 'POST',
@@ -743,6 +770,11 @@ export interface SendInteractiveButtonsArgs {
   phoneNumberId: string
   accessToken: string
   to: string
+  /** ⭐ A identidade de quem recebe. `to` é só o endereço de entrega da
+   *  Meta; a permissão de envio é decidida por este id. Obrigatório de
+   *  propósito: assim o compilador — e não um grep — enumera quem ainda
+   *  não passa o contato. */
+  contactId: string
   /** The body text — what the customer reads above the buttons. */
   bodyText: string
   /** Optional plain-text header (≤ 60 chars). */
@@ -767,9 +799,10 @@ export async function sendInteractiveButtons(
   args: SendInteractiveButtonsArgs
 ): Promise<MetaSendResult> {
   const {
-    phoneNumberId, accessToken, to,
+    phoneNumberId, accessToken, to, contactId,
     bodyText, headerText, footerText, buttons, contextMessageId,
   } = args
+  abortarSeBloqueado(contactId, 'sendInteractiveButtons', to)
   validateInteractiveBody(bodyText)
   validateInteractiveHeaderFooter(headerText, footerText)
   if (buttons.length < 1 || buttons.length > INTERACTIVE_LIMITS.maxButtons) {
@@ -837,6 +870,11 @@ export interface SendInteractiveCtaUrlArgs {
   phoneNumberId: string
   accessToken: string
   to: string
+  /** ⭐ A identidade de quem recebe. `to` é só o endereço de entrega da
+   *  Meta; a permissão de envio é decidida por este id. Obrigatório de
+   *  propósito: assim o compilador — e não um grep — enumera quem ainda
+   *  não passa o contato. */
+  contactId: string
   /** Body text shown above the CTA button. */
   bodyText: string
   /** Visible button label (Meta caps this near 20 chars). */
@@ -856,9 +894,10 @@ export async function sendInteractiveCtaUrl(
   args: SendInteractiveCtaUrlArgs
 ): Promise<MetaSendResult> {
   const {
-    phoneNumberId, accessToken, to,
+    phoneNumberId, accessToken, to, contactId,
     bodyText, buttonText, url, headerText, footerText,
   } = args
+  abortarSeBloqueado(contactId, 'sendInteractiveCtaUrl', to)
   validateInteractiveBody(bodyText)
   validateInteractiveHeaderFooter(headerText, footerText)
   if (!buttonText || buttonText.length > 20) {
@@ -922,6 +961,11 @@ export interface SendInteractiveListArgs {
   phoneNumberId: string
   accessToken: string
   to: string
+  /** ⭐ A identidade de quem recebe. `to` é só o endereço de entrega da
+   *  Meta; a permissão de envio é decidida por este id. Obrigatório de
+   *  propósito: assim o compilador — e não um grep — enumera quem ainda
+   *  não passa o contato. */
+  contactId: string
   bodyText: string
   /** Label of the tap-to-expand button on the message bubble. */
   buttonLabel: string
@@ -945,9 +989,10 @@ export async function sendInteractiveList(
   args: SendInteractiveListArgs
 ): Promise<MetaSendResult> {
   const {
-    phoneNumberId, accessToken, to,
+    phoneNumberId, accessToken, to, contactId,
     bodyText, buttonLabel, headerText, footerText, sections, contextMessageId,
   } = args
+  abortarSeBloqueado(contactId, 'sendInteractiveList', to)
   validateInteractiveBody(bodyText)
   validateInteractiveHeaderFooter(headerText, footerText)
   if (!buttonLabel) throw new Error('Interactive list requires a buttonLabel.')

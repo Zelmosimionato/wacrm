@@ -185,6 +185,7 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
         phoneNumberId: config.phone_number_id,
         accessToken,
         to: phone,
+        contactId: contact.id,
         templateName: input.templateName,
         language: input.language,
         params: input.params,
@@ -195,6 +196,7 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
       phoneNumberId: config.phone_number_id,
       accessToken,
       to: phone,
+      contactId: contact.id,
       text: input.text,
     })
     return r.messageId

@@ -18,6 +18,7 @@ const BASE_ARGS = {
   phoneNumberId: "test-phone",
   accessToken: "test-token",
   to: "1234567890",
+  contactId: "contato-de-teste",
   bodyText: "Body text",
 } as const;
 
