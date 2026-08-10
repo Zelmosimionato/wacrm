@@ -118,11 +118,11 @@ async function reservarHorario(args: {
 // Fase 3: the AI moves the deal card from the conversation (qualified /
 // super / reschedule). The templates are sent by the STAGE automations;
 // here we only MOVE the card and fire the stage trigger so they run.
-const AI_VENDAS_PIPELINE = '8e89e154-763c-4cf8-b73b-42f7368c59c3'
+export const AI_VENDAS_PIPELINE = '8e89e154-763c-4cf8-b73b-42f7368c59c3'
 const AI_STAGE_NOVO = 'f6c4e8c1-f13a-442a-9668-414cadb81c01'
-const AI_STAGE_QUALIFICADO = '57bed09e-bc01-4691-8272-dcd8c3c078df'
+export const AI_STAGE_QUALIFICADO = '57bed09e-bc01-4691-8272-dcd8c3c078df'
 const AI_STAGE_REAGENDAR = 'f2b7e7f6-c7d6-4d2b-ac6d-ad7842ab7045'
-const AI_STAGE_PERDIDO = '0d0382a5-f15d-4e43-88aa-0c70337d94d4'
+export const AI_STAGE_PERDIDO = '0d0382a5-f15d-4e43-88aa-0c70337d94d4'
 const AI_STAGE_FUP = '8bd228cf-fba4-4b28-b704-068bdcfa7c8d'
 
 /**
@@ -145,7 +145,7 @@ const AI_STAGE_FUP = '8bd228cf-fba4-4b28-b704-068bdcfa7c8d'
  * TRÁS quem avançou, não para vetar avanço a partir de etapa parada.
  */
 const AI_STAGE_NOSHOW = '8c39cc10-4568-432f-b4dd-9a4ba228add6'
-const AI_ETAPAS_QUE_AVANCAM = new Set([AI_STAGE_NOVO, AI_STAGE_FUP, AI_STAGE_NOSHOW])
+export const AI_ETAPAS_QUE_AVANCAM = new Set([AI_STAGE_NOVO, AI_STAGE_FUP, AI_STAGE_NOSHOW])
 const AI_TAG_SUPER = 'b9298582-dcc7-46a3-ae34-f54b3c6fece1'
 
 // Campos e tag que descrevem a reunião marcada. São os mesmos que o intake

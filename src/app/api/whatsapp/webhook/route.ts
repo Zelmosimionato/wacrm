@@ -11,6 +11,7 @@ import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { loadAiConfig } from '@/lib/ai/config'
 import { transcreverAudioDoWhatsApp } from '@/lib/ai/transcreve'
 import { isVesperaButton, handleVesperaButton } from '@/lib/appointments/vespera-buttons'
+import { isNudgeButton, handleNudgeButton } from '@/lib/nurture/nudge-buttons'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import {
   handleTemplateWebhookChange,
@@ -849,10 +850,30 @@ async function processMessage(
     }
   }
 
+  // Botões do toque de reativação (template do nudge). Também determinístico,
+  // mas com uma diferença: quem aperta "Desejo prosseguir" merece conversa de
+  // verdade, então o tratador diz se a IA deve entrar.
+  let iaPedidaPeloBotao = false
+  if (isNudgeButton(contentText)) {
+    try {
+      const r = await handleNudgeButton({
+        accountId,
+        userId: configOwnerUserId,
+        conversationId: conversation.id,
+        contactId: contactRecord.id,
+        buttonText: contentText as string,
+        contactName: (contactRecord as { name?: string | null }).name ?? null,
+      })
+      iaPedidaPeloBotao = r.chamarIa
+    } catch (err) {
+      console.error('[nudge-button dispatch]', err)
+    }
+  }
+
   // O áudio transcrito vale como texto aqui — é a fala do lead, escrita.
   const textoParaIa = inboundText.trim() || (textoDoAudio ?? '').trim()
 
-  if (!flowConsumed && !interactiveReplyId && textoParaIa) {
+  if (!flowConsumed && textoParaIa && (!interactiveReplyId || iaPedidaPeloBotao)) {
     await dispatchInboundToAiReply({
       accountId,
       conversationId: conversation.id,
