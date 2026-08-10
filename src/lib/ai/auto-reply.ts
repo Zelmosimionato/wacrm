@@ -123,6 +123,29 @@ const AI_STAGE_NOVO = 'f6c4e8c1-f13a-442a-9668-414cadb81c01'
 const AI_STAGE_QUALIFICADO = '57bed09e-bc01-4691-8272-dcd8c3c078df'
 const AI_STAGE_REAGENDAR = 'f2b7e7f6-c7d6-4d2b-ac6d-ad7842ab7045'
 const AI_STAGE_PERDIDO = '0d0382a5-f15d-4e43-88aa-0c70337d94d4'
+const AI_STAGE_FUP = '8bd228cf-fba4-4b28-b704-068bdcfa7c8d'
+
+/**
+ * De onde a IA pode AVANÇAR um card para Lead Qualificado.
+ *
+ * Novo Lead é o começo. FUP — Reativar Lead é lead DORMENTE, não lead
+ * avançado: sair de lá é avanço, não é puxar ninguém para trás.
+ *
+ * ⛔ Sem o FUP aqui, quem respondia "tenho interesse" a um toque de nutrição
+ * ficava com o card parado no mesmo lugar e na mesma data — e dois dias depois
+ * a régua o encerrava com "como não tivemos retorno, estou finalizando seu
+ * atendimento". Medido em 10/08/2026: responder NÃO mexe no card (4 de 6 casos
+ * recentes), então o relógio da nutrição corria por cima de quem tinha falado.
+ *
+ * Follow up No-show entra pelo mesmo motivo: também é dormente. A conduta
+ * dela ali é remarcar, não requalificar — e quase sempre a remarcação resolve,
+ * porque o webhook do Cal.com move o card sozinho. Mas a pessoa voltar e se
+ * requalificar em vez de remarcar é raro e plausível, e nesse caso o código não
+ * deve contradizer o julgamento dela: o guarda existe para impedir puxar para
+ * TRÁS quem avançou, não para vetar avanço a partir de etapa parada.
+ */
+const AI_STAGE_NOSHOW = '8c39cc10-4568-432f-b4dd-9a4ba228add6'
+const AI_ETAPAS_QUE_AVANCAM = new Set([AI_STAGE_NOVO, AI_STAGE_FUP, AI_STAGE_NOSHOW])
 const AI_TAG_SUPER = 'b9298582-dcc7-46a3-ae34-f54b3c6fece1'
 
 // Campos e tag que descrevem a reunião marcada. São os mesmos que o intake
@@ -264,8 +287,8 @@ async function applyAiCardMove(
 
   let target: string | null = null
   if (move === 'qualified' || move === 'super') {
-    // Only advance from the initial stage; never drag a booked lead back.
-    if (deal.stage_id === AI_STAGE_NOVO) target = AI_STAGE_QUALIFICADO
+    // Avança do começo e do dormente; ⛔ nunca puxa de volta quem já avançou.
+    if (AI_ETAPAS_QUE_AVANCAM.has(deal.stage_id)) target = AI_STAGE_QUALIFICADO
   } else if (move === 'reagendar') {
     // ⛔ Só reagenda quem TEM o que reagendar. A etapa "Reagendar reunião"
     // dispara o template "vi que você precisou cancelar o horário" — e em
