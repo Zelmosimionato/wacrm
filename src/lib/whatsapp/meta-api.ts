@@ -10,6 +10,7 @@
  */
 
 import { abortarSeBloqueado } from './blocklist'
+import { conferirFreio } from './freio'
 
 const META_API_VERSION = 'v21.0'
 const META_API_BASE = `https://graph.facebook.com/${META_API_VERSION}`
@@ -408,6 +409,10 @@ export async function sendTemplateMessage(
     contextMessageId,
   } = args
   abortarSeBloqueado(contactId, 'sendTemplateMessage', to)
+  // Freio de volume: so template passa por aqui. Texto livre da Marcia nao
+  // entra — ela quebra a resposta em varios baloes e tropecaria num teto
+  // pensado para automacao.
+  await conferirFreio(contactId, templateName, 'sendTemplateMessage')
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
 
   const templatePayload: Record<string, unknown> = {

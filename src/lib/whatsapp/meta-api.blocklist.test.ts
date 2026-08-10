@@ -10,6 +10,10 @@ import {
 } from './meta-api'
 import { ContatoBloqueadoError, ContatoNaoResolvidoError } from './blocklist'
 
+// Este arquivo prova a BLOCKLIST. O freio de volume tem os testes dele em
+// freio.test.ts; aqui ele so atrapalharia, porque consulta o banco.
+vi.mock('./freio', () => ({ conferirFreio: vi.fn(async () => {}) }))
+
 // ============================================================
 // A guarda vive na camada mais baixa de proposito: todo envio do CRM passa
 // por aqui, entao nenhuma automacao futura consegue contornar sem perceber.
