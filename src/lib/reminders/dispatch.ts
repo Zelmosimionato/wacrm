@@ -75,16 +75,17 @@ const NAO_LEMBRAR = new Set<string>([
 const REMINDERS: ReminderDef[] = [
   {
     key: '1h',
-    // ⛔ DESLIGADO em 09/08/2026. Só volta depois da revisão completa do funil
-    // que o titular pediu — o conserto da janela e o piso já estão aqui, mas
-    // religar sem a revisão foi exatamente o que ele proibiu.
-    enabled: false,
+    // ✅ RELIGADO em 09/08/2026, à noite, por decisão do titular, depois da
+    // revisão do funil. Agora há duas travas independentes por baixo: a marca
+    // por reunião (lógica) e o freio de volume (contagem do que saiu). Se a
+    // primeira errar de novo, a segunda barra no segundo envio.
+    enabled: true,
     template: 'lembrete_1h_antes',
     due: (now, m) => now >= m - 60 * MIN && now <= m - 30 * MIN,
   },
   {
     key: 'vespera',
-    enabled: false, // ⛔ idem: só volta depois da revisão completa do funil
+    enabled: true, // ✅ idem: religado em 09/08/2026 à noite
     template: 'lembrete_vespera_confirma',
     due: (now, m) => vesperaDue(now, m),
   },
