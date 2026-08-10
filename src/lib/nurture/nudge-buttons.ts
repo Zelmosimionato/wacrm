@@ -3,7 +3,7 @@ import { engineSendText } from '@/lib/automations/meta-send'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import {
   AI_VENDAS_PIPELINE,
-  AI_STAGE_QUALIFICADO,
+  AI_STAGE_NOVO,
   AI_STAGE_PERDIDO,
   AI_ETAPAS_QUE_AVANCAM,
 } from '@/lib/ai/auto-reply'
@@ -32,6 +32,22 @@ const PARAR = 'Parar mensagens'
 
 export function isNudgeButton(text: string | null | undefined): boolean {
   return text === PROSSEGUIR || text === PARAR
+}
+
+/**
+ * É o pedido de parar?
+ *
+ * ⛔ Existe porque essa é a ÚNICA mensagem que não pode acordar automação de
+ * PRIMEIRO CONTATO. Em 10/08/2026 uma lead importada, que nunca havia escrito,
+ * apertou "Parar mensagens": o toque foi lido como a primeira mensagem dela na
+ * vida, a automação de auto-criar card disparou, e um card novo nasceu UM
+ * SEGUNDO depois de este tratador ter fechado o dela. Ela pediu para parar e
+ * voltou para o funil no mesmo instante.
+ *
+ * ⭐ A regra: só "Desejo prosseguir" retroage. "Parar mensagens" é terminal.
+ */
+export function ehPararMensagens(text: string | null | undefined): boolean {
+  return text === PARAR
 }
 
 interface HandleArgs {
@@ -118,8 +134,16 @@ export async function handleNudgeButton(args: HandleArgs): Promise<{ chamarIa: b
         .order('created_at', { ascending: false })
         .limit(1)
       const etapa = (deals as { stage_id: string }[] | null)?.[0]?.stage_id
+      // ⛔ O destino é NOVO LEAD, não Lead Qualificado. Apertar o botão quer
+      // dizer "quero continuar", não "sou qualificada" — e a conduta da IA em
+      // Lead Qualificado diz textualmente "sem refazer a qualificação que já foi
+      // feita". No primeiro uso real, em 10/08/2026, isso fez ela oferecer
+      // horário de reunião direto a uma lead que ninguém sabia se qualificava.
+      // Em Novo Lead a conduta é "pode conduzir a qualificação completa:
+      // entender o problema, o tipo e o valor" — e o relógio da régua zera igual,
+      // porque o que zera é a data do card, não a etapa de destino.
       if (etapa && AI_ETAPAS_QUE_AVANCAM.has(etapa)) {
-        await moverCard(db, args, AI_STAGE_QUALIFICADO, false)
+        await moverCard(db, args, AI_STAGE_NOVO, false)
       }
       // A conversa fica com a IA — ela vê o histórico e retoma de onde parou.
       return { chamarIa: true }

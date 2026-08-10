@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
-  AI_STAGE_QUALIFICADO,
+  AI_STAGE_NOVO,
   AI_STAGE_PERDIDO,
   AI_ETAPAS_QUE_AVANCAM,
 } from '@/lib/ai/auto-reply'
@@ -37,7 +37,7 @@ vi.mock('@/lib/automations/engine', () => ({
   runAutomationsForTrigger: vi.fn(async (a: { context: { stage_id: string } }) => { h.gatilhos.push(a.context) }),
 }))
 
-import { isNudgeButton, handleNudgeButton } from './nudge-buttons'
+import { isNudgeButton, handleNudgeButton, ehPararMensagens } from './nudge-buttons'
 
 const FUP = [...AI_ETAPAS_QUE_AVANCAM][1]
 const ARGS = {
@@ -58,6 +58,20 @@ describe('reconhece os dois botões', () => {
   })
   it.each(['Confirmar presença', 'oi', '', null, undefined])('ignora %s', (t) => {
     expect(isNudgeButton(t as string)).toBe(false)
+  })
+})
+
+describe('so "Desejo prosseguir" retroage', () => {
+  // ⛔ Em 10/08/2026 uma lead importada que nunca havia escrito apertou
+  // "Parar mensagens". O toque foi lido como a primeira mensagem dela na vida,
+  // a automacao de auto-criar card disparou, e um card novo nasceu UM SEGUNDO
+  // depois de o tratador ter fechado o dela. O webhook usa este predicado para
+  // nao acordar automacao de primeiro contato nesse caso.
+  it('reconhece o pedido de parar', () => {
+    expect(ehPararMensagens('Parar mensagens')).toBe(true)
+  })
+  it.each(['Desejo prosseguir', 'oi', '', null, undefined])('nao confunde com %s', (t) => {
+    expect(ehPararMensagens(t as string)).toBe(false)
   })
 })
 
@@ -88,12 +102,20 @@ describe('Parar mensagens', () => {
 })
 
 describe('Desejo prosseguir', () => {
-  it('⭐ tira o card da etapa dormente na hora', async () => {
-    // Sem isto o relógio da régua continuaria correndo e a pessoa levaria o
-    // encerramento por falta de retorno dias depois de ter dito que quer seguir.
+  it('⭐ manda para NOVO LEAD — para a IA REQUALIFICAR', async () => {
+    // ⛔ Nao Lead Qualificado: a conduta da IA la diz "sem refazer a
+    // qualificacao que ja foi feita", e no primeiro uso real (10/08/2026) isso
+    // fez ela oferecer horario de reuniao direto a uma lead que ninguem sabia
+    // se qualificava. Apertar o botao e "quero continuar", nao "sou qualificada".
     const r = await handleNudgeButton({ ...ARGS, buttonText: 'Desejo prosseguir' })
-    expect(h.patch).toEqual({ stage_id: AI_STAGE_QUALIFICADO })
+    expect(h.patch).toEqual({ stage_id: AI_STAGE_NOVO })
     expect(r.chamarIa).toBe(true)
+  })
+
+  it('o que zera o relogio da regua e a DATA do card, nao a etapa', async () => {
+    // Por isso mandar para Novo Lead resolve o encerramento indevido igual.
+    await handleNudgeButton({ ...ARGS, buttonText: 'Desejo prosseguir' })
+    expect(h.patch).not.toBeNull()
   })
 
   it('⛔ não puxa de volta quem já avançou', async () => {
@@ -110,7 +132,7 @@ describe('Desejo prosseguir', () => {
 
   it('dispara o gatilho de etapa', async () => {
     await handleNudgeButton({ ...ARGS, buttonText: 'Desejo prosseguir' })
-    expect(h.gatilhos).toEqual([expect.objectContaining({ stage_id: AI_STAGE_QUALIFICADO })])
+    expect(h.gatilhos).toEqual([expect.objectContaining({ stage_id: AI_STAGE_NOVO })])
   })
 })
 

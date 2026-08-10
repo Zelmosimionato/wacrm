@@ -11,7 +11,7 @@ import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { loadAiConfig } from '@/lib/ai/config'
 import { transcreverAudioDoWhatsApp } from '@/lib/ai/transcreve'
 import { isVesperaButton, handleVesperaButton } from '@/lib/appointments/vespera-buttons'
-import { isNudgeButton, handleNudgeButton } from '@/lib/nurture/nudge-buttons'
+import { isNudgeButton, handleNudgeButton, ehPararMensagens } from '@/lib/nurture/nudge-buttons'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import {
   handleTemplateWebhookChange,
@@ -811,8 +811,14 @@ async function processMessage(
   // manually-imported contacts sending for the first time. We dispatch both
   // so users can pick whichever semantic they want; an automation that
   // listens to only one trigger runs only when that trigger matches.
-  if (contactOutcome.wasCreated) automationTriggers.unshift('new_contact_created')
-  if (isFirstInboundMessage) automationTriggers.unshift('first_inbound_message')
+  // ⛔ "Parar mensagens" NUNCA acorda automação de primeiro contato. Para uma
+  // lead importada que nunca escreveu, o toque no botão é a primeira mensagem
+  // dela na vida — e em 10/08/2026 isso fez a automação de auto-criar card
+  // devolver ao funil, um segundo depois, alguém que acabara de pedir para
+  // parar. Tecnicamente era "primeiro contato"; semanticamente era o oposto.
+  const pedidoDeParar = ehPararMensagens(contentText)
+  if (contactOutcome.wasCreated && !pedidoDeParar) automationTriggers.unshift('new_contact_created')
+  if (isFirstInboundMessage && !pedidoDeParar) automationTriggers.unshift('first_inbound_message')
   for (const triggerType of automationTriggers) {
     runAutomationsForTrigger({
       accountId,
