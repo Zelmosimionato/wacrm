@@ -43,6 +43,10 @@ describe('parseGeneration', () => {
     expect(parseGeneration('Hello there')).toEqual({
       text: 'Hello there',
       handoff: false,
+      move: null,
+      agendar: null,
+      desmarcar: false,
+      portaAberta: false,
       usage: null,
     })
   })
@@ -51,11 +55,19 @@ describe('parseGeneration', () => {
     expect(parseGeneration('[[HANDOFF]]')).toEqual({
       text: '',
       handoff: true,
+      move: null,
+      agendar: null,
+      desmarcar: false,
+      portaAberta: false,
       usage: null,
     })
     expect(parseGeneration('Let me get a human [[HANDOFF]]')).toEqual({
       text: 'Let me get a human',
       handoff: true,
+      move: null,
+      agendar: null,
+      desmarcar: false,
+      portaAberta: false,
       usage: null,
     })
   })
@@ -65,8 +77,75 @@ describe('parseGeneration', () => {
     expect(parseGeneration('Hi', usage)).toEqual({
       text: 'Hi',
       handoff: false,
+      move: null,
+      agendar: null,
+      desmarcar: false,
+      portaAberta: false,
       usage,
     })
+  })
+
+  // O marcador de agendamento carrega o NÚMERO do horário escolhido. Se o
+  // número escapasse para o texto, o cliente leria "[[AGENDAR:2]]" no
+  // WhatsApp; se não fosse lido, a IA confirmaria uma reunião que ninguém
+  // marcou. As duas metades importam.
+  it('lê o horário escolhido e remove o marcador do texto', () => {
+    const r = parseGeneration('Prontinho, agendei para segunda às 14h! [[AGENDAR:2]]')
+    expect(r.agendar).toBe(2)
+    expect(r.text).toBe('Prontinho, agendei para segunda às 14h!')
+  })
+
+  it('sem marcador, não agenda nada', () => {
+    expect(parseGeneration('Qual horário fica melhor?').agendar).toBeNull()
+  })
+
+  it('aceita o marcador junto de um movimento de card', () => {
+    const r = parseGeneration('Agendado! [[AGENDAR:1]][[QUALIFICADO]]')
+    expect(r).toMatchObject({ agendar: 1, move: 'qualified', text: 'Agendado!' })
+  })
+
+  // Desmarcar e remarcar acontecem na MESMA resposta: a pessoa avisa que não
+  // vem e já escolhe outro horário. Se o parser lesse só um dos dois, ou
+  // sobraria reunião fantasma na agenda ou não haveria reunião nova.
+  it('lê desmarcar e agendar juntos', () => {
+    const r = parseGeneration('Remarquei para quinta! [[DESMARCAR]][[AGENDAR:3]]')
+    expect(r).toMatchObject({ desmarcar: true, agendar: 3, text: 'Remarquei para quinta!' })
+  })
+
+  it('desmarcar sozinho não move card nem agenda', () => {
+    const r = parseGeneration('Tudo bem, cancelei aqui. [[DESMARCAR]]')
+    expect(r).toMatchObject({ desmarcar: true, agendar: null, move: null })
+    expect(r.text).toBe('Tudo bem, cancelei aqui.')
+  })
+
+  // A trava do auto-reply só é acionada quando NÃO houve reserva; ela depende
+  // de o parser separar direito "tem marcador" de "só fala em agendar".
+  it('texto que fala em agendar, sem marcador, não vira agendamento', () => {
+    const r = parseGeneration('Prontinho, agendei para quarta às 16:15!')
+    expect(r.agendar).toBeNull()
+    expect(r.text).toBe('Prontinho, agendei para quarta às 16:15!')
+  })
+
+  // Porta aberta ≠ perdido: quem recusa marcar AGORA recebe o botão que
+  // reabre a conversa; quem já resolveu o problema, não.
+  it('porta aberta é lida e sai do texto', () => {
+    const r = parseGeneration('Sem problema, Leandra! Fico à disposição. [[PORTA_ABERTA]]')
+    expect(r.portaAberta).toBe(true)
+    expect(r.move).toBeNull()
+    expect(r.text).toBe('Sem problema, Leandra! Fico à disposição.')
+  })
+
+  it('sem o marcador, não manda botão nenhum', () => {
+    expect(parseGeneration('Combinado!').portaAberta).toBe(false)
+  })
+
+  it('"não preciso mais" vira perdido, e perdido ganha dos outros destinos', () => {
+    expect(parseGeneration('Imagino, obrigado! [[DESMARCAR]][[PERDIDO]]')).toMatchObject({
+      move: 'perdido',
+      desmarcar: true,
+      text: 'Imagino, obrigado!',
+    })
+    expect(parseGeneration('x [[REAGENDAR]][[PERDIDO]]').move).toBe('perdido')
   })
 })
 
@@ -89,6 +168,10 @@ describe('generateReply — OpenAI', () => {
     expect(res).toEqual({
       text: 'Sure — happy to help!',
       handoff: false,
+      move: null,
+      agendar: null,
+      desmarcar: false,
+      portaAberta: false,
       usage: { promptTokens: 42, completionTokens: 8, totalTokens: 50 },
     })
     const [url, opts] = fetchMock.mock.calls[0]
@@ -148,6 +231,10 @@ describe('generateReply — Anthropic', () => {
     expect(res).toEqual({
       text: 'Hi there!',
       handoff: false,
+      move: null,
+      agendar: null,
+      desmarcar: false,
+      portaAberta: false,
       usage: { promptTokens: 30, completionTokens: 6, totalTokens: 36 },
     })
     const [url, opts] = fetchMock.mock.calls[0]

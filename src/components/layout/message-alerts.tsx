@@ -15,6 +15,37 @@ import type { Message } from "@/types";
 
 const STORAGE_KEY = "wacrm:alerts-enabled";
 
+/** Mesma marca que o card e o resumo do handoff usam. */
+const MARCA_ATENCAO = "[ATENÇÃO]";
+
+/**
+ * Bip LONGO — só para lead que escreveu estando em negociação, decisão ou
+ * contrato. Som deliberadamente diferente do bip curto: mais grave, mais
+ * demorado e em duas batidas. O curto diz "chegou mensagem"; este diz
+ * "alguém precisa largar o que está fazendo". Se os dois soassem igual, o
+ * segundo viraria ruído do primeiro.
+ */
+function bipLongo(ctx: AudioContext) {
+  const now = ctx.currentTime;
+  for (const [inicio, dur] of [
+    [0, 0.55],
+    [0.7, 0.9],
+  ]) {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = "sine";
+    osc.frequency.value = 440;
+    gain.gain.setValueAtTime(0.0001, now + inicio);
+    gain.gain.exponentialRampToValueAtTime(0.3, now + inicio + 0.04);
+    gain.gain.setValueAtTime(0.3, now + inicio + dur - 0.12);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + inicio + dur);
+    osc.start(now + inicio);
+    osc.stop(now + inicio + dur + 0.02);
+  }
+}
+
 function beep(ctx: AudioContext) {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
@@ -116,7 +147,43 @@ export function MessageAlerts() {
     [ensureAudio],
   );
 
-  useRealtime({ channelName: "message-alerts", onMessageEvent });
+  // O lead escreveu estando em negociação, decisão ou contrato, e a IA parou
+  // de propósito. Som diferente porque é urgência diferente: o bip curto avisa
+  // que chegou mensagem; este avisa que alguém precisa levantar da cadeira.
+  const onConversationEvent = useCallback(
+    (event: {
+      eventType: "INSERT" | "UPDATE" | "DELETE";
+      new: { ai_handoff_summary?: string | null };
+      old: { ai_handoff_summary?: string | null };
+    }) => {
+      if (!enabledRef.current) return;
+      if (event.eventType !== "UPDATE") return;
+      const agora = event.new?.ai_handoff_summary ?? "";
+      const antes = event.old?.ai_handoff_summary ?? "";
+      // Só na TRANSIÇÃO: sem isto, qualquer outra alteração na conversa
+      // (ler, atribuir, contar resposta) refaria o alarme do mesmo caso.
+      if (!agora.includes(MARCA_ATENCAO) || antes.includes(MARCA_ATENCAO)) return;
+
+      try {
+        ensureAudio();
+        if (ctxRef.current) bipLongo(ctxRef.current);
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+          new Notification("Um lead em negociação escreveu", {
+            body: "A IA não conduziu — a conversa está aguardando você no CRM.",
+          });
+        }
+      } catch {
+        /* ignore */
+      }
+    },
+    [ensureAudio],
+  );
+
+  useRealtime({ channelName: "message-alerts", onMessageEvent, onConversationEvent });
 
   return (
     <button

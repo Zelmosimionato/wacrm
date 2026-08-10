@@ -8,6 +8,8 @@ import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
+import { loadAiConfig } from '@/lib/ai/config'
+import { transcreverAudioDoWhatsApp } from '@/lib/ai/transcreve'
 import { isVesperaButton, handleVesperaButton } from '@/lib/appointments/vespera-buttons'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import {
@@ -690,11 +692,37 @@ async function processMessage(
     return
   }
 
+  // ÁUDIO → TEXTO. Sem isto o áudio do lead é silêncio: o gate da IA lá
+  // embaixo exige texto, e o lead ansioso FALA em vez de escrever. Em
+  // 08/08/2026 a Márcia convidou "pode mandar áudio" (é o que as mensagens
+  // prontas do escritório dizem) e a conversa morreu no áudio seguinte.
+  // A transcrição também vai para `content_text`, então aparece no inbox —
+  // o escritório LÊ em vez de escutar.
+  let textoDoAudio: string | null = null
+  if (contentType === 'audio' && mediaUrl) {
+    const mediaId = mediaUrl.split('/').filter(Boolean).pop() ?? ''
+    const aiCfg = await loadAiConfig(supabaseAdmin(), accountId)
+    if (mediaId && aiCfg?.apiKey) {
+      textoDoAudio = await transcreverAudioDoWhatsApp({
+        mediaId,
+        metaToken: accessToken,
+        apiKey: aiCfg.apiKey,
+      })
+    }
+    if (textoDoAudio) {
+      await supabaseAdmin()
+        .from('messages')
+        .update({ content_text: textoDoAudio })
+        .eq('conversation_id', conversation.id)
+        .eq('message_id', message.id)
+    }
+  }
+
   // Update conversation
   const { error: convError } = await supabaseAdmin()
     .from('conversations')
     .update({
-      last_message_text: contentText || `[${message.type}]`,
+      last_message_text: contentText || textoDoAudio || `[${message.type}]`,
       last_message_at: new Date().toISOString(),
       unread_count: (conversation.unread_count || 0) + 1,
       updated_at: new Date().toISOString(),
@@ -821,13 +849,30 @@ async function processMessage(
     }
   }
 
-  if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
+  // O áudio transcrito vale como texto aqui — é a fala do lead, escrita.
+  const textoParaIa = inboundText.trim() || (textoDoAudio ?? '').trim()
+
+  if (!flowConsumed && !interactiveReplyId && textoParaIa) {
     await dispatchInboundToAiReply({
       accountId,
       conversationId: conversation.id,
       contactId: contactRecord.id,
       configOwnerUserId,
     })
+  } else if (contentType === 'audio' && !textoParaIa) {
+    // Áudio que não deu para transcrever. ⛔ NUNCA ficar mudo: quem gravou um
+    // áudio contando o problema e não recebe nada conclui que ninguém ouviu.
+    console.warn(
+      `[webhook] áudio sem transcrição na conversa ${conversation.id} — passando para humano`,
+    )
+    await supabaseAdmin()
+      .from('conversations')
+      .update({
+        ai_autoreply_disabled: true,
+        ai_handoff_summary:
+          'O lead mandou um ÁUDIO que o sistema não conseguiu transcrever. Ouça o áudio no inbox e responda — a IA foi desligada nesta conversa para não responder no escuro.',
+      })
+      .eq('id', conversation.id)
   }
 
   // message.received webhook (public API). Awaited — not fire-and-forget

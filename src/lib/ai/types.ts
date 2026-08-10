@@ -61,7 +61,16 @@ export interface GenerateResult {
   /** True when the model asked to hand off to a human (auto-reply mode). */
   handoff: boolean
   /** Card move the AI requested via a control marker, or null. */
-  move: 'qualified' | 'super' | 'reagendar' | null
+  move: 'qualified' | 'super' | 'reagendar' | 'perdido' | null
+  /** A pessoa avisou que não vem no horário marcado: desfazer a reserva no
+   *  Cal.com e desligar os lembretes. Independente do destino do card. */
+  desmarcar: boolean
+  /** Recusou marcar agora: mandar a despedida com o botão "Agendar agora". */
+  portaAberta: boolean
+  /** Horário da agenda que a IA pediu para RESERVAR (1 = o primeiro da lista
+   *  mostrada nesta resposta), ou null. É índice, nunca data: o modelo escolhe
+   *  da lista lida do Cal.com e assim não tem como inventar horário. */
+  agendar: number | null
   /** Provider token usage for this call, or null when unavailable. */
   usage: AiUsage | null
 }

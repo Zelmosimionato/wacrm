@@ -10,8 +10,12 @@ interface DbMessage {
 /**
  * Fetch the last N text messages of a conversation and map them to the
  * provider-neutral chat shape. Customer messages become `user`; agent
- * and bot messages become `assistant`. Non-text messages (media,
- * templates, interactive) are excluded — they carry no text to model.
+ * and bot messages become `assistant`. Other media, templates and
+ * interactive are excluded — they carry no text to model.
+ *
+ * Áudio ENTRA: o webhook grava a transcrição em `content_text`. Filtrar só
+ * 'text' fazia a fala do lead sumir do contexto — e lead ansioso fala em vez
+ * de escrever, então sumia justamente o caso quente.
  *
  * Ordered oldest-first (chronological) so the transcript reads
  * naturally and the most recent customer message lands last.
@@ -25,7 +29,7 @@ export async function buildConversationContext(
     .from('messages')
     .select('sender_type, content_text')
     .eq('conversation_id', conversationId)
-    .eq('content_type', 'text')
+    .in('content_type', ['text', 'audio'])
     .order('created_at', { ascending: false })
     .limit(limit)
 

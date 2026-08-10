@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
+import { MARCA_ATENCAO } from '@/lib/ai/auto-reply'
 
 type Params = { params: Promise<{ conversationId: string }> }
 
@@ -47,7 +48,7 @@ export async function POST(request: Request, { params }: Params) {
     // Confirm the conversation is in the caller's account before writing.
     const { data: conv, error: convErr } = await supabase
       .from('conversations')
-      .select('id')
+      .select('id, contact_id')
       .eq('id', conversationId)
       .eq('account_id', accountId)
       .maybeSingle()
@@ -94,6 +95,29 @@ export async function POST(request: Request, { params }: Params) {
         { error: 'Failed to update conversation' },
         { status: 500 },
       )
+    }
+
+    // SAÍDA DO ALERTA. Assumir a conversa apaga o selo do card.
+    //
+    // ⛔ Alerta sem saída vira ruído, e ruído a gente aprende a ignorar. O selo
+    // nasce quando o lead escreve estando em negociação ou contrato e a IA para
+    // de propósito; morre no clique de quem assumiu — o instante exato em que o
+    // alerta cumpriu o papel dele.
+    if (paused && assignToMe && conv.contact_id) {
+      const { data: cards } = await supabase
+        .from('deals')
+        .select('id, notes')
+        .eq('contact_id', conv.contact_id)
+        .eq('status', 'open')
+      for (const card of (cards ?? []) as { id: string; notes: string | null }[]) {
+        if (!card.notes?.includes(MARCA_ATENCAO)) continue
+        const limpo = card.notes
+          .split('\n')
+          .filter((l) => !l.includes(MARCA_ATENCAO))
+          .join('\n')
+          .trim()
+        await supabase.from('deals').update({ notes: limpo || null }).eq('id', card.id)
+      }
     }
 
     return NextResponse.json({ success: true, paused })

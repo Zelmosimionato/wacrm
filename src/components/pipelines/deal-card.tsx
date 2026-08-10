@@ -1,9 +1,12 @@
 "use client";
 
 import type { Deal, PipelineStage } from "@/types";
-import { Calendar, Check, X } from "lucide-react";
+import { Calendar, Check, MessageCircleWarning, X } from "lucide-react";
 import { formatCurrency } from "@/lib/currency";
 import { useTranslations } from "next-intl";
+
+/** Mesma marca que a IA escreve nas notas e o alerta sonoro reconhece. */
+const MARCA_ATENCAO = "[ATENÇÃO]";
 
 interface DealCardProps {
   deal: Deal;
@@ -53,6 +56,17 @@ export function DealCard({ deal, stage, onEdit, isOverlay }: DealCardProps) {
         className="absolute left-0 top-0 h-full w-1 rounded-l-xl"
         style={{ backgroundColor: stage?.color ?? "#94a3b8" }}
       />
+
+      {/* O lead escreveu estando numa etapa sensível (proposta, decisão,
+          contrato) e a IA parou de propósito. O selo fica no topo do card
+          porque quem toca o caso olha o funil, não a caixa de mensagens —
+          e some sozinho quando alguém limpa a nota. */}
+      {deal.notes?.includes(MARCA_ATENCAO) && (
+        <div className="mb-2 flex items-center gap-1.5 rounded-md bg-amber-500/15 px-2 py-1 text-[11px] font-semibold text-amber-500">
+          <MessageCircleWarning className="h-3.5 w-3.5 shrink-0" />
+          {t("dealNeedsYou")}
+        </div>
+      )}
 
       <div className="flex items-start justify-between gap-2">
         <h4 className="flex-1 text-sm font-semibold leading-snug text-foreground break-words">

@@ -11,10 +11,11 @@ import { resolveAuditUserId } from '@/lib/api/v1/contacts'
 //   - lembrete_1h_antes  -> ~1h before the meeting;
 //   - the véspera reminder -> afternoon (12h–18h SP) of the day before.
 //
-// Idempotency is read straight off the `messages` table (a reminder
-// template already sent within the relevant window = skip), so there is
-// no extra bookkeeping table to migrate. Brazil dropped DST in 2019, so
-// São Paulo is a fixed UTC-3.
+// ⛔ REGRA: mandou uma vez, não repete. A marca do que já saiu fica num
+// campo do contato, com a DATA DA REUNIÃO na chave — remarcou, data nova,
+// pode mandar de novo. Não é janela de tempo: janela é conta, e conta erra
+// (ver o comentário em CF_LEMBRETES_ENVIADOS). Brazil dropped DST in 2019,
+// so São Paulo is a fixed UTC-3.
 // ============================================================
 
 const TAG_AGENDOU = 'c0278b4c-8f17-416e-a7e4-b66b6e78315a'
@@ -31,24 +32,61 @@ interface ReminderDef {
   enabled: boolean
   template: string
   due: (nowMs: number, meetingMs: number) => boolean
-  dedupSinceMs: (meetingMs: number) => number
 }
+
+/**
+ * MANDOU UMA VEZ, NÃO REPETE.
+ *
+ * O registro do que já saiu fica neste campo do contato, como uma lista de
+ * chaves `lembrete-<qual>@<data da reunião>` separadas por ponto e vírgula —
+ * mesmo padrão que o nurture usa há tempo. A chave carrega a DATA DA REUNIÃO
+ * de propósito: se a pessoa remarcar, a data muda, a chave muda, e o lembrete
+ * da nova reunião sai normalmente.
+ *
+ * ⛔ Campo PRÓPRIO, separado do log do nurture: os dois fazem leitura-escrita
+ * no mesmo registro e um apagaria a marca do outro — e marca perdida aqui
+ * significa mensagem repetida para cliente.
+ *
+ * Existe porque em 09/08/2026 a trava era uma janela de tempo, tinha um ponto
+ * cego, e o lembrete saiu **417 vezes** para 3 clientes — um deles recebeu 225,
+ * um por minuto durante 3h45. Janela de tempo é conta; conta erra. Marca não.
+ */
+const CF_LEMBRETES_ENVIADOS = '54b97296-7a16-4a15-b0c7-25f61b5b6d7e'
+
+/** `lembrete-vespera@2026-08-10T19:45:00.000Z` */
+function chaveDoLembrete(qual: string, reuniaoIso: string): string {
+  return `lembrete-${qual}@${reuniaoIso}`
+}
+
+/**
+ * Contatos que NÃO recebem lembrete nenhum — nem véspera, nem 1h antes.
+ *
+ * São as três pessoas que levaram a enxurrada de 09/08/2026 (225, 121 e 71
+ * mensagens). Já ouviram o suficiente do escritório para uma vida; qualquer
+ * lembrete a mais, por mais correto que seja, chega como insistência.
+ * Decisão do titular: ficam de fora quando os lembretes voltarem.
+ */
+const NAO_LEMBRAR = new Set<string>([
+  '2089533e-b357-408b-a29d-e6f87867a31e', // O'Grandi Empreendimentos — recebeu 225
+  'b4203ce4-2870-4894-92f8-a14abbbc52e9', // Douglas Ceschin de Miranda — recebeu 121
+  '62b28142-9fba-4da4-9d5f-f0e276053642', // Thiago Rodrigues — recebeu 71
+])
 
 const REMINDERS: ReminderDef[] = [
   {
     key: '1h',
-    enabled: true,
+    // ⛔ DESLIGADO em 09/08/2026. Só volta depois da revisão completa do funil
+    // que o titular pediu — o conserto da janela e o piso já estão aqui, mas
+    // religar sem a revisão foi exatamente o que ele proibiu.
+    enabled: false,
     template: 'lembrete_1h_antes',
     due: (now, m) => now >= m - 60 * MIN && now <= m - 30 * MIN,
-    dedupSinceMs: (m) => m - 2 * HOUR,
   },
   {
     key: 'vespera',
-    // Liga quando `lembrete_vespera_confirma` (com botões) for aprovado na Meta.
-    enabled: true,
+    enabled: false, // ⛔ idem: só volta depois da revisão completa do funil
     template: 'lembrete_vespera_confirma',
     due: (now, m) => vesperaDue(now, m),
-    dedupSinceMs: (m) => m - 25 * HOUR,
   },
 ]
 
@@ -91,6 +129,7 @@ export async function dispatchDueReminders(): Promise<void> {
   let userId: string | null = null
 
   for (const cand of candidates) {
+    if (NAO_LEMBRAR.has(cand.contact_id)) continue
     const meetingMs = new Date(cand.value).getTime()
     if (!Number.isFinite(meetingMs)) continue
     const due = active.find((r) => r.due(now, meetingMs))
@@ -115,16 +154,42 @@ export async function dispatchDueReminders(): Promise<void> {
     const conversationId = conv?.id as string | undefined
     if (!conversationId) continue
 
-    // Idempotência: já mandei esse template dentro da janela dessa reunião?
-    const { data: already } = await db
-      .from('messages')
-      .select('id')
-      .eq('conversation_id', conversationId)
-      .eq('template_name', due.template)
-      .gte('created_at', new Date(due.dedupSinceMs(meetingMs)).toISOString())
-      .limit(1)
+    // JÁ MANDOU? Então não manda de novo. A marca é por reunião e não expira.
+    const chave = chaveDoLembrete(due.key, cand.value)
+    const { data: logRow, error: logErr } = await db
+      .from('contact_custom_values')
+      .select('id, value')
+      .eq('contact_id', cand.contact_id)
+      .eq('custom_field_id', CF_LEMBRETES_ENVIADOS)
       .maybeSingle()
-    if (already) continue
+    // ⛔ Falhou a leitura? NÃO manda. Erro de leitura não pode virar permissão
+    // para reenviar — era exatamente assim que a repetição ganhava velocidade.
+    if (logErr) {
+      console.error('[reminders] leitura do log falhou — envio abortado:', logErr)
+      continue
+    }
+    const log = (logRow?.value as string | null) ?? ''
+    if (log.split(';').some((k) => k.trim() === chave)) continue
+
+    // ⛔ Marca ANTES de enviar. Se o envio falhar, perde-se um lembrete; se a
+    // marca viesse depois, uma falha no meio do caminho repetiria a mensagem a
+    // cada 60 segundos. Entre perder um lembrete e inundar um cliente, perde-se
+    // o lembrete.
+    const novoLog = log ? `${log};${chave}` : chave
+    const marcou = logRow?.id
+      ? await db
+          .from('contact_custom_values')
+          .update({ value: novoLog })
+          .eq('id', logRow.id as string)
+      : await db.from('contact_custom_values').insert({
+          contact_id: cand.contact_id,
+          custom_field_id: CF_LEMBRETES_ENVIADOS,
+          value: novoLog,
+        })
+    if (marcou.error) {
+      console.error('[reminders] não consegui marcar o envio — abortado:', marcou.error)
+      continue
+    }
 
     const { data: contact } = await db
       .from('contacts')
