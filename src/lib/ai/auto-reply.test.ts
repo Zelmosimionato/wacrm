@@ -238,11 +238,18 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
     expect(systemPrompt).toContain('Returns accepted within 30 days.')
   })
 
-  it('stands down when an active message-level automation exists', async () => {
+  // ⛔ Este teste afirmava o contrario ("stands down when an active
+  // message-level automation exists") e por isso a suite ficou verde enquanto
+  // a Marcia estava muda: bastava UMA automacao de palavra-chave ativa na
+  // conta para a IA calar em toda mensagem. Quem cala a IA e o webhook, e so
+  // quando a automacao casa de verdade — aqui dentro ela responde.
+  it('still replies when the account merely HAS a message-level automation', async () => {
     h.state.autoResponders = [{ id: 'auto-1' }]
     await dispatchInboundToAiReply(ARGS)
-    expect(h.generateReply).not.toHaveBeenCalled()
-    expect(h.engineSendText).not.toHaveBeenCalled()
+    expect(h.generateReply).toHaveBeenCalled()
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-1', text: 'Hello!' }),
+    )
   })
 
   it('does not send when the atomic slot claim loses the race', async () => {

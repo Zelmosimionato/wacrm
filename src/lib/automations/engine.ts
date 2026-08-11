@@ -70,6 +70,9 @@ export interface DispatchInput {
 /**
  * Alguma automação vai RESPONDER a esta mensagem?
  *
+ * `new_message_received` entra junto de `keyword_match` porque ele casa com
+ * TODA mensagem por definição — se tem passo que fala, fala sempre.
+ *
  * O webhook pergunta isto antes de acordar a IA. Sem a pergunta, os dois
  * respondem a mesma frase: a automação manda a confirmação e a Márcia
  * manda a dela por cima, e o lead recebe duas mensagens dizendo a mesma
@@ -91,10 +94,14 @@ export async function automacaoVaiResponder(
       .select('*, automation_steps(step_type)')
       .eq('account_id', accountId)
       .eq('is_active', true)
-      .eq('trigger_type', 'keyword_match')
+      .in('trigger_type', ['keyword_match', 'new_message_received'])
     if (error || !automations?.length) return false
 
-    const FALAM = ['send_message', 'send_template', 'send_interactive']
+    // ⛔ Os quatro passos que FALAM com o cliente. `send_interactive` nao
+    // existe no motor (os nomes sao `send_buttons` e `send_list`): estava
+    // nesta lista e nenhum dos dois entrava, entao automacao de botao nao
+    // calava a IA e o lead levava resposta dobrada.
+    const FALAM = ['send_message', 'send_template', 'send_buttons', 'send_list']
     for (const a of automations) {
       const passos = (a as { automation_steps?: { step_type: string }[] }).automation_steps ?? []
       if (!passos.some((p) => FALAM.includes(p.step_type))) continue

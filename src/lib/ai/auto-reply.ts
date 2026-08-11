@@ -843,22 +843,16 @@ export async function dispatchInboundToAiReply(
     const config = await loadAiConfig(db, accountId)
     if (!config || !config.autoReplyEnabled) return
 
-    // Deterministic, user-configured responders win over the LLM — the
-    // caller already excludes messages a Flow consumed. Message-level
-    // automations (`new_message_received` / `keyword_match`) are
-    // dispatched independently for this same inbound and may send their
-    // own reply, so if the account has any active one we stand down to
-    // avoid double-texting the customer. (Relationship triggers like
-    // `first_inbound_message` don't count — they're not per-message
-    // auto-responders.)
-    const { data: autoResponders } = await db
-      .from('automations')
-      .select('id')
-      .eq('account_id', accountId)
-      .eq('is_active', true)
-      .in('trigger_type', ['new_message_received', 'keyword_match'])
-      .limit(1)
-    if (autoResponders && autoResponders.length > 0) return
+    // ⛔ NAO volte a perguntar aqui se EXISTE automacao de mensagem ativa.
+    // Essa pergunta esteve neste ponto e calava a IA para TODA mensagem da
+    // conta assim que qualquer automacao `keyword_match` fosse ligada — sem
+    // erro, sem log, sem card em humano. Em 10/08/2026 a "Confirmacao de
+    // agendamento" foi ligada as 20:44 e a Marcia ficou muda por 16 horas;
+    // o unico sintoma era silencio, e silencio ninguem ve.
+    //
+    // Quem decide isso e o webhook, ANTES de chamar aqui, com
+    // `automacaoVaiResponder`: ela cala a IA so quando a automacao de fato
+    // CASA com esta mensagem e tem passo que FALA.
 
     const { data: conv, error: convErr } = await db
       .from('conversations')

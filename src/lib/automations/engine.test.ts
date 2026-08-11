@@ -67,6 +67,7 @@ vi.mock("./admin-client", () => {
       delete: () => ((ops.type = "delete"), b),
       upsert: (p: unknown) => ((ops.type = "upsert"), (ops.payload = p), b),
       eq: (k: string, v: unknown) => (ops.filters.push(["eq", k, v]), b),
+      in: (k: string, v: unknown) => (ops.filters.push(["in", k, v]), b),
       gte: () => b,
       is: () => b,
       order: () => b,
@@ -96,7 +97,7 @@ vi.mock("./meta-send", () => ({
   engineSendInteractive: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
 }));
 
-import { runAutomationsForTrigger, triggerMatches } from "./engine";
+import { runAutomationsForTrigger, triggerMatches, automacaoVaiResponder } from "./engine";
 import type { Automation } from "@/types";
 
 const ACCOUNT = "acct-1";
@@ -334,5 +335,54 @@ describe("triggerMatches — interactive_reply", () => {
   it("does not match when no reply id is present or config is empty", () => {
     expect(triggerMatches(automation(["yes"]), {})).toBe(false);
     expect(triggerMatches(automation([]), { interactive_reply_id: "yes" })).toBe(false);
+  });
+});
+
+// Quem decide se a IA cala. Precisa ser PRECISO: calar demais deixa o lead
+// sem resposta nenhuma (foi o defeito de 10/08/2026), calar de menos manda
+// duas mensagens dizendo a mesma coisa.
+describe("automacaoVaiResponder", () => {
+  const auto = (extra: Record<string, unknown> = {}) => ({
+    id: "a1",
+    account_id: "acc-1",
+    is_active: true,
+    trigger_type: "keyword_match",
+    trigger_config: { keywords: ["confirmar meu agendamento"], match_type: "contains" },
+    automation_steps: [{ step_type: "send_template" }],
+    ...extra,
+  });
+
+  beforeEach(() => {
+    h.state.automations = [];
+  });
+
+  it("cala a IA quando a palavra-chave casa e a automacao fala", async () => {
+    h.state.automations = [auto()];
+    expect(await automacaoVaiResponder("acc-1", "quero confirmar meu agendamento")).toBe(true);
+  });
+
+  it("NAO cala quando a automacao existe mas nao casa com o texto", async () => {
+    h.state.automations = [auto()];
+    expect(await automacaoVaiResponder("acc-1", "vim do site e quero informacoes")).toBe(false);
+  });
+
+  it("cala tambem no gatilho de toda mensagem, que casa sempre", async () => {
+    h.state.automations = [auto({ trigger_type: "new_message_received", trigger_config: {} })];
+    expect(await automacaoVaiResponder("acc-1", "qualquer coisa")).toBe(true);
+  });
+
+  it("NAO cala por automacao que so move card ou etiqueta — ninguem responderia", async () => {
+    h.state.automations = [auto({ automation_steps: [{ step_type: "move_deal" }, { step_type: "add_tag" }] })];
+    expect(await automacaoVaiResponder("acc-1", "quero confirmar meu agendamento")).toBe(false);
+  });
+
+  it("cala por automacao de botoes — send_buttons tambem fala", async () => {
+    h.state.automations = [auto({ automation_steps: [{ step_type: "send_buttons" }] })];
+    expect(await automacaoVaiResponder("acc-1", "quero confirmar meu agendamento")).toBe(true);
+  });
+
+  it("texto vazio nunca cala", async () => {
+    h.state.automations = [auto()];
+    expect(await automacaoVaiResponder("acc-1", "")).toBe(false);
   });
 });
