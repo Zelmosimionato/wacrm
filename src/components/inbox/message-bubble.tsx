@@ -14,7 +14,9 @@ import {
   ImageOff,
   CornerDownLeft,
   Sparkles,
+  Download,
 } from "lucide-react";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { format } from "date-fns";
 import { ReplyQuote } from "./reply-quote";
 import { MessageReactions } from "./message-reactions";
@@ -60,6 +62,10 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [ampliada, setAmpliada] = useState(false);
+  // O proxy serve blob: sem nome de arquivo; sem isto o download sai como
+  // "download" sem extensão e o Windows não sabe abrir.
+  const nomeDoArquivo = (url.split("/").pop() || "imagem").split("?")[0] || "imagem";
 
   const loadImage = useCallback(async () => {
     if (!url) return;
@@ -109,13 +115,48 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
     );
   }
 
+  // A miniatura é recorte (object-cover): documento fotografado, print de
+  // extrato, comprovante — tudo chega cortado e ilegível no tamanho da bolha.
+  // Por isso ela ABRE: no grande a imagem aparece inteira (object-contain), e
+  // dá para baixar. Antes era um <img> solto, sem clique e sem download, e o
+  // jeito de ler um comprovante era abrir o WhatsApp no celular.
   return (
-    <img
-      src={src ?? ""}
-      alt={alt}
-      className="max-h-64 max-w-60 rounded-lg object-cover"
-      onError={() => setError(true)}
-    />
+    <>
+      <button
+        type="button"
+        onClick={() => setAmpliada(true)}
+        className="block cursor-zoom-in rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+        title="Clique para ampliar"
+      >
+        <img
+          src={src ?? ""}
+          alt={alt}
+          className="max-h-64 max-w-60 rounded-lg object-cover"
+          onError={() => setError(true)}
+        />
+      </button>
+
+      <Dialog open={ampliada} onOpenChange={setAmpliada}>
+        <DialogContent className="max-w-4xl">
+          <DialogTitle className="sr-only">{alt}</DialogTitle>
+          <img
+            src={src ?? ""}
+            alt={alt}
+            className="max-h-[78vh] w-full rounded-md object-contain"
+          />
+          <a
+            href={src ?? "#"}
+            download={nomeDoArquivo}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-2 self-center rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
+          >
+            <Download className="h-4 w-4" />
+            Baixar
+          </a>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

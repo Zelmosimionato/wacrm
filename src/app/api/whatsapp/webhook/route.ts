@@ -63,6 +63,12 @@ interface WhatsAppMessage {
     button_reply?: { id: string; title: string }
     list_reply?: { id: string; title: string; description?: string }
   }
+  /** Cartão de contato (vCard) enviado pelo cliente. */
+  contacts?: Array<{
+    name?: { formatted_name?: string; first_name?: string; last_name?: string }
+    phones?: Array<{ phone?: string; wa_id?: string; type?: string }>
+    emails?: Array<{ email?: string; type?: string }>
+  }>
   /** Present when the customer swipe-replies to one of our messages. */
   context?: { id: string }
 }
@@ -1049,6 +1055,29 @@ async function parseMessageContent(
     case 'reaction':
       return { ...empty, contentText: message.reaction?.emoji || null }
 
+    case 'contacts': {
+      // Cartão de contato (vCard).
+      //
+      // ⛔ Isto caía no `default` e virava só "[Unsupported message type:
+      // contacts]" — o telefone que a pessoa mandou sumia, e a Meta não deixa
+      // reler mensagem antiga. Em 11/08/2026 um lead mandou o número por
+      // cartão e o escritório teve de pedir de novo: o dado tinha ido embora.
+      //
+      // O que interessa aqui é o CONTEÚDO do cartão em texto — nome, telefones
+      // e e-mails —, copiável direto da bolha.
+      const cartoes = message.contacts ?? []
+      const linhas = cartoes.map((c) => {
+        const nome =
+          c.name?.formatted_name ||
+          [c.name?.first_name, c.name?.last_name].filter(Boolean).join(' ') ||
+          'Contato'
+        const fones = (c.phones ?? []).map((p) => p.phone).filter(Boolean)
+        const emails = (c.emails ?? []).map((e) => e.email).filter(Boolean)
+        return ['📇 ' + nome, ...fones, ...emails].join(' — ')
+      })
+      return { ...empty, contentText: linhas.join('\n') || '[cartão de contato sem dados]' }
+    }
+
     case 'interactive': {
       // The customer tapped a reply button or a list row on a message
       // we previously sent. Meta delivers `interactive.button_reply` for
@@ -1081,6 +1110,15 @@ async function parseMessageContent(
     }
 
     default:
+      // ⛔ Tipo que não tratamos vira um rótulo, e o conteúdo não é guardado em
+      // lugar NENHUM — a Meta não deixa reler. Sem este registro, a mensagem do
+      // cliente some para sempre e ninguém fica sabendo que faltou suporte.
+      // Com ele, dá para recuperar à mão e saber o que implementar.
+      console.warn(
+        '[webhook] tipo de mensagem sem tratamento:',
+        message.type,
+        JSON.stringify(message).slice(0, 2000),
+      )
       return {
         ...empty,
         contentText: `[Unsupported message type: ${message.type}]`,
