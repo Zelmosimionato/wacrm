@@ -5,7 +5,7 @@ import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { normalizePhone } from '@/lib/whatsapp/phone-utils'
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
-import { runAutomationsForTrigger } from '@/lib/automations/engine'
+import { runAutomationsForTrigger, automacaoVaiResponder } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { loadAiConfig } from '@/lib/ai/config'
@@ -879,7 +879,20 @@ async function processMessage(
   // O áudio transcrito vale como texto aqui — é a fala do lead, escrita.
   const textoParaIa = inboundText.trim() || (textoDoAudio ?? '').trim()
 
-  if (!flowConsumed && textoParaIa && (!interactiveReplyId || iaPedidaPeloBotao)) {
+  // Automação que RESPONDE cala a IA. Sem isto, quem escreve "desejo
+  // confirmar meu agendamento" recebe a confirmação da automação e, um
+  // instante depois, a resposta da Márcia dizendo o mesmo com outras
+  // palavras. Frase fixa tem resposta fixa — a IA não tem o que acrescentar.
+  //
+  // Só cala quem fala: automação que apenas move card ou põe etiqueta não
+  // pode deixar o lead sem resposta nenhuma.
+  const automacaoResponde = await automacaoVaiResponder(accountId, textoParaIa)
+  if (automacaoResponde) {
+    console.log('[ai auto-reply] silenciada: uma automação responde esta mensagem')
+  }
+
+  if (!flowConsumed && !automacaoResponde && textoParaIa &&
+      (!interactiveReplyId || iaPedidaPeloBotao)) {
     await dispatchInboundToAiReply({
       accountId,
       conversationId: conversation.id,

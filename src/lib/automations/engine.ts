@@ -16,6 +16,7 @@ import type {
   UpdateContactFieldStepConfig,
   WaitStepConfig,
   CreateDealStepConfig,
+  MoveDealStepConfig,
   AssignConversationStepConfig,
 } from '@/types'
 import { supabaseAdmin } from './admin-client'
@@ -66,6 +67,48 @@ export interface DispatchInput {
  * All errors are caught and logged; per-automation failures are
  * recorded into automation_logs with status='failed'.
  */
+/**
+ * Alguma automação vai RESPONDER a esta mensagem?
+ *
+ * O webhook pergunta isto antes de acordar a IA. Sem a pergunta, os dois
+ * respondem a mesma frase: a automação manda a confirmação e a Márcia
+ * manda a dela por cima, e o lead recebe duas mensagens dizendo a mesma
+ * coisa com palavras diferentes.
+ *
+ * Só silencia a IA quem de fato FALA. Automação que apenas move card ou
+ * põe etiqueta não tem por que calar a conversa — o lead perguntou algo e
+ * continua sem resposta se ninguém falar.
+ */
+export async function automacaoVaiResponder(
+  accountId: string,
+  texto: string,
+): Promise<boolean> {
+  if (!texto) return false
+  try {
+    const db = supabaseAdmin()
+    const { data: automations, error } = await db
+      .from('automations')
+      .select('*, automation_steps(step_type)')
+      .eq('account_id', accountId)
+      .eq('is_active', true)
+      .eq('trigger_type', 'keyword_match')
+    if (error || !automations?.length) return false
+
+    const FALAM = ['send_message', 'send_template', 'send_interactive']
+    for (const a of automations) {
+      const passos = (a as { automation_steps?: { step_type: string }[] }).automation_steps ?? []
+      if (!passos.some((p) => FALAM.includes(p.step_type))) continue
+      if (triggerMatches(a as Automation, { message_text: texto })) return true
+    }
+    return false
+  } catch (e) {
+    // Na dúvida, a IA fala. Ficar mudo por causa de uma falha de consulta
+    // deixaria o lead sem resposta nenhuma — pior que uma resposta a mais.
+    console.error('[automations] checagem de resposta falhou:', e)
+    return false
+  }
+}
+
 export async function runAutomationsForTrigger(input: DispatchInput): Promise<void> {
   try {
     const db = supabaseAdmin()
@@ -428,9 +471,39 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
             company: string | null
           } | null) ?? null
       }
+      // Campos personalizados: {{campo.Nome do campo}}.
+      // ⛔ Sem isto a automacao nao alcanca a data da reuniao nem o link do
+      // Meet — e a confirmacao de agendamento sai sem justamente o que a torna
+      // util. Ate 10/08/2026 essas regras so existiam em codigo por causa
+      // disso: a tela nao tinha como ler o que o intake grava no contato.
+      const camposDoContato: Record<string, string> = {}
+      const pedeCampo = Object.values(tplVars).some(
+        (v) => typeof v === 'string' && v.includes('{{campo.'),
+      )
+      if (pedeCampo && args.contactId) {
+        const { data: cvs } = await db
+          .from('contact_custom_values')
+          .select('value, custom_fields!inner(field_name)')
+          .eq('contact_id', args.contactId)
+        for (const row of cvs ?? []) {
+          const r = row as {
+            value?: string | null
+            custom_fields?: { field_name?: string } | { field_name?: string }[]
+          }
+          const f = r.custom_fields
+          const nome = Array.isArray(f) ? f[0]?.field_name : f?.field_name
+          if (nome) camposDoContato[nome.trim().toLowerCase()] = String(r.value ?? '')
+        }
+      }
+
       const tpl = tplContact
       const resolveTplVar = (raw: unknown): string => {
-        const s = String(raw ?? '')
+        let s = String(raw ?? '')
+        s = s.replace(
+          /\{\{\s*campo\.\s*([^}]+?)\s*\}\}/gi,
+          (_m, nomeCampo: string) =>
+            camposDoContato[String(nomeCampo).trim().toLowerCase()] ?? '',
+        )
         const c = tpl
         if (!c) return s
         const firstName = c.name ? c.name.trim().split(/\s+/)[0] : ''
@@ -631,6 +704,31 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       return 'deal created'
     }
 
+    case 'move_deal': {
+      const cfg = step.step_config as MoveDealStepConfig
+      if (!cfg.stage_id) throw new Error('move_deal needs a stage')
+      if (!args.contactId) throw new Error('move_deal needs a contact')
+      let q = db
+        .from('deals')
+        .select('id, stage_id')
+        .eq('contact_id', args.contactId)
+        .eq('status', 'open')
+      if (cfg.pipeline_id) q = q.eq('pipeline_id', cfg.pipeline_id)
+      const { data: deals } = await q.order('created_at', { ascending: false }).limit(1)
+      const deal = (deals as { id: string; stage_id: string }[] | null)?.[0]
+      if (!deal) return 'move skipped (no open deal)'
+      if (deal.stage_id === cfg.stage_id && !cfg.status) return 'move skipped (already there)'
+      const patch: Record<string, unknown> = { stage_id: cfg.stage_id }
+      if (cfg.status) patch.status = cfg.status
+      await db.from('deals').update(patch).eq('id', deal.id)
+      // NAO dispara o gatilho deal_stage_changed de proposito: automacao que
+      // move card disparando automacao que move card e um laco, e laco num
+      // motor de envio foi o que mandou 417 mensagens em 09/08/2026. Se voce
+      // quer que algo saia junto com a mudanca de etapa, ponha o passo de
+      // enviar NA MESMA automacao, logo depois deste.
+      return cfg.status ? `deal moved and closed as ${cfg.status}` : 'deal moved'
+    }
+
     case 'send_webhook': {
       const cfg = step.step_config as SendWebhookStepConfig
       if (!cfg.url) throw new Error('send_webhook needs url')
@@ -682,19 +780,46 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
  * manual engine POSTs. Throws if none exists — send steps have
  * no meaningful target without a conversation.
  */
+/**
+ * The conversation an automation acts on — found, or opened.
+ *
+ * Requiring one to already exist was wrong, and it failed exactly where
+ * it mattered: someone who booked a meeting and never wrote on WhatsApp
+ * has no thread, so moving their card to No-show sent nothing. That is
+ * the whole point of a template — it is what Meta allows precisely when
+ * there is no open 24-hour window to reply into.
+ *
+ * Same find-or-create the manual send does from the contact screen
+ * (api/whatsapp/send), so both doors behave alike.
+ */
 async function resolveConversationId(args: ExecuteArgs): Promise<string> {
   const fromCtx = args.context.conversation_id
   if (fromCtx) return fromCtx
   if (!args.contactId) throw new Error('cannot resolve conversation: no contact')
-  const { data, error } = await supabaseAdmin()
+
+  const db = supabaseAdmin()
+  const { data, error } = await db
     .from('conversations')
     .select('id')
     .eq('account_id', args.automation.account_id)
     .eq('contact_id', args.contactId)
     .maybeSingle()
   if (error) throw new Error(`conversation lookup failed: ${error.message}`)
-  if (!data?.id) throw new Error('no conversation for contact')
-  return data.id as string
+  if (data?.id) return data.id as string
+
+  const { data: criada, error: erroCriar } = await db
+    .from('conversations')
+    .insert({
+      account_id: args.automation.account_id,
+      user_id: args.automation.user_id,
+      contact_id: args.contactId,
+    })
+    .select('id')
+    .single()
+  if (erroCriar) {
+    throw new Error(`could not open a conversation: ${erroCriar.message}`)
+  }
+  return criada.id as string
 }
 
 export function triggerMatches(automation: Automation, ctx: AutomationContext | undefined): boolean {

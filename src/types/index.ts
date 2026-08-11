@@ -458,6 +458,7 @@ export type AutomationStepType =
   | 'assign_conversation'
   | 'update_contact_field'
   | 'create_deal'
+  | 'move_deal'
   | 'wait'
   | 'condition'
   | 'send_webhook'
@@ -542,6 +543,23 @@ export interface UpdateContactFieldStepConfig {
   value: string;
 }
 
+/**
+ * Mover o card do contato para outra etapa — e, opcionalmente, encerrá-lo.
+ *
+ * Existe porque ate 10/08/2026 o motor sabia CRIAR card e nao sabia MOVER: toda
+ * movimentacao vivia em codigo (na IA, no intake, no vigia), e por isso mudar
+ * uma regra de funil exigia deploy. Com este passo, mover card vira automacao
+ * na tela.
+ */
+export interface MoveDealStepConfig {
+  /** Etapa de destino. */
+  stage_id: string;
+  /** Restringe a um funil (opcional). Sem isto, move o card aberto mais recente. */
+  pipeline_id?: string;
+  /** Encerra o card ao mover. Use para etapas de desfecho. */
+  status?: 'won' | 'lost';
+}
+
 export interface CreateDealStepConfig {
   pipeline_id: string;
   stage_id: string;
@@ -583,6 +601,7 @@ export type AutomationStepConfig =
   | AssignConversationStepConfig
   | UpdateContactFieldStepConfig
   | CreateDealStepConfig
+  | MoveDealStepConfig
   | WaitStepConfig
   | ConditionStepConfig
   | SendWebhookStepConfig
