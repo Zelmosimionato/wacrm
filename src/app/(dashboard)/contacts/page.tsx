@@ -161,8 +161,28 @@ export default function ContactsPage() {
         .range(from, to);
 
       if (term) {
-        const like = `%${term}%`;
-        query = query.or(`name.ilike.${like},phone.ilike.${like},email.ilike.${like}`);
+        // The phone is shown masked — "(12) 99162-4095" — so pasting what
+        // this very screen displays has to work. Text goes to name/email;
+        // the digits go to `phone_normalized`, which stores the number
+        // unmasked. Matching the raw `phone` column alone never hits, since
+        // no stored value carries parentheses, spaces or dashes.
+        const clauses: string[] = [];
+        const safe = term.replace(/[^\p{L}\p{N} +@.\-_]/gu, '').trim();
+        const digits = term.replace(/\D/g, '');
+        if (safe) {
+          const like = `%${safe}%`;
+          clauses.push(
+            `name.ilike.${like}`,
+            `phone.ilike.${like}`,
+            `email.ilike.${like}`
+          );
+        }
+        // Four digits is the shortest fragment worth matching — below that
+        // a phone search returns most of the base and helps nobody.
+        if (digits.length >= 4) {
+          clauses.push(`phone_normalized.ilike.%${digits}%`);
+        }
+        if (clauses.length > 0) query = query.or(clauses.join(','));
       }
 
       const { data, count: exactCount, error } = await query;
