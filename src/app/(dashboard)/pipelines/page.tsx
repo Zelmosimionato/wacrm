@@ -119,19 +119,38 @@ export default function PipelinesPage() {
       // pela mais recém-criada. Mora em contact_custom_values (mesmo campo que
       // alimenta os lembretes de véspera e de 1h), não no negócio — daí a
       // segunda consulta em vez de um order() direto.
-      const contatos = [...new Set(deals.map((d) => d.contact_id).filter(Boolean))];
-      if (contatos.length > 0) {
-        const { data: agendas } = await supabase
+      //
+      // ⛔ NÃO volte a filtrar por `.in("contact_id", …)` aqui. O quadro carrega
+      // o funil INTEIRO: em 11/08/2026 eram 571 cards / 567 contatos, e a lista
+      // de ids virava uma URL de 21 mil caracteres. O servidor recusa, a
+      // resposta volta vazia, TODO card fica sem data — e a etapa de agenda
+      // volta a ordenar por criação, sem um único erro na tela. A ordenação
+      // tinha sido arrumada e parou sozinha quando o funil cresceu; o defeito
+      // não estava no dado nem na ordenação, estava no tamanho da pergunta.
+      //
+      // Filtrar só pelo CAMPO devolve uma linha por pessoa que já agendou: o
+      // tamanho passa a depender de quantas reuniões existiram, não de quantos
+      // cards o funil tem.
+      const porContato = new Map<string, string>();
+      for (let pagina = 0; ; pagina++) {
+        const inicio = pagina * 1000;
+        const { data: agendas, error } = await supabase
           .from("contact_custom_values")
           .select("contact_id, value")
           .eq("custom_field_id", CF_DATA_REUNIAO)
-          .in("contact_id", contatos as string[]);
-        const porContato = new Map(
-          (agendas ?? []).map((a) => [a.contact_id as string, a.value as string]),
-        );
-        for (const d of deals) {
-          if (d.contact_id) d.reuniao_em = porContato.get(d.contact_id) ?? null;
+          .range(inicio, inicio + 999);
+        if (error) {
+          // ⛔ Falhar calado aqui é o que escondeu o defeito por semanas.
+          console.error("[pipelines] datas de reunião não carregaram:", error.message);
+          break;
         }
+        for (const a of agendas ?? []) {
+          porContato.set(a.contact_id as string, a.value as string);
+        }
+        if (!agendas || agendas.length < 1000) break;
+      }
+      for (const d of deals) {
+        if (d.contact_id) d.reuniao_em = porContato.get(d.contact_id) ?? null;
       }
       return deals;
     },
