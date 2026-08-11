@@ -6,6 +6,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { formatCurrency } from '@/lib/currency';
 import { toast } from 'sonner';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import type { Contact, Tag, ContactTag, ContactNote, CustomField, ContactCustomValue, Deal, MessageTemplate, PipelineStage } from '@/types';
 import { DealForm } from '@/components/pipelines/deal-form';
 import {
@@ -59,6 +60,7 @@ export function ContactDetailView({
 }: ContactDetailViewProps) {
   const t = useTranslations('Contacts.detailView');
   const supabase = createClient();
+  const router = useRouter();
   const { accountId, defaultCurrency } = useAuth();
 
   const [contact, setContact] = useState<Contact | null>(null);
@@ -194,6 +196,33 @@ export function ContactDetailView({
 
   // Newest conversation for this contact — powers the "Ver conversa" link.
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [abrindoConversa, setAbrindoConversa] = useState(false);
+
+  // Opening the thread and landing in it are one gesture: the reason to
+  // press the button is always to write something.
+  async function abrirConversa() {
+    if (!contactId) return;
+    setAbrindoConversa(true);
+    try {
+      const res = await fetch('/api/whatsapp-web/abrir-conversa', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contact_id: contactId }),
+      });
+      const corpo = (await res.json()) as { conversation_id?: string; erro?: string };
+      if (!res.ok || !corpo.conversation_id) {
+        throw new Error(corpo.erro ?? 'falhou');
+      }
+      setConversationId(corpo.conversation_id);
+      router.push(`/inbox?c=${corpo.conversation_id}`);
+    } catch (e) {
+      toast.error(
+        e instanceof Error ? e.message : 'Não foi possível abrir a conversa.'
+      );
+    } finally {
+      setAbrindoConversa(false);
+    }
+  }
   const [editDeal, setEditDeal] = useState<Deal | null>(null);
   const [formStages, setFormStages] = useState<PipelineStage[]>([]);
   const [dealFormOpen, setDealFormOpen] = useState(false);
@@ -492,7 +521,7 @@ export function ContactDetailView({
                   )}
                   {t('sendTemplateBtn')}
                 </Button>
-                {conversationId && (
+                {conversationId ? (
                   <Link
                     href={`/inbox?c=${conversationId}`}
                     className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-foreground hover:bg-muted"
@@ -500,6 +529,23 @@ export function ContactDetailView({
                     <MessageSquare className="size-4" />
                     Ver conversa
                   </Link>
+                ) : (
+                  // Nobody who booked through a form has ever written, so
+                  // there is no thread to open — and until the second
+                  // number existed, a template was the only way in. Now
+                  // the thread can simply be started.
+                  <Button
+                    variant="outline"
+                    onClick={abrirConversa}
+                    disabled={abrindoConversa}
+                  >
+                    {abrindoConversa ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <MessageSquare className="size-4" />
+                    )}
+                    Abrir conversa
+                  </Button>
                 )}
               </div>
             </SheetHeader>

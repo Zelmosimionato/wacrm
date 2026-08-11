@@ -9,6 +9,7 @@ import { PipelineBoard } from "@/components/pipelines/pipeline-board";
 const CF_DATA_REUNIAO = "e482845b-8ed4-4f4d-ae0e-0eed9dafbe4e";
 import { PipelineSettings } from "@/components/pipelines/pipeline-settings";
 import { DealForm } from "@/components/pipelines/deal-form";
+import { ContactDetailView } from "@/components/contacts/contact-detail-view";
 import { PipelineAnalytics } from "@/components/pipelines/pipeline-analytics";
 import { Button } from "@/components/ui/button";
 import {
@@ -73,6 +74,9 @@ export default function PipelinesPage() {
   // the per-column "+" trigger the same Sheet.
   const [dealFormOpen, setDealFormOpen] = useState(false);
   const [editingDeal, setEditingDeal] = useState<Deal | null>(null);
+  // The lead behind the card — same panel the contact list opens.
+  const [leadOpen, setLeadOpen] = useState(false);
+  const [leadContactId, setLeadContactId] = useState<string | null>(null);
   const [defaultStageId, setDefaultStageId] = useState<string>("");
 
   // Guard against double-seeding (React StrictMode double-effect in dev).
@@ -269,7 +273,19 @@ export default function PipelinesPage() {
     [stages],
   );
 
+  // Clicking a card opens the LEAD, not a form. The board is where the
+  // person is worked — read the history, send a template, open the
+  // conversation — and the edit form answers none of that; it is a
+  // record editor and belongs to the contact list.
+  //
+  // A card with no contact linked has no lead to show, so it still falls
+  // back to the form — that is the only way to attach one.
   const handleEditDeal = useCallback((deal: Deal) => {
+    if (deal.contact_id) {
+      setLeadContactId(deal.contact_id);
+      setLeadOpen(true);
+      return;
+    }
     setEditingDeal(deal);
     setDefaultStageId(deal.stage_id);
     setDealFormOpen(true);
@@ -545,6 +561,14 @@ export default function PipelinesPage() {
         stages={stages}
         defaultStageId={defaultStageId}
         onSaved={refreshDeals}
+      />
+
+      {/* The lead behind the card — history, templates, conversation. */}
+      <ContactDetailView
+        open={leadOpen}
+        onOpenChange={setLeadOpen}
+        contactId={leadContactId}
+        onUpdated={refreshDeals}
       />
     </div>
   );
