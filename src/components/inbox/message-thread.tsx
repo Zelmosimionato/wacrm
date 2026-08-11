@@ -202,6 +202,11 @@ export function MessageThread({
     }, 700);
   }, [isRefreshing, onRefresh]);
   const [replyTo, setReplyTo] = useState<ReplyDraft | null>(null);
+  // Which number carries the next message. Opens on whatever was used
+  // last in this thread: coming back to someone who wrote from the second
+  // number and replying through the official one fails silently outside
+  // the 24-hour window.
+  const [canal, setCanal] = useState<"api" | "web">("api");
 
   // Profiles are bounded by RLS to rows the current user is allowed to
   // see — today that's just the current user, but the dropdown keeps the
@@ -437,6 +442,14 @@ export function MessageThread({
       });
   }, [conversationId, hasUnread]);
 
+  // Opening a thread restores the number it was last answered on. Read
+  // loosely: the column arrives with migration 038, and before it does
+  // the field is simply absent and the official number stays the default.
+  useEffect(() => {
+    const ultimo = (conversation as { last_channel?: string } | null)?.last_channel;
+    setCanal(ultimo === "web" ? "web" : "api");
+  }, [conversation]);
+
   // Auto-scroll to bottom on new messages
   useEffect(() => {
     if (scrollRef.current) {
@@ -466,21 +479,37 @@ export function MessageThread({
       setReplyTo(null);
 
       try {
-        const res = await fetch("/api/whatsapp/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            conversation_id: conversation.id,
-            message_type: "text",
-            content_text: text,
-            reply_to_message_id: replyToId,
-          }),
-        });
+        // Two numbers, one thread. The official one goes through Meta and
+        // obeys the 24-hour window; the second one is WhatsApp Web and
+        // has neither window nor template. Which one carries this message
+        // is the operator's choice, right above the box.
+        const res =
+          canal === "web"
+            ? await fetch("/api/whatsapp-web/mensagem", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  conversation_id: conversation.id,
+                  content_text: text,
+                }),
+              })
+            : await fetch("/api/whatsapp/send", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  conversation_id: conversation.id,
+                  message_type: "text",
+                  content_text: text,
+                  reply_to_message_id: replyToId,
+                }),
+              });
 
         const payload = await res.json().catch(() => ({}));
 
         if (!res.ok) {
-          const reason = payload?.error || `HTTP ${res.status}`;
+          // The two routes name the field differently — `error` on the
+          // official path, `erro` on the second number's.
+          const reason = payload?.error || payload?.erro || `HTTP ${res.status}`;
           console.error("Failed to send message:", reason);
           toast.error(`Failed to send: ${reason}`);
           // Mark the optimistic bubble as failed so the user sees what happened
@@ -499,12 +528,23 @@ export function MessageThread({
         onUpdateMessage(tempId, { status: "failed" });
       }
     },
-    [conversation, onNewMessage, onUpdateMessage]
+    [conversation, onNewMessage, onUpdateMessage, canal]
   );
 
   const handleSendMedia = useCallback(
     async (payload: SendMediaPayload) => {
       if (!conversation) return;
+
+      // Mídia, modelos e botões existem só do lado do número oficial: o
+      // gateway do segundo número fala texto e nada mais. Deixar passar
+      // mandaria o arquivo pelo OUTRO número sem avisar — e o operador
+      // escolheu este de propósito. Recusa dizendo o motivo.
+      if (canal === "web") {
+        toast.error(
+          "Anexos só saem pelo número oficial. Troque o canal acima para enviar arquivo."
+        );
+        return;
+      }
 
       // Documents show their filename in our own bubble (and to the
       // recipient as the Meta caption when no caption was typed); other
@@ -571,12 +611,20 @@ export function MessageThread({
         }
       }
     },
-    [conversation, onNewMessage, onUpdateMessage],
+    [conversation, onNewMessage, onUpdateMessage, canal],
   );
 
   const handleSendInteractive = useCallback(
     async (payload: InteractiveMessagePayload, replyToId?: string) => {
       if (!conversation) return;
+
+      // Botões são um recurso da API da Meta; o segundo número não os tem.
+      if (canal === "web") {
+        toast.error(
+          "Botões só saem pelo número oficial. Troque o canal acima para enviar."
+        );
+        return;
+      }
 
       const tempId = `temp-${Date.now()}`;
       // Optimistic bubble — renders the buttons/list immediately via the
@@ -624,7 +672,7 @@ export function MessageThread({
         onUpdateMessage(tempId, { status: "failed" });
       }
     },
-    [conversation, onNewMessage, onUpdateMessage],
+    [conversation, onNewMessage, onUpdateMessage, canal],
   );
 
   const handleStatusChange = useCallback(
@@ -656,6 +704,15 @@ export function MessageThread({
       },
     ) => {
       if (!conversation) return;
+
+      // Modelo aprovado é conceito da Meta e só faz sentido no oficial —
+      // é justamente ele que abre conversa fora da janela de 24h. Aqui a
+      // troca é automática e anunciada: o operador quer mandar o modelo,
+      // não escolher por onde.
+      if (canal === "web") {
+        setCanal("api");
+        toast.info("Modelos saem pelo número oficial — canal trocado.");
+      }
 
       const renderedBody = renderTemplateBody(template.body_text, values.body);
       const tempId = `temp-${Date.now()}`;
@@ -713,7 +770,7 @@ export function MessageThread({
         onUpdateMessage(tempId, { status: "failed" });
       }
     },
-    [conversation, onNewMessage, onUpdateMessage],
+    [conversation, onNewMessage, onUpdateMessage, canal],
   );
 
   // Build a quick id → Message map so reply quotes can be rendered without
@@ -1159,6 +1216,8 @@ export function MessageThread({
       <MessageComposer
         conversationId={conversation.id}
         sessionExpired={sessionInfo.expired}
+        canal={canal}
+        onCanalChange={setCanal}
         onSend={handleSend}
         onSendMedia={handleSendMedia}
         onSendInteractive={handleSendInteractive}

@@ -491,6 +491,11 @@ export async function sendMessageToConversation(
       last_message_text: lastMessageText,
       last_message_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      // Answering through the official number puts the thread back on it.
+      // Only the second number was writing this field, so one message
+      // through WhatsApp Web left the thread marked 'web' for good — and
+      // it would reopen on the wrong number every time after that.
+      last_channel: 'api',
     })
     .eq('id', conversationId);
 

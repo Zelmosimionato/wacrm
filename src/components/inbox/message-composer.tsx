@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   Send,
+  Smartphone,
   LayoutTemplate,
   Paperclip,
   Image as ImageIcon,
@@ -125,6 +126,10 @@ interface MessageComposerProps {
   onOpenTemplates: () => void;
   replyTo?: ReplyDraft | null;
   onClearReply?: () => void;
+  /** Which number the next message goes out on: the official Cloud API
+   *  one, or the second number running WhatsApp Web. */
+  canal: "api" | "web";
+  onCanalChange: (canal: "api" | "web") => void;
 }
 
 function formatDuration(seconds: number): string {
@@ -147,6 +152,8 @@ export function MessageComposer({
   onOpenTemplates,
   replyTo,
   onClearReply,
+  canal,
+  onCanalChange,
 }: MessageComposerProps) {
   const t = useTranslations("Inbox.composer");
 
@@ -196,8 +203,18 @@ export function MessageComposer({
   // every capability — so the disabled branch is a no-op there.
   const canSend = useCan("send-messages");
   const readOnly = !canSend;
+
+  // The 24-hour window is a rule of the OFFICIAL number — Meta's, not
+  // ours. The second number runs on WhatsApp Web and has no window at
+  // all, so letting the expired session lock the box was blocking the
+  // exact use it exists for: writing to someone who has gone quiet.
+  //
+  // Everything downstream reads this instead of `sessionExpired`, so
+  // switching the channel switches the rule with it.
+  const janelaBloqueia = sessionExpired && canal === "api";
+
   // Media (like free-form text) is only allowed inside the 24h window.
-  const inputsDisabled = readOnly || sessionExpired;
+  const inputsDisabled = readOnly || janelaBloqueia;
 
   const clearTimer = useCallback(() => {
     if (timerRef.current !== null) {
@@ -229,7 +246,7 @@ export function MessageComposer({
 
   const handleSend = useCallback(async () => {
     const trimmed = text.trim();
-    if (sending || sessionExpired) return;
+    if (sending || janelaBloqueia) return;
 
     // Anexo fixo de mensagem pronta: o texto da caixa vai como LEGENDA do
     // documento. No WhatsApp isso é uma mensagem só — mandar em duas faria o
@@ -263,7 +280,7 @@ export function MessageComposer({
     } finally {
       setSending(false);
     }
-  }, [text, sending, sessionExpired, onSend, replyTo?.id, onSendMedia, onClearReply]);
+  }, [text, sending, janelaBloqueia, onSend, replyTo?.id, onSendMedia, onClearReply]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -594,6 +611,39 @@ export function MessageComposer({
 
   return (
     <div className="border-t border-border bg-card p-3">
+      {/* Which of the two numbers carries the next message. It sits above
+          the box, always visible, because sending through the wrong one
+          is invisible until the person answers — or never does. */}
+      <div className="mb-2 flex items-center gap-1 text-xs">
+        <span className="mr-1 text-muted-foreground">Enviar por</span>
+        <button
+          type="button"
+          onClick={() => onCanalChange("api")}
+          aria-pressed={canal === "api"}
+          className={
+            "rounded-md px-2 py-1 font-medium transition-colors " +
+            (canal === "api"
+              ? "bg-primary/15 text-primary"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground")
+          }
+        >
+          Número oficial
+        </button>
+        <button
+          type="button"
+          onClick={() => onCanalChange("web")}
+          aria-pressed={canal === "web"}
+          className={
+            "rounded-md px-2 py-1 font-medium transition-colors " +
+            (canal === "web"
+              ? "bg-primary/15 text-primary"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground")
+          }
+        >
+          WhatsApp Web
+        </button>
+      </div>
+
       {replyTo && (
         <div className="mb-2">
           <ReplyQuote
@@ -603,11 +653,22 @@ export function MessageComposer({
           />
         </div>
       )}
-      {sessionExpired && (
-        <div className="mb-2 flex items-center justify-between rounded-lg bg-amber-500/10 px-3 py-2">
+      {janelaBloqueia && (
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-500/10 px-3 py-2">
           <p className="text-xs text-amber-400">
             {t("sessionExpiredHint")}
           </p>
+          {/* The other way out of a closed window: the second number,
+              which has none. Cheaper than a template and immediate. */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs text-amber-400 hover:text-amber-300"
+            onClick={() => onCanalChange("web")}
+          >
+            <Smartphone className="mr-1 h-3 w-3" />
+            Escrever pelo WhatsApp Web
+          </Button>
           <Button
             variant="ghost"
             size="sm"
@@ -809,11 +870,11 @@ export function MessageComposer({
             placeholder={
               readOnly
                 ? t("readOnlyPlaceholder")
-                : sessionExpired
+                : janelaBloqueia
                   ? t("sessionExpiredPlaceholder")
                   : t("typeMessagePlaceholder")
             }
-            disabled={sessionExpired || readOnly}
+            disabled={janelaBloqueia || readOnly}
             rows={1}
             // Textarea keeps its own inline title — the GatedButton
             // wrapping pattern doesn't apply to non-button inputs.
@@ -821,7 +882,7 @@ export function MessageComposer({
             title={readOnly ? t("readOnlyTitle") : undefined}
             className={cn(
               "flex-1 resize-none rounded-xl border border-border bg-muted px-4 py-2.5 text-sm text-foreground placeholder-muted-foreground outline-none transition-colors focus:border-primary/50",
-              (sessionExpired || readOnly) && "cursor-not-allowed opacity-50"
+              (janelaBloqueia || readOnly) && "cursor-not-allowed opacity-50"
             )}
           />
 
@@ -829,7 +890,7 @@ export function MessageComposer({
             size="sm"
             canAct={!readOnly}
             gateReason="send messages"
-            disabled={(!text.trim() && !draft?.semLegenda) || sessionExpired || sending}
+            disabled={(!text.trim() && !draft?.semLegenda) || janelaBloqueia || sending}
             onClick={handleSend}
             className="h-9 w-9 shrink-0 bg-primary p-0 hover:bg-primary/90 disabled:opacity-40"
           >
