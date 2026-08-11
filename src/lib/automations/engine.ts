@@ -703,7 +703,10 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         pipeline_id: cfg.pipeline_id,
         stage_id: cfg.stage_id,
         contact_id: args.contactId,
-        title: interpolate(cfg.title, args),
+        title: await tituloDoCard(cfg.title, args, async (id) => {
+          const { data } = await db.from('contacts').select('name, phone').eq('id', id).maybeSingle()
+          return data as { name?: string | null; phone?: string | null } | null
+        }),
         value: cfg.value ?? 0,
         currency: acct?.default_currency ?? 'USD',
         status: 'open',
@@ -920,6 +923,43 @@ async function evaluateCondition(cfg: ConditionStepConfig, args: ExecuteArgs): P
 function waitMs(cfg: WaitStepConfig): number {
   const unitMs = cfg.unit === 'days' ? 86_400_000 : cfg.unit === 'hours' ? 3_600_000 : 60_000
   return Math.max(1_000, cfg.amount * unitMs)
+}
+
+/**
+ * O nome do card.
+ *
+ * ⛔ Card nasce com NOME DE GENTE. Até 11/08/2026 o título saía de
+ * `interpolate`, que só conhece {{message.text}} e {{vars.*}} e não faz ideia
+ * de quem é o contato. A automação de primeiro contato tinha "Lead (WhatsApp)"
+ * cravado no lugar do nome, então TODO card criado por ela se chamava assim: o
+ * funil virava uma coluna de cards idênticos, e o nome da pessoa só aparecia
+ * na linha de baixo, pequeno.
+ *
+ * Entende {{contact.name}} e {{contact.phone}}. Vazio no fim — configuração em
+ * branco, contato ainda sem nome — cai no nome e depois no telefone: um número
+ * no card ainda diz quem é; um card anônimo não diz nada.
+ */
+export async function tituloDoCard(
+  bruto: string | undefined,
+  args: ExecuteArgs,
+  buscarContato: (id: string) => Promise<{ name?: string | null; phone?: string | null } | null>,
+): Promise<string> {
+  const cru = String(bruto ?? '')
+  const precisaContato = /\{\{\s*contact\.(name|phone)\s*\}\}/i.test(cru) || !cru.trim()
+  const contato = precisaContato && args.contactId ? await buscarContato(args.contactId) : null
+  const nome = String(contato?.name ?? '').trim()
+  const fone = String(contato?.phone ?? '').trim()
+
+  // ⛔ O contato entra ANTES do interpolate: ele apaga toda {{chave}} que não
+  // conhece, e comeria {{contact.name}} antes de qualquer troca feita depois.
+  // Rodando na ordem errada, o título saía certo só por cair no fallback — e o
+  // teste passava pelo motivo errado.
+  const comContato = cru
+    .replace(/\{\{\s*contact\.name\s*\}\}/gi, nome)
+    .replace(/\{\{\s*contact\.phone\s*\}\}/gi, fone)
+  const resolvido = interpolate(comContato, args).trim()
+
+  return resolvido || nome || fone || 'Lead'
 }
 
 function interpolate(s: string, args: ExecuteArgs): string {
