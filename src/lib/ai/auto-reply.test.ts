@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { AiConfig } from './types'
-import { AFIRMA_QUE_AGENDOU, emailNaConversa } from './auto-reply'
+import { AFIRMA_QUE_AGENDOU, PESSOA_AFIRMA_REUNIAO, emailNaConversa } from './auto-reply'
 
 describe('emailNaConversa', () => {
   // O e-mail chega colado em outra coisa, com maiúscula, ou sozinho. Ler do
@@ -32,6 +32,42 @@ describe('emailNaConversa', () => {
 
   it('sem e-mail nenhum, devolve null', () => {
     expect(emailNaConversa([{ role: 'user', content: 'pode ser quarta às 14h' }])).toBeNull()
+  })
+})
+
+// A trava do sentido CONTRARIO: impede a IA de NEGAR reuniao que a pessoa diz
+// ter. Em 10/08/2026 um lead escreveu "desejo confirmar meu agendamento", deu
+// data e hora, e ela respondeu "nao temos esse horario disponivel no nosso
+// sistema" — oferecendo datas 7 e 14 dias depois. A reuniao era real; so nao
+// estava no CRM, porque a reserva veio por um canal que ele nao capta.
+// Ausencia de registro nao e prova de ausencia.
+describe('PESSOA_AFIRMA_REUNIAO', () => {
+  it.each([
+    'Desejo confirmar meu agendamento',
+    'Quero confirmar minha reuniao',
+    'minha reunião é amanhã',
+    'Nossa reunião é somente amanhã....',
+    'gostaria de confirmar o horario',
+    'ja estou agendado',
+    'https://meet.google.com/jxt-qfgz-rbj',
+    'meu horário é quarta',
+  ])('pega a afirmação: %s', (frase) => {
+    expect(PESSOA_AFIRMA_REUNIAO.test(frase)).toBe(true)
+  })
+
+  // ⛔ Quem quer MARCAR não pode ser confundido com quem já tem: esse cai no
+  // fluxo normal de agendamento, e passar para humano seria perder o lead.
+  it.each([
+    'Oi, tudo bem?',
+    'quero agendar uma reuniao',
+    'posso marcar um horario?',
+    'quero marcar uma reunião',
+    'Como funciona?',
+    'tenho uma divida no banco',
+    'quais horarios voces tem?',
+    'Bom dia',
+  ])('não pega quem quer AGENDAR: %s', (frase) => {
+    expect(PESSOA_AFIRMA_REUNIAO.test(frase)).toBe(false)
   })
 })
 

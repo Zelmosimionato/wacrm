@@ -53,6 +53,28 @@ const FALHA_AGENDA =
  * deliberadamente estreita: pega afirmação ("agendei", "está confirmado",
  * "convite enviado") e não pega promessa ("assim que você confirmar").
  */
+/**
+ * A PESSOA afirma que tem reuniao marcada — ou cola o convite.
+ *
+ * ⛔ Existe porque a ausencia de registro NAO e prova de ausencia de reuniao.
+ * Em 10/08/2026 um lead escreveu "desejo confirmar meu agendamento", disse a
+ * data e a hora, e a IA respondeu "nao temos esse horario disponivel no nosso
+ * sistema" — oferecendo datas 7 e 14 dias depois. A reuniao existia: ele colou
+ * o convite do Google Agenda, com link do Meet. So nao estava no CRM, porque
+ * a reserva veio por um canal que o CRM nao capta.
+ *
+ * A IA seguiu a instrucao a risca: quando nao ha reuniao registrada, o contexto
+ * afirma que "o sistema acabou de conferir". O sistema conferiu os REGISTROS
+ * DELE, que podem estar incompletos.
+ *
+ * ⭐ Confirmar agendamento nunca foi trabalho da IA: a confirmacao sai por
+ * automacao (`confirmacao_agendamento`) quando a reserva chega. Se a pessoa
+ * afirma ter reuniao e o sistema nao a conhece, isso e DIVERGENCIA — e
+ * divergencia sobre compromisso marcado se resolve com gente, nao com robo.
+ */
+export const PESSOA_AFIRMA_REUNIAO =
+  /\b(confirmar|confirma[çc][ãa]o|confirme)\b[^.?!]{0,40}\b(agendamento|reuni[ãa]o|hor[áa]rio|consulta)\b|\b(minha|meu|nossa|nosso)\s+(reuni[ãa]o|agendamento|hor[áa]rio|consulta)\b|\bj[áa]\s+(estou|est[áa])\s+agendad|\bmeet\.google\.com\b|\blink da videochamada\b|\bfuso hor[áa]rio\b/i
+
 export const AFIRMA_QUE_AGENDOU =
   /\b(agendei|remarquei|reservei|marquei)\b|\b(est[áa]|ficou|fica|segue|continua|permanece)\s+(tudo\s+)?(confirmad|agendad|remarcad|reservad|marcad)|\breuni[ãa]o\b[^.!?\n]{0,30}\b(confirmad|agendad|remarcad|reservad|marcad)|\bconvite\b[^.!?\n]{0,40}\benviad/i
 
@@ -759,12 +781,12 @@ export function buildContactContextBlock(args: {
     // chegou a ser reservado. Sem o fato na mão, ela responde de memória.
   } else if (formulario) {
     lines.push(
-      '- ⛔ Ele NÃO tem reunião marcada neste momento — o sistema acabou de conferir. Se ele perguntar como ficou a reunião, se está agendada ou confirmada, a resposta honesta é que ainda não há horário reservado, e você oferece marcar agora. ⛔ Não confirme reunião nenhuma a partir do que foi falado antes: horário escolhido na conversa NÃO é horário reservado.',
+      '- ⛔ Não há REGISTRO de reunião para ele no sistema. Isso não é o mesmo que "ele não tem reunião": há reservas que chegam por canais que o sistema não vê. Se ele PERGUNTAR se tem algo marcado, diga que não há horário reservado e ofereça marcar agora. ⛔ Mas se ele AFIRMAR que tem reunião, ou disser data e hora, ou colar um convite: NÃO o contradiga, NÃO diga que o horário não existe e NÃO oferece outras datas — quem confere compromisso marcado é uma pessoa. ⛔ E não confirme reunião a partir do que foi falado antes: horário escolhido na conversa NÃO é horário reservado.',
       '- Situação: preencheu o formulário e AINDA NÃO agendou — parou antes de marcar. A qualificação já está feita: retome de onde ele parou, sem recomeçar. O que fazer a partir daí é a sua leitura da conversa e do critério de valor, como sempre.',
     )
   } else {
     lines.push(
-      '- ⛔ Ele NÃO tem reunião marcada neste momento — o sistema acabou de conferir. Se ele perguntar como ficou a reunião, se está agendada ou confirmada, a resposta honesta é que ainda não há horário reservado, e você oferece marcar agora. ⛔ Não confirme reunião nenhuma a partir do que foi falado antes: horário escolhido na conversa NÃO é horário reservado.',
+      '- ⛔ Não há REGISTRO de reunião para ele no sistema. Isso não é o mesmo que "ele não tem reunião": há reservas que chegam por canais que o sistema não vê. Se ele PERGUNTAR se tem algo marcado, diga que não há horário reservado e ofereça marcar agora. ⛔ Mas se ele AFIRMAR que tem reunião, ou disser data e hora, ou colar um convite: NÃO o contradiga, NÃO diga que o horário não existe e NÃO oferece outras datas — quem confere compromisso marcado é uma pessoa. ⛔ E não confirme reunião a partir do que foi falado antes: horário escolhido na conversa NÃO é horário reservado.',
     )
     lines.push(
       `- Situação: já falou com o escritório antes e ainda não fechou. ⛔ A sua PRIMEIRA mensagem desta conversa TEM de reconhecer o retorno${firstName ? ` (ex.: "Que bom te ver de novo, ${firstName}!")` : ''} — cumprimentar como se fosse a primeira vez faz parecer que ninguém aqui lembra dele. Se já faz horas ou dias desde a última troca, vale se reapresentar em meia frase ("aqui é a Márcia, do Simionato Advogados") — ninguém guarda de cabeça com quem falou ontem. Só não recomece a coleta de dados nem a qualificação. ⛔ Responda PRIMEIRO o que ele acabou de dizer e descubra o que ele quer AGORA — o que ficou registrado aqui é do passado, e ele pode estar voltando por outro motivo. Conduza ao agendamento quando fizer sentido na conversa, ⛔ nunca já na primeira frase.`,
@@ -1025,6 +1047,32 @@ export async function dispatchInboundToAiReply(
       etapa,
     })
     if (contextBlock) systemPrompt += '\n\n' + contextBlock
+
+    // ⛔ A PESSOA AFIRMA TER REUNIAO E O SISTEMA NAO TEM REGISTRO.
+    //
+    // Ausencia de registro nao e prova de ausencia. Em 10/08/2026 um lead
+    // escreveu "desejo confirmar meu agendamento", deu data e hora, e a IA
+    // respondeu que o horario nao existia no sistema — oferecendo datas 7 e 14
+    // dias depois. A reuniao era real; so nao estava no CRM.
+    //
+    // Confirmar agendamento nunca foi trabalho dela: a confirmacao sai por
+    // automacao quando a reserva chega. Divergencia sobre compromisso marcado
+    // se resolve com gente olhando a agenda.
+    const ultimaDoLead =
+      [...messages].reverse().find((m) => m.role === 'user')?.content ?? ''
+    if (!hasMeeting && PESSOA_AFIRMA_REUNIAO.test(String(ultimaDoLead))) {
+      console.warn(
+        `[ai auto-reply] ⛔ lead afirma ter reuniao e o sistema nao tem registro - passando para humano (contato ${contactId})`,
+      )
+      await passarParaHumano(
+        db,
+        conversationId,
+        `${MARCA_ATENCAO} Ele afirma ter reuniao marcada e o sistema NAO tem registro dela. ⛔ Isso nao prova que nao existe: ha reservas que chegam por canais que o CRM nao capta. Confira na agenda antes de responder — a IA foi impedida de contradize-lo.`,
+        config.handoffAgentId,
+        !!conv.assigned_agent_id,
+      )
+      return
+    }
 
     const { text, handoff, move, agendar, desmarcar, portaAberta, usage } = await generateReply({
       config,
