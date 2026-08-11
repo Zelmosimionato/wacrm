@@ -210,6 +210,16 @@ Never mention or explain these markers to the customer.`,
           'botão "Agendar agora" — ⛔ então NÃO escreva o link nem repita o convite na sua ' +
           'frase, que ficaria em duplicidade. A pessoa costuma voltar dias depois, e o botão ' +
           'traz a conversa de volta para você.\n' +
+          `  5. RECUSA EXPLÍCITA é outra coisa, e fecha com ${PERDIDO_SENTINEL} em vez da ` +
+          'porta aberta. Vale quando a pessoa NEGA a necessidade — "não preciso", "não quero ' +
+          'mais", "já resolvi", "obrigado mas não", "fechei com outro escritório" —, mesmo ' +
+          'suavizada por "por enquanto" ou "no momento". O que separa uma da outra é a ' +
+          'negativa: adiamento puro, sem negar ("depois eu vejo", "me chama semana que vem", ' +
+          `"esse mês não dá"), continua sendo ${PORTA_ABERTA_SENTINEL}.\n` +
+          '  Ao marcar recusa, despeça-se com cordialidade e coloque-se à disposição para o ' +
+          'futuro em UMA frase. ⛔ NÃO insista, não ofereça horário, não pergunte o motivo: ' +
+          'quem disse que não quer não quer ser convencido, e insistir depois disso é o que ' +
+          'faz a pessoa bloquear o número.\n' +
           '  ⛔ TOM: quem chega até você passou meses sendo ameaçado pelo banco ou pelo fisco. ' +
           'Se você repetir esse tom, vira mais uma cobrando. Nada de alarme, nada de listar ' +
           'consequências, nada de urgência fora do momento de insistir. Uma frase, dita como ' +
