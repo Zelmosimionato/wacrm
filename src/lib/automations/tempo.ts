@@ -30,6 +30,16 @@ export interface PublicoTempo {
   pipeline_id?: string
   /** Só cards parados há pelo menos N dias (conta de `updated_at`). */
   dias_parado?: number
+  /**
+   * Teto de dias parado — o degrau tem começo E fim.
+   *
+   * ⛔ Sem isto não existe régua, existe empilhamento: a nutrição tem três
+   * degraus na mesma etapa (1–3 dias, 3–6, 6+) e o dedup é POR DIA, não por
+   * template. Quem está parado há sete dias casa nos três ao mesmo tempo e
+   * recebe as três mensagens no mesmo dia — cada automação achando que
+   * mandou uma só.
+   */
+  dias_parado_max?: number
   /** Teto por execução. Existe para que um erro de público não vire enxurrada. */
   maximo?: number
 }
@@ -41,6 +51,25 @@ export interface ConfigTempo {
   publico?: PublicoTempo
   /** ⛔ Só manda de verdade com `false` explícito. */
   ensaio?: boolean
+}
+
+/**
+ * O card está DENTRO deste degrau da régua?
+ *
+ * Piso inclusivo, teto exclusivo: "1 a 3 dias" e "3 a 6" não podem casar os
+ * dois no terceiro dia, senão a pessoa leva dois toques no mesmo dia.
+ * Sem teto, o degrau é aberto para cima — é o último da régua.
+ */
+export function dentroDoDegrau(
+  updatedAt: string,
+  publico: Pick<PublicoTempo, 'dias_parado' | 'dias_parado_max'>,
+  agora: number = Date.now(),
+): boolean {
+  if (!publico.dias_parado && !publico.dias_parado_max) return true
+  const parado = (agora - Date.parse(updatedAt)) / 86_400_000
+  if (publico.dias_parado && parado < publico.dias_parado) return false
+  if (publico.dias_parado_max && parado >= publico.dias_parado_max) return false
+  return true
 }
 
 function admin() {
@@ -130,10 +159,7 @@ async function resolverPublico(
   const ids: string[] = []
   for (const d of data ?? []) {
     if (!d.contact_id) continue
-    if (publico.dias_parado) {
-      const parado = (agora - Date.parse(d.updated_at)) / DIA
-      if (parado < publico.dias_parado) continue
-    }
+    if (!dentroDoDegrau(d.updated_at as string, publico, agora)) continue
     ids.push(d.contact_id as string)
   }
 
