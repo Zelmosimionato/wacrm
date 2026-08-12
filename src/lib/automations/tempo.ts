@@ -44,9 +44,27 @@ export interface PublicoTempo {
   maximo?: number
 }
 
+/**
+ * Disparo contado a partir de uma DATA do contato — "X horas antes da reunião".
+ *
+ * ⛔ Sem isto os lembretes não cabem na tela. O público por etapa responde
+ * "parado há N dias"; lembrete pergunta outra coisa: quanto falta para uma data
+ * que está gravada no contato. São dois eixos diferentes de tempo.
+ */
+export interface RelativoAData {
+  /** id do campo personalizado que guarda a data (ISO). */
+  campo: string
+  /** Dispara quando faltarem ~estas horas. Negativo = depois da data. */
+  horas_antes: number
+  /** Tolerância, em horas, para os dois lados. Default: meia hora. */
+  janela_horas?: number
+}
+
 export interface ConfigTempo {
-  /** "HH:mm" no fuso de São Paulo. */
+  /** "HH:mm" no fuso de São Paulo. Ignorado quando há `relativo`. */
   schedule: string
+  /** Quando presente, manda a cada ciclo em que a conta bater — não num horário fixo. */
+  relativo?: RelativoAData
   timezone?: string
   publico?: PublicoTempo
   /** ⛔ Só manda de verdade com `false` explícito. */
@@ -93,6 +111,24 @@ function agoraSP(): { hhmm: string; dia: string; minutos: number } {
   return { hhmm, dia, minutos: h * 60 + m }
 }
 
+/**
+ * Falta (ou passou) o tempo combinado para esta data?
+ *
+ * Janela para os dois lados porque o cron bate de 5 em 5 minutos: sem
+ * tolerância, o instante exato passa entre duas batidas e o lembrete nunca sai.
+ */
+export function naHoraRelativa(
+  dataISO: string,
+  rel: { horas_antes: number; janela_horas?: number },
+  agora: number = Date.now(),
+): boolean {
+  const alvo = Date.parse(dataISO)
+  if (!Number.isFinite(alvo)) return false
+  const faltamHoras = (alvo - agora) / 3_600_000
+  const tol = rel.janela_horas ?? 0.5
+  return Math.abs(faltamHoras - rel.horas_antes) <= tol
+}
+
 /** O horário marcado está dentro da janela de agora? */
 function estaNaHora(schedule: string, minutosAgora: number): boolean {
   const m = /^(\d{1,2}):(\d{2})$/.exec(String(schedule || '').trim())
@@ -130,6 +166,37 @@ async function jaDisparouHoje(
     return true
   }
   return Boolean(data?.length)
+}
+
+/**
+ * Quem tem a data do campo dentro da janela relativa.
+ *
+ * ⛔ Não filtra por etapa aqui: a data manda. Quem não deve receber (card
+ * perdido, por exemplo) é barrado pelos passos da automação, não por este
+ * recorte — misturar os dois esconde o motivo de alguém não ter recebido.
+ */
+async function publicoPorData(
+  db: ReturnType<typeof admin>,
+  rel: RelativoAData,
+  agora: number,
+): Promise<string[]> {
+  const tol = (rel.janela_horas ?? 0.5) * 3_600_000
+  const centro = agora + rel.horas_antes * 3_600_000
+  const de = new Date(centro - tol).toISOString()
+  const ate = new Date(centro + tol).toISOString()
+  const { data, error } = await db
+    .from('contact_custom_values')
+    .select('contact_id, value')
+    .eq('custom_field_id', rel.campo)
+    .gte('value', de)
+    .lte('value', ate)
+  if (error) {
+    console.error('[tempo] público por data falhou — nada disparado:', error.message)
+    return []
+  }
+  return (data ?? [])
+    .filter((r) => naHoraRelativa(r.value as string, rel, agora))
+    .map((r) => r.contact_id as string)
 }
 
 /** Quem entra no disparo desta automação. */
@@ -197,10 +264,21 @@ export async function dispararPorTempo(): Promise<ResultadoTempo[]> {
 
   for (const a of automacoes) {
     const cfg = (a.trigger_config ?? {}) as ConfigTempo
-    if (!estaNaHora(cfg.schedule, minutos)) continue
+    // Dois eixos de tempo, que podem se somar:
+    //   - só schedule  -> todo dia às 12h, para o público da etapa
+    //   - só relativo  -> 1h antes da reunião, a qualquer hora do dia
+    //   - os DOIS      -> às 18h, para quem tem reunião amanhã (a véspera)
+    //
+    // ⛔ Véspera NÃO é "24h antes": 24h antes de uma reunião das 8h é uma da
+    // manhã. Véspera é fim de tarde do dia anterior — por isso ela precisa do
+    // horário fixo E da conta, e nenhum dos dois sozinho serve.
+    if (cfg.schedule && !estaNaHora(cfg.schedule, minutos)) continue
+    if (!cfg.schedule && !cfg.relativo) continue
 
     const ensaio = cfg.ensaio !== false // ⛔ só manda com `false` explícito
-    const contatos = await resolverPublico(db, a.account_id as string, cfg.publico)
+    const contatos = cfg.relativo
+      ? await publicoPorData(db, cfg.relativo, Date.now())
+      : await resolverPublico(db, a.account_id as string, cfg.publico)
 
     let alcancados = 0
     let pulados = 0

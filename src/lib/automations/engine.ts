@@ -116,6 +116,44 @@ export async function automacaoVaiResponder(
   }
 }
 
+/** Etapa "Perdido" do funil de vendas. */
+const STAGE_PERDIDO = '0d0382a5-f15d-4e43-88aa-0c70337d94d4'
+
+/** Passos que FALAM com o cliente. Os outros (etiqueta, card, webhook) seguem. */
+const PASSOS_QUE_FALAM = ['send_message', 'send_template', 'send_buttons', 'send_list']
+
+/**
+ * Este contato está dado por PERDIDO?
+ *
+ * ⛔ Perdido é mudo. É decisão do escritório, e nenhuma automação tem o direito
+ * de furá-la — em 12/08/2026 um lead perdido recebeu "vi que você precisou
+ * cancelar o horário, pode reagendar por aqui", porque uma automação de etapa
+ * disparou numa cadeia que ninguém tinha mapeado. Convidar de volta quem foi
+ * dispensado é pior que não falar: contradiz o escritório na frente do cliente.
+ *
+ * Olha o card MAIS RECENTE, não "existe algum aberto": cliente fechado (won)
+ * continua recebendo o que precisa receber.
+ *
+ * ⛔ Na dúvida — erro de consulta —, deixa FALAR. Uma trava que cala por falha
+ * de leitura vira silêncio invisível, que é o defeito mais caro que tivemos.
+ */
+async function estaPerdido(contactId: string | null): Promise<boolean> {
+  if (!contactId) return false
+  try {
+    const { data, error } = await supabaseAdmin()
+      .from('deals')
+      .select('status, stage_id')
+      .eq('contact_id', contactId)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+    if (error || !data?.length) return false
+    const card = data[0] as { status?: string; stage_id?: string }
+    return card.status === 'lost' || card.stage_id === STAGE_PERDIDO
+  } catch {
+    return false
+  }
+}
+
 export async function runAutomationsForTrigger(input: DispatchInput): Promise<void> {
   try {
     const db = supabaseAdmin()
@@ -400,6 +438,12 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
 }
 
 async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string> {
+  if (PASSOS_QUE_FALAM.includes(step.step_type) && (await estaPerdido(args.contactId))) {
+    console.log(
+      `[automations] ${step.step_type} PULADO — contato ${args.contactId} está em Perdido`,
+    )
+    return 'pulado: contato em Perdido'
+  }
   const db = supabaseAdmin()
 
   switch (step.step_type) {

@@ -19,6 +19,7 @@ import { resolveAuditUserId } from '@/lib/api/v1/contacts'
 // ============================================================
 
 const TAG_AGENDOU = 'c0278b4c-8f17-416e-a7e4-b66b6e78315a'
+const STAGE_PERDIDO = '0d0382a5-f15d-4e43-88aa-0c70337d94d4'
 const CF_DATA = 'e7935f62-b9f6-414b-9cde-b3c7315c0f11' // "Data agendamento" (humano)
 const CF_DATA_ISO = 'e482845b-8ed4-4f4d-ae0e-0eed9dafbe4e' // ISO cru
 const CF_LOCAL = '62721dd7-92f9-4587-b3db-65a8e1a51120' // link/local do Meet
@@ -144,6 +145,30 @@ export async function dispatchDueReminders(): Promise<void> {
       .eq('tag_id', TAG_AGENDOU)
       .maybeSingle()
     if (!tag) continue
+
+    // ⛔ PERDIDO É SILÊNCIO.
+    //
+    // A etiqueta "Agendou" só some quando a pessoa cancela pelo Cal.com. Quando
+    // o escritório dá o lead por perdido, a etiqueta fica — e o lembrete saía
+    // assim mesmo. Em 12/08/2026 o JORGE, já movido para Perdido, recebeu
+    // "⏰ daqui a 1 hora iniciamos sua consultoria... este horário foi reservado
+    // exclusivamente para você". Ninguém o esperava.
+    //
+    // Olho o card MAIS RECENTE, não "existe algum aberto": cliente fechado
+    // (status 'won') tem reunião de onboarding e precisa ser lembrado.
+    const { data: cards } = await db
+      .from('deals')
+      .select('status, stage_id, updated_at')
+      .eq('contact_id', cand.contact_id)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+    const card = (cards ?? [])[0] as { status?: string; stage_id?: string } | undefined
+    if (card && (card.status === 'lost' || card.stage_id === STAGE_PERDIDO)) {
+      console.log(
+        `[reminders] ${due.key} PULADO — card em Perdido (contato ${cand.contact_id})`,
+      )
+      continue
+    }
 
     const { data: conv } = await db
       .from('conversations')

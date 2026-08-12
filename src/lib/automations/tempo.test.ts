@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { dentroDoDegrau } from './tempo';
+import { dentroDoDegrau, naHoraRelativa } from './tempo';
 
 // A régua só é régua se cada degrau tiver começo E fim.
 describe('dentroDoDegrau', () => {
@@ -27,5 +27,35 @@ describe('dentroDoDegrau', () => {
 
   it('sem piso nem teto, todo mundo entra', () => {
     expect(dentroDoDegrau(dias(0), {})).toBe(true);
+  });
+});
+
+// Lembrete é contagem regressiva para uma data, não horário fixo.
+describe('naHoraRelativa', () => {
+  const daqui = (horas: number) => new Date(Date.now() + horas * 3_600_000).toISOString();
+
+  it('pega quando falta o tempo combinado', () => {
+    expect(naHoraRelativa(daqui(1), { horas_antes: 1 })).toBe(true);
+  });
+
+  it('não pega antes da hora', () => {
+    expect(naHoraRelativa(daqui(5), { horas_antes: 1 })).toBe(false);
+  });
+
+  it('não pega depois que passou da janela', () => {
+    expect(naHoraRelativa(daqui(0.1), { horas_antes: 1 })).toBe(false);
+  });
+
+  it('a janela cobre o intervalo entre duas batidas do cron', () => {
+    expect(naHoraRelativa(daqui(1.4), { horas_antes: 1, janela_horas: 0.5 })).toBe(true);
+    expect(naHoraRelativa(daqui(1.6), { horas_antes: 1, janela_horas: 0.5 })).toBe(false);
+  });
+
+  it('horas negativas contam DEPOIS da data', () => {
+    expect(naHoraRelativa(daqui(-2), { horas_antes: -2 })).toBe(true);
+  });
+
+  it('data inválida nunca dispara', () => {
+    expect(naHoraRelativa('nao e data', { horas_antes: 1 })).toBe(false);
   });
 });
