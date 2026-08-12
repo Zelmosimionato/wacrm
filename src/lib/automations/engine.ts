@@ -915,6 +915,26 @@ export function triggerMatches(automation: Automation, ctx: AutomationContext | 
 async function evaluateCondition(cfg: ConditionStepConfig, args: ExecuteArgs): Promise<boolean> {
   const db = supabaseAdmin()
   switch (cfg.subject) {
+    /**
+     * O card ainda está NESTA etapa?
+     *
+     * ⛔ É o que torna possível uma régua sequencial. Entre um degrau e o
+     * seguinte passam dias, e nesse meio a pessoa pode ter respondido, marcado
+     * reunião ou sido fechada — a espera enfileirada não sabe de nada disso e
+     * acorda achando que o mundo parou. Sem esta pergunta, quem respondeu no
+     * segundo dia recebe a despedida no sexto.
+     */
+    case 'deal_stage': {
+      if (!args.contactId || !cfg.operand) return false
+      const { data } = await db
+        .from('deals')
+        .select('stage_id')
+        .eq('contact_id', args.contactId)
+        .eq('status', 'open')
+        .order('updated_at', { ascending: false })
+        .limit(1)
+      return Boolean(data?.length) && data?.[0]?.stage_id === cfg.operand
+    }
     case 'tag_presence': {
       if (!args.contactId || !cfg.operand) return false
       // contact_tags has no account_id column (its RLS keys off the parent

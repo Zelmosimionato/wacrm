@@ -576,7 +576,9 @@ export type ConditionSubject =
   | 'contact_field'
   | 'tag_presence'
   | 'message_content'
-  | 'time_of_day';
+  | 'time_of_day'
+  /** O card do contato ainda está na etapa `operand`? */
+  | 'deal_stage';
 
 export interface ConditionStepConfig {
   subject: ConditionSubject;
