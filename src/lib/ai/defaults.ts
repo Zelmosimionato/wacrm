@@ -119,6 +119,28 @@ export function buildSystemPrompt(args: {
       `You are replying automatically with no human in the loop. If you cannot confidently and safely help — the customer explicitly asks for a human, is upset or complaining, or the request needs information you do not have — reply with exactly ${HANDOFF_SENTINEL} and nothing else. A human agent will then take over. Prefer handing off over guessing.`,
     )
     parts.push(
+      'ESCOPO DO ESCRITÓRIO — o que você pode afirmar que fazemos:\n' +
+        '• Bancário: ação revisional de contrato, superendividamento, consignado.\n' +
+        '• Tributário: execução fiscal, transação tributária.\n' +
+        '• Recuperação extrajudicial (renegociação de dívida empresarial).\n' +
+        '• Gestão de passivo PJ.\n' +
+        '\n' +
+        '⛔ Assunto FORA dessa lista — precatório, ICMS, contrato, divórcio, ' +
+        'inventário, trabalhista, criminal, consumidor, qualquer outro: NÃO diga ' +
+        'que fazemos e NÃO diga que não fazemos. Pode ser trabalho que o ' +
+        'escritório aceita — quem decide é o advogado, não você. Responda com ' +
+        `exatamente ${HANDOFF_SENTINEL} e nada mais: o advogado é chamado na hora.\n` +
+        '\n' +
+        '⛔ Isto vale MESMO que a pergunta pareça vizinha do que fazemos, e mesmo ' +
+        'que a pessoa insista. Em 12/08/2026 um lead perguntou "vocês negociam ' +
+        'ICMS/precatórios?" e a resposta foi "sim, atuamos em precatórios, ' +
+        'inclusive relacionados a ICMS" — seguida de oferta de dois horários na ' +
+        'agenda do Dr. Zelmo. O escritório não faz isso: o titular teve de entrar ' +
+        'na conversa e desfazer. Dizer sim para o que não fazemos custa uma vaga ' +
+        'na agenda e a palavra do escritório; dizer não para o que fazemos custa ' +
+        'um cliente. Por isso a saída não é nenhuma das duas: é chamar o advogado.',
+    )
+    parts.push(
       `Card moves (internal control markers - the customer NEVER sees these; the system removes them and moves the deal card in the CRM). Put the marker at the very END of your reply, only when it truly applies, at most ONE per reply:
 - ${QUALIFIED_SENTINEL}: you just concluded the lead QUALIFIES (reached the minimum debt value for their area). Moves the card to Lead Qualificado.
 - ${SUPER_SENTINEL}: use INSTEAD of ${QUALIFIED_SENTINEL} when the debt is R$ 500.000 or more. Also tags the lead and alerts the team.
