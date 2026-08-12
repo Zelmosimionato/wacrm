@@ -69,6 +69,18 @@ export interface ConfigTempo {
   publico?: PublicoTempo
   /** ⛔ Só manda de verdade com `false` explícito. */
   ensaio?: boolean
+  /**
+   * Quanto tempo esta automação lembra que já falou com alguém.
+   *
+   *  - 'dia'      (padrão) uma vez por dia. Serve para aviso recorrente.
+   *  - 'sempre'   uma vez na VIDA. É o degrau de régua: "reengajamento" é
+   *               dito uma vez, e ponto. ⛔ Sem isto a migração do nurture.js
+   *               reenviaria a régua inteira para quem já a recebeu — no
+   *               ensaio de 12/08/2026 deu 50 pessoas contra 0 do nurture.
+   *  - 'por_data' uma vez por DATA do contato. É o lembrete: a mesma pessoa
+   *               tem várias reuniões, e cada uma merece o seu.
+   */
+  dedup?: 'dia' | 'sempre' | 'por_data'
 }
 
 /**
@@ -151,14 +163,27 @@ async function jaDisparouHoje(
   automationId: string,
   contactId: string,
   dia: string,
+  dedup: 'dia' | 'sempre' | 'por_data' = 'dia',
+  chave: string | null = null,
 ): Promise<boolean> {
-  const { data, error } = await db
+  let consulta = db
     .from('automation_logs')
     .select('id')
     .eq('automation_id', automationId)
     .eq('contact_id', contactId)
-    .gte('created_at', dia + 'T00:00:00-03:00')
-    .limit(1)
+    // ⛔ Ensaio NÃO conta como "já falei com essa pessoa".
+    //
+    // O ensaio grava no mesmo lugar que o envio real — é isso que permite
+    // comparar um com o outro. Mas com memória 'sempre', deixar o registro de
+    // ensaio contar queima a única chance da pessoa: ela apareceria como já
+    // atendida sem ter recebido nada. Descobri isso rodando o ensaio duas
+    // vezes em 12/08/2026 — na segunda, 100 pessoas já constavam como feitas.
+    .not('trigger_event', 'ilike', 'ENSAIO%')
+  // 'sempre' e 'por_data' não olham a data do registro: olham se JÁ EXISTE
+  // registro (e, no caso da data, se existe PARA AQUELA data).
+  if (dedup === 'dia') consulta = consulta.gte('created_at', dia + 'T00:00:00-03:00')
+  if (dedup === 'por_data' && chave) consulta = consulta.eq('trigger_event', chave)
+  const { data, error } = await consulta.limit(1)
   // Erro de consulta trava o envio de propósito: na dúvida, não manda.
   // Mandar de novo custa mais caro que não mandar.
   if (error) {
@@ -209,7 +234,7 @@ async function resolverPublico(
 
   let q = db
     .from('deals')
-    .select('contact_id, updated_at')
+    .select('contact_id, updated_at, stage_entered_at')
     .eq('account_id', accountId)
     .eq('stage_id', publico.stage_id)
     .eq('status', 'open')
@@ -226,7 +251,19 @@ async function resolverPublico(
   const ids: string[] = []
   for (const d of data ?? []) {
     if (!d.contact_id) continue
-    if (!dentroDoDegrau(d.updated_at as string, publico, agora)) continue
+    // ⛔ O relógio do degrau é STAGE_ENTERED_AT, não updated_at.
+    //
+    // `updated_at` muda a cada edição do card — uma nota, uma etiqueta, uma
+    // mensagem gravada. Em 12/08/2026 os 70 cards da etapa FUP apareciam todos
+    // como "parados há menos de 3 dias" pelo updated_at, enquanto 62 deles
+    // estavam ali havia mais de 6 dias de verdade. A régua nunca saía do
+    // primeiro degrau: ninguém chegava ao encerramento e, por isso, ninguém
+    // era fechado.
+    //
+    // `stage_entered_at` (migração 039) só muda quando o card TROCA de etapa,
+    // que é exatamente a pergunta "há quanto tempo está parado aqui".
+    const entrou = (d.stage_entered_at as string | null) ?? (d.updated_at as string)
+    if (!dentroDoDegrau(entrou, publico, agora)) continue
     ids.push(d.contact_id as string)
   }
 
@@ -284,8 +321,21 @@ export async function dispararPorTempo(): Promise<ResultadoTempo[]> {
     let pulados = 0
     const enviados: string[] = []
 
+    // A chave da memória por data: a própria data da reunião daquele contato.
+    const datas = new Map<string, string>()
+    if (cfg.dedup === 'por_data' && cfg.relativo) {
+      const { data: vals } = await db
+        .from('contact_custom_values')
+        .select('contact_id, value')
+        .eq('custom_field_id', cfg.relativo.campo)
+        .in('contact_id', contatos)
+      for (const v of vals ?? []) datas.set(v.contact_id as string, v.value as string)
+    }
+
     for (const contactId of contatos) {
-      if (await jaDisparouHoje(db, a.id as string, contactId, dia)) {
+      const chave =
+        cfg.dedup === 'por_data' ? `time_based:${datas.get(contactId) ?? '?'}` : null
+      if (await jaDisparouHoje(db, a.id as string, contactId, dia, cfg.dedup, chave)) {
         pulados++
         continue
       }
@@ -305,7 +355,8 @@ export async function dispararPorTempo(): Promise<ResultadoTempo[]> {
           account_id: a.account_id,
           user_id: a.user_id,
           contact_id: contactId,
-          trigger_event: 'time_based (ENSAIO)',
+          // O prefixo é o que a memória usa para ignorar este registro.
+          trigger_event: 'ENSAIO ' + (chave ?? 'time_based'),
           steps_executed: 0,
           status: 'success',
         })
