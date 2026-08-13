@@ -33,7 +33,8 @@ import {
   ArrowUp,
   MousePointerClick,
   List,
-  MoveRight,} from "lucide-react"
+  MoveRight,
+  Bell,} from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -112,6 +113,7 @@ const STEP_META: Record<AutomationStepType, StepMeta> = {
   condition: { label: "condition", icon: GitBranch, border: "border-l-amber-500" },
   send_webhook: { label: "send_webhook", icon: Webhook, border: "border-l-primary" },
   close_conversation: { label: "close_conversation", icon: CircleSlash, border: "border-l-primary" },
+  notify: { label: "notify", icon: Bell, border: "border-l-red-500" },
 }
 
 const ADDABLE_STEPS: AutomationStepType[] = [
@@ -129,6 +131,7 @@ const ADDABLE_STEPS: AutomationStepType[] = [
   "condition",
   "send_webhook",
   "close_conversation",
+  "notify",
 ]
 
 const TRIGGER_OPTIONS: { value: AutomationTriggerType }[] = [
@@ -141,6 +144,7 @@ const TRIGGER_OPTIONS: { value: AutomationTriggerType }[] = [
   { value: "tag_added" },
   { value: "time_based" },
   { value: "deal_stage_changed" },
+  { value: "awaiting_reply" },
 ]
 
 function cid(): string {
@@ -179,6 +183,14 @@ function blankConfig(type: AutomationStepType): Record<string, unknown> {
       return { tag_id: "" }
     case "assign_conversation":
       return { mode: "round_robin" }
+    case "notify":
+      // Padrao = avisar quem tem a conversa; sem dono, todo mundo.
+      return {
+        destinatario: "atribuido",
+        fallback: "todos",
+        titulo: "Conversa esperando resposta",
+        corpo: "",
+      }
     case "update_contact_field":
       return { field: "name", value: "" }
     case "create_deal":
@@ -871,6 +883,71 @@ function TriggerCard({
                 t={t}
               />
             )}
+            {type === "awaiting_reply" && (
+              <div className="space-y-3">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                    Avisar depois de quantas horas de espera
+                  </label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={String(config.horas_uteis ?? 0)}
+                    onChange={(e) =>
+                      onConfigChange({
+                        ...config,
+                        horas_uteis: Number(e.target.value) || 0,
+                      })
+                    }
+                    className="bg-muted text-foreground"
+                  />
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    0 avisa assim que a conversa fica esperando. Para a escada
+                    (na hora, +2h, +4h), crie uma automacao para cada valor —
+                    assim da para mexer numa sem tocar nas outras.
+                  </p>
+                </div>
+
+                <label className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={config.somente_horario_comercial !== false}
+                    onChange={(e) =>
+                      onConfigChange({
+                        ...config,
+                        somente_horario_comercial: e.target.checked,
+                      })
+                    }
+                    className="mt-0.5"
+                  />
+                  <span>
+                    Contar somente horario comercial (seg a sex, 9h-12h e
+                    13h-17h). Sem isso, 2h a partir das 16h50 caem as 18h50, com
+                    o escritorio fechado.
+                  </span>
+                </label>
+
+                <label className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={config.ia_conta_como_resposta === true}
+                    onChange={(e) =>
+                      onConfigChange({
+                        ...config,
+                        ia_conta_como_resposta: e.target.checked,
+                      })
+                    }
+                    className="mt-0.5"
+                  />
+                  <span>
+                    Resposta da IA encerra a espera. Desligado, a conversa segue
+                    esperando gente mesmo depois de a IA responder — que e o que
+                    acontece quando ela entrega o bastao.
+                  </span>
+                </label>
+              </div>
+            )}
             {type === "time_based" && (
               <div>
                 <label className="mb-1 block text-xs font-medium text-muted-foreground">
@@ -1334,6 +1411,63 @@ function StepEditor({
             t={t}
           />
         </FieldBlock>
+      )
+    case "notify":
+      return (
+        <>
+          <FieldBlock label="Quem recebe o aviso">
+            <select
+              value={(cfg.destinatario as string) ?? "atribuido"}
+              onChange={(e) => set({ destinatario: e.target.value })}
+              className="w-full rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-foreground"
+            >
+              <option value="atribuido">Quem tem a conversa atribuida</option>
+              <option value="todos">Todos da equipe</option>
+              <option value="usuario">Uma pessoa especifica</option>
+            </select>
+          </FieldBlock>
+
+          {cfg.destinatario === "usuario" && (
+            <FieldBlock label="Pessoa">
+              <AgentSelect
+                value={(cfg.user_id as string) ?? ""}
+                onChange={(v) => set({ user_id: v })}
+                t={t}
+              />
+            </FieldBlock>
+          )}
+
+          {((cfg.destinatario as string) ?? "atribuido") === "atribuido" && (
+            <FieldBlock label="Se ninguem estiver atribuido">
+              <select
+                value={(cfg.fallback as string) ?? "todos"}
+                onChange={(e) => set({ fallback: e.target.value })}
+                className="w-full rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-foreground"
+              >
+                <option value="todos">Avisar todos</option>
+                <option value="ninguem">Nao avisar ninguem</option>
+              </select>
+            </FieldBlock>
+          )}
+
+          <FieldBlock label="Titulo do aviso">
+            <Input
+              value={(cfg.titulo as string) ?? ""}
+              onChange={(e) => set({ titulo: e.target.value })}
+              placeholder="Conversa esperando resposta"
+              className="bg-muted text-foreground"
+            />
+          </FieldBlock>
+
+          <FieldBlock label="Texto (opcional)">
+            <Input
+              value={(cfg.corpo as string) ?? ""}
+              onChange={(e) => set({ corpo: e.target.value })}
+              placeholder="Aparece abaixo do titulo, na tela de Notificacoes"
+              className="bg-muted text-foreground"
+            />
+          </FieldBlock>
+        </>
       )
     case "assign_conversation":
       return (

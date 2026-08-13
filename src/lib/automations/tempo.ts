@@ -1,6 +1,8 @@
 import { createClient } from '@supabase/supabase-js'
 import { runAutomationsForTrigger } from './engine'
-import type { Automation } from '@/types'
+import type { Automation, AwaitingReplyTriggerConfig } from '@/types'
+import { dentroDoExpediente, passaramHorasUteis } from './horario-comercial'
+import { esperandoDesde, type MsgResumo } from './aguardando-resposta'
 
 /**
  * Disparo por tempo — a peça que faltava para lembretes e nutrição saírem
@@ -375,6 +377,146 @@ export async function dispararPorTempo(): Promise<ResultadoTempo[]> {
       pulados,
       contatos: enviados,
     })
+  }
+
+  return saida
+}
+
+
+/**
+ * ⛔ Teto por ciclo. Não é otimização: é para que um erro meu na consulta
+ * não vire enxurrada de aviso, como as 417 mensagens de 09/08. Quando bate
+ * no teto, o log diz — silêncio aqui pareceria "cobri tudo".
+ */
+const TETO_AVISOS_POR_CICLO = 50
+
+/**
+ * Conversas paradas esperando resposta humana.
+ *
+ * Diferente do `dispararPorTempo`, este NÃO nasce em ensaio: o único passo
+ * que ele executa (`notify`) escreve na tabela de notificação e não fala com
+ * cliente nenhum. O risco que o ensaio protege — mandar mensagem errada para
+ * fora — não existe aqui.
+ *
+ * ⭐ Só olha esperas que começaram DEPOIS da automação ser criada. Sem esse
+ * corte, ligar a automação faria disparar de uma vez toda conversa parada há
+ * dias — a enxurrada que o teto acima tenta impedir, chegando pela porta da
+ * frente.
+ */
+export async function dispararAguardandoResposta(): Promise<ResultadoTempo[]> {
+  const db = admin()
+  const { dia } = agoraSP()
+  const agora = Date.now()
+
+  const { data: automacoes, error } = await db
+    .from('automations')
+    .select('*')
+    .eq('is_active', true)
+    .eq('trigger_type', 'awaiting_reply')
+  if (error || !automacoes?.length) return []
+
+  const saida: ResultadoTempo[] = []
+
+  for (const a of automacoes) {
+    const cfg = (a.trigger_config ?? {}) as AwaitingReplyTriggerConfig
+    const horas = Number(cfg.horas_uteis ?? 0)
+    const soComercial = cfg.somente_horario_comercial !== false
+    const corte = new Date(a.created_at as string).getTime()
+
+    // Fora do expediente ninguém é avisado: o aviso esperaria a noite toda
+    // e chegaria velho. Volta a valer às 9h do próximo dia útil.
+    if (soComercial && !dentroDoExpediente(agora)) {
+      saida.push({ automacao: a.name as string, ensaio: false, alcancados: 0, pulados: 0, contatos: [] })
+      continue
+    }
+
+    const { data: convs, error: errConv } = await db
+      .from('conversations')
+      .select('id, contact_id, last_message_at')
+      .eq('account_id', a.account_id as string)
+      .neq('status', 'closed')
+      .not('last_message_at', 'is', null)
+      .gte('last_message_at', new Date(corte).toISOString())
+      .limit(500)
+    if (errConv || !convs?.length) {
+      if (errConv) console.error('[aguardando] conversas falharam:', errConv.message)
+      saida.push({ automacao: a.name as string, ensaio: false, alcancados: 0, pulados: 0, contatos: [] })
+      continue
+    }
+
+    const ids = convs.map((c) => c.id as string)
+    const { data: msgs, error: errMsg } = await db
+      .from('messages')
+      .select('conversation_id, sender_type, created_at')
+      .in('conversation_id', ids)
+      .gte('created_at', new Date(corte).toISOString())
+      .order('created_at', { ascending: false })
+      .limit(5000)
+    // Sem as mensagens não dá para saber quem espera — e chutar aqui seria
+    // avisar sobre conversa já respondida. Na dúvida, não avisa.
+    if (errMsg) {
+      console.error('[aguardando] mensagens falharam — nada disparado:', errMsg.message)
+      saida.push({ automacao: a.name as string, ensaio: false, alcancados: 0, pulados: 0, contatos: [] })
+      continue
+    }
+
+    const porConversa = new Map<string, MsgResumo[]>()
+    for (const m of msgs ?? []) {
+      const k = m.conversation_id as string
+      const lista = porConversa.get(k)
+      const item = { sender_type: m.sender_type as string, created_at: m.created_at as string }
+      if (lista) lista.push(item)
+      else porConversa.set(k, [item])
+    }
+
+    let alcancados = 0
+    let pulados = 0
+    const avisados: string[] = []
+    let truncou = false
+
+    for (const c of convs) {
+      const contactId = c.contact_id as string | null
+      if (!contactId) continue
+
+      const desde = esperandoDesde(porConversa.get(c.id as string) ?? [], cfg.ia_conta_como_resposta === true)
+      if (desde === null || desde < corte) continue
+
+      const pronto = soComercial
+        ? passaramHorasUteis(desde, horas, agora)
+        : agora - desde >= horas * 3_600_000
+      if (!pronto) continue
+
+      // Uma vez por episódio de espera: a chave é o instante em que ela
+      // começou. Reusa a mesma trava do disparo por tempo.
+      const chave = `awaiting_reply:${new Date(desde).toISOString()}`
+      if (await jaDisparouHoje(db, a.id as string, contactId, dia, 'por_data', chave)) {
+        pulados++
+        continue
+      }
+
+      if (avisados.length >= TETO_AVISOS_POR_CICLO) {
+        truncou = true
+        break
+      }
+
+      avisados.push(contactId)
+      alcancados++
+      await runAutomationsForTrigger({
+        accountId: a.account_id as string,
+        triggerType: 'awaiting_reply',
+        contactId,
+        context: { conversation_id: c.id as string, esperando_desde: new Date(desde).toISOString() },
+      })
+    }
+
+    if (truncou) {
+      console.warn(
+        `[aguardando] "${a.name}" bateu o teto de ${TETO_AVISOS_POR_CICLO} avisos neste ciclo — ` +
+          'o resto entra no próximo. Se isso repetir, há algo errado na regra.',
+      )
+    }
+
+    saida.push({ automacao: a.name as string, ensaio: false, alcancados, pulados, contatos: avisados })
   }
 
   return saida

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { dispararPorTempo } from '@/lib/automations/tempo'
+import { dispararPorTempo, dispararAguardandoResposta } from '@/lib/automations/tempo'
 
 /**
  * Porta do disparo por tempo. O cron da máquina bate aqui a cada 5 minutos.
@@ -22,7 +22,17 @@ export async function POST(request: Request) {
 
   try {
     const resultado = await dispararPorTempo()
-    return NextResponse.json({ ok: true, resultado })
+    // Os dois no mesmo ciclo, mas em try separado: falha de um não pode
+    // derrubar o outro — são gatilhos independentes que só dividem o relógio.
+    let aguardando
+    try {
+      aguardando = await dispararAguardandoResposta()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('[aguardando] falhou:', msg)
+      aguardando = { erro: msg }
+    }
+    return NextResponse.json({ ok: true, resultado, aguardando })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error('[tempo] falhou:', msg)

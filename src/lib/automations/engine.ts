@@ -18,6 +18,7 @@ import type {
   CreateDealStepConfig,
   MoveDealStepConfig,
   AssignConversationStepConfig,
+  NotifyStepConfig,
 } from '@/types'
 import { supabaseAdmin } from './admin-client'
 import { engineSendText, engineSendTemplate, engineSendInteractive } from './meta-send'
@@ -39,6 +40,8 @@ export interface AutomationContext {
   tag_id?: string
   /** Agent the conversation was assigned to, for conversation_assigned. */
   agent_id?: string
+  /** Quando a espera comecou, para o gatilho awaiting_reply. ISO. */
+  esperando_desde?: string
   /** Button / list-row id the customer tapped, for interactive_reply. */
   interactive_reply_id?: string
   /** The stage a deal entered, for deal_stage_changed. */
@@ -816,6 +819,57 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         .eq('account_id', args.automation.account_id)
         .eq('contact_id', args.contactId)
       return 'conversation closed'
+    }
+
+    case 'notify': {
+      // ⛔ Unico passo que nao fala com o cliente: escreve so na tabela
+      // `notifications`, lida pelo badge do menu e pela tela de Notificacao.
+      const cfg = step.step_config as NotifyStepConfig
+      if (!cfg.titulo) throw new Error('notify needs titulo')
+      const conversationId = await resolveConversationId(args)
+
+      const todosDaConta = async (): Promise<string[]> => {
+        const { data } = await db
+          .from('profiles')
+          .select('user_id')
+          .eq('account_id', args.automation.account_id)
+        return (data ?? []).map((p) => p.user_id as string)
+      }
+
+      let destinatarios: string[] = []
+      if (cfg.destinatario === 'usuario') {
+        if (cfg.user_id) destinatarios = [cfg.user_id]
+      } else if (cfg.destinatario === 'todos') {
+        destinatarios = await todosDaConta()
+      } else {
+        // 'atribuido': quem assumiu a conversa. Sem dono, o default e avisar
+        // todo mundo — conversa orfa esperando resposta e justamente a que
+        // ninguem esta olhando; silenciar aqui seria o pior caso.
+        const { data: conv } = await db
+          .from('conversations')
+          .select('assigned_agent_id')
+          .eq('id', conversationId)
+          .maybeSingle()
+        const dono = conv?.assigned_agent_id as string | null | undefined
+        if (dono) destinatarios = [dono]
+        else if (cfg.fallback !== 'ninguem') destinatarios = await todosDaConta()
+      }
+
+      if (destinatarios.length === 0) return 'notify: sem destinatario'
+
+      const { error } = await db.from('notifications').insert(
+        destinatarios.map((uid) => ({
+          account_id: args.automation.account_id,
+          user_id: uid,
+          type: 'awaiting_reply',
+          conversation_id: conversationId,
+          contact_id: args.contactId ?? null,
+          title: cfg.titulo,
+          body: cfg.corpo ?? null,
+        })),
+      )
+      if (error) throw new Error(`notify failed: ${error.message}`)
+      return `notificados ${destinatarios.length}`
     }
 
     default:

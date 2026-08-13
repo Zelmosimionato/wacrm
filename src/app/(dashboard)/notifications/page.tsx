@@ -5,16 +5,18 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import type { Notification } from "@/types";
-import { Bell, CheckCheck, Loader2, UserPlus } from "lucide-react";
+import { Bell, CheckCheck, Clock, Loader2, UserPlus } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { NotificationRules } from "@/components/notifications/notification-rules";
 import { toast } from "sonner";
 
 // Icon per notification type. Only one type exists today
 // (conversation_assigned) but this keeps future types a one-line add.
 const TYPE_ICON: Record<Notification["type"], typeof Bell> = {
   conversation_assigned: UserPlus,
+  awaiting_reply: Clock,
 };
 
 export default function NotificationsPage() {
@@ -185,17 +187,22 @@ export default function NotificationsPage() {
         </Button>
       </div>
 
+      <NotificationRules />
+
       {notifications.length === 0 ? (
         <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-muted/40">
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
             <Bell className="h-6 w-6 text-primary" />
           </div>
           <p className="mt-3 text-sm font-medium text-foreground">
-            No notifications yet
+            Nenhum aviso por enquanto
+          </p>
+          <p className="mt-1 max-w-md text-center text-xs text-muted-foreground">
+            Aqui aparecem os avisos da equipe: quando alguem te atribui uma
+            conversa e quando uma conversa fica esperando resposta.
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            You&apos;ll see an alert here when someone assigns you a
-            conversation.
+            Os avisos sao configurados aqui em cima.
           </p>
         </div>
       ) : (

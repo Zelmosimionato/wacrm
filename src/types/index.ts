@@ -187,7 +187,7 @@ export interface Conversation {
 // Notifications (migration 027)
 // ============================================================
 
-export type NotificationType = 'conversation_assigned';
+export type NotificationType = 'conversation_assigned' | 'awaiting_reply';
 
 export interface Notification {
   id: string;
@@ -446,7 +446,10 @@ export type AutomationTriggerType =
   /** Customer tapped a reply button / list row whose id matches; lets
    *  multi-step menus be chained across automations. */
   | 'interactive_reply'
-  | 'deal_stage_changed';
+  | 'deal_stage_changed'
+  /** Conversa parada esperando resposta humana. Avaliado pelo ciclo de
+   *  tempo, nao por um evento: quem dispara e a passagem do prazo. */
+  | 'awaiting_reply';
 
 export type AutomationStepType =
   | 'send_message'
@@ -462,7 +465,10 @@ export type AutomationStepType =
   | 'wait'
   | 'condition'
   | 'send_webhook'
-  | 'close_conversation';
+  | 'close_conversation'
+  /** Avisa a equipe pela tabela `notifications`. ⛔ Nao fala com o
+   *  cliente: e o unico passo do motor que nao sai do escritorio. */
+  | 'notify';
 
 export type AutomationLogStatus = 'success' | 'partial' | 'failed';
 
@@ -480,6 +486,35 @@ export interface TimeBasedTriggerConfig {
   /** Cron expression or simple HH:mm string; engine can accept either. */
   schedule: string;
   timezone?: string;
+}
+
+/**
+ * Conversa aguardando resposta humana ha `horas_uteis`.
+ * A cadencia (na hora, +2h, +4h) nao vive aqui: sao automacoes
+ * separadas com horas diferentes, para o titular poder mexer numa
+ * sem tocar nas outras. A trava anti-repeticao de `tempo.ts` garante
+ * que cada uma dispare uma vez por conversa.
+ */
+export interface AwaitingReplyTriggerConfig {
+  /** 0 = assim que a conversa fica esperando. */
+  horas_uteis: number;
+  /** Conta so minuto util (seg-sex, 09-12 e 13-17). Default: true. */
+  somente_horario_comercial?: boolean;
+  /** Resposta da IA encerra a espera? Default: false — quando a IA
+   *  entrega o bastao, a conversa segue esperando humano. */
+  ia_conta_como_resposta?: boolean;
+}
+
+/** Destinatario do passo `notify`. */
+export interface NotifyStepConfig {
+  /** atribuido: quem tem a conversa. Sem atribuicao, cai em `fallback`.
+   *  todos: todo mundo da conta. usuario: `user_id` fixo. */
+  destinatario: 'atribuido' | 'todos' | 'usuario';
+  user_id?: string;
+  /** Usado quando `destinatario` e 'atribuido' e ninguem assumiu. */
+  fallback?: 'todos' | 'ninguem';
+  titulo: string;
+  corpo?: string;
 }
 
 export interface InteractiveReplyTriggerConfig {
@@ -607,6 +642,7 @@ export type AutomationStepConfig =
   | WaitStepConfig
   | ConditionStepConfig
   | SendWebhookStepConfig
+  | NotifyStepConfig
   | Record<string, never>
   | Record<string, unknown>;
 
