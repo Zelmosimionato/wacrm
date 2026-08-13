@@ -72,8 +72,13 @@ export function PipelineAnalytics({ stages, deals }: PipelineAnalyticsProps) {
 
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    // ⛔ `updated_at` responde "quando alguem mexeu no card", nao "quando o
+    // negocio foi perdido". Qualquer edicao em massa repinta a data de cards
+    // perdidos ha meses e os joga para dentro do mes atual — foi assim que
+    // "perdidos neste mes" (398) ficou maior que o total de ativos (265).
+    // `stage_entered_at` (migracao 039) so muda quando o card muda de etapa.
     const thisMonth = (d: Deal) => {
-      const ts = d.updated_at ?? d.created_at;
+      const ts = d.stage_entered_at ?? d.updated_at ?? d.created_at;
       return ts ? new Date(ts) >= monthStart : false;
     };
     const wonThisMonth = deals.filter(

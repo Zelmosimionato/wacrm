@@ -13,6 +13,17 @@
 /** App-wide fallback when no account/deal currency is available. */
 export const DEFAULT_CURRENCY = "USD";
 
+/**
+ * Idioma usado para formatar numero e moeda.
+ *
+ * ⛔ Antes daqui os formatadores passavam `undefined` como locale, o que
+ * significa "a lingua do navegador de quem esta olhando". O mesmo CRM mostrava
+ * `R$ 2.455.600` numa maquina e `2 455 600 R$` em outra — separador de milhar
+ * como espaco e o simbolo depois do numero. Formato de dinheiro nao pode
+ * depender da configuracao de quem abre a tela.
+ */
+export const LOCALE = process.env.NEXT_PUBLIC_APP_LOCALE || "pt-BR";
+
 export interface CurrencyOption {
   /** ISO-4217 code, e.g. "USD". Stored verbatim in the DB. */
   code: string;
@@ -64,7 +75,7 @@ export function formatCurrency(
   const code = (currency || DEFAULT_CURRENCY).trim();
   const amount = Number(value) || 0;
   try {
-    return new Intl.NumberFormat(undefined, {
+    return new Intl.NumberFormat(LOCALE, {
       style: "currency",
       currency: code,
       minimumFractionDigits: 0,
@@ -73,7 +84,7 @@ export function formatCurrency(
   } catch {
     // Invalid ISO code — show the raw code + grouped number so the
     // value is still legible instead of throwing.
-    return `${code} ${new Intl.NumberFormat(undefined, {
+    return `${code} ${new Intl.NumberFormat(LOCALE, {
       maximumFractionDigits: 0,
     }).format(amount)}`;
   }

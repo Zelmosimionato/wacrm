@@ -374,6 +374,14 @@ export interface Deal {
   created_at: string;
   updated_at?: string;
   /**
+   * Quando o card entrou na etapa atual (migracao 039, gatilho de banco).
+   * ⛔ Nao confundir com `updated_at`, que muda a cada edicao — usar este
+   * para "quanto tempo parado" e para contar movimento por periodo.
+   * ⚠️ Cards anteriores a 11/08/2026 foram preenchidos com `updated_at`
+   * como aproximacao; a propria migracao avisa para nao tratar como fato.
+   */
+  stage_entered_at?: string;
+  /**
    * Data/hora ISO da reunião do contato. ⚠️ Não é coluna de `deals`: vem de
    * `contact_custom_values` e é anexada ao carregar o funil, para a etapa de
    * agenda ordenar pela próxima reunião em vez da criação do card.
