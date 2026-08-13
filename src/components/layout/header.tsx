@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ModeToggle } from "@/components/layout/mode-toggle";
 import { MessageAlerts } from "@/components/layout/message-alerts";
+import { GlobalSearch } from "@/components/layout/global-search";
 
 const pageTitles: Record<string, string> = {
   "/dashboard": "dashboard",
@@ -73,6 +74,8 @@ export function Header({ onOpenSidebar }: HeaderProps) {
           {t(titleKey as string)}
         </h1>
       </div>
+
+      <GlobalSearch />
 
       <div className="flex items-center gap-1 sm:gap-2">
         <MessageAlerts />
