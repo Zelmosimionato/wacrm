@@ -432,7 +432,7 @@ export async function dispararAguardandoResposta(): Promise<ResultadoTempo[]> {
 
     const { data: convs, error: errConv } = await db
       .from('conversations')
-      .select('id, contact_id, last_message_at')
+      .select('id, contact_id, last_message_at, unread_count')
       .eq('account_id', a.account_id as string)
       .neq('status', 'closed')
       .not('last_message_at', 'is', null)
@@ -477,6 +477,13 @@ export async function dispararAguardandoResposta(): Promise<ResultadoTempo[]> {
     for (const c of convs) {
       const contactId = c.contact_id as string | null
       if (!contactId) continue
+
+      // ⛔ Abriu, para de avisar. Mesmo padrao da bolinha vermelha: se o
+      // humano ja olhou a conversa (`unread_count` zerado ao abrir), o aviso
+      // cumpriu o papel dele. Sem isto, o titular seria lembrado de algo que
+      // ele acabou de ler — e aviso que insiste no que ja se sabe e o que faz
+      // parar de ler aviso.
+      if (((c as { unread_count?: number }).unread_count ?? 0) === 0) continue
 
       const desde = esperandoDesde(porConversa.get(c.id as string) ?? [], cfg.ia_conta_como_resposta !== false)
       if (desde === null || desde < corte) continue
