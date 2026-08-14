@@ -146,6 +146,25 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
     case 'close_conversation':
       // No config required.
       break
+    case 'notify': {
+      // ⛔ Sem este caso o passo caia no `default` e a automacao NAO ligava:
+      // "Cannot keep automation active with invalid configuration". Foi o que
+      // travou as regras de 2h e 4h de "esperando resposta" (14/08/2026).
+      if (!nonEmpty(c.titulo)) {
+        issues.push({ path, message: 'notify precisa de um titulo' })
+      }
+      const dest = c.destinatario
+      if (dest != null && dest !== 'atribuido' && dest !== 'todos' && dest !== 'usuario') {
+        issues.push({
+          path,
+          message: 'destinatario deve ser "atribuido", "todos" ou "usuario"',
+        })
+      }
+      if (dest === 'usuario' && !nonEmpty(c.user_id)) {
+        issues.push({ path, message: 'destinatario "usuario" precisa de user_id' })
+      }
+      break
+    }
     default:
       issues.push({ path, message: `unknown step type: ${step.step_type}` })
   }
@@ -178,8 +197,19 @@ export function validateTriggerForActivation(
       })
     }
   } else if (triggerType === 'time_based') {
-    if (!nonEmpty(cfg.schedule)) {
-      issues.push({ path: 'trigger.schedule', message: 'schedule is required' })
+    // ⛔ O motor aceita DOIS eixos (tempo.ts): horario fixo (`schedule`) OU
+    // disparo relativo a uma data do contato (`relativo`), e os dois podem se
+    // somar. Exigir `schedule` sempre barrava automacao que o motor executa
+    // sem problema — foi o que impediu as FUP de serem ligadas (14/08/2026).
+    // O cabecalho deste arquivo diz que as regras aqui espelham o engine;
+    // esta nao espelhava.
+    const rel = cfg.relativo as { horas_antes?: unknown } | undefined
+    const temRelativo = !!rel && typeof rel === 'object' && rel.horas_antes != null
+    if (!nonEmpty(cfg.schedule) && !temRelativo) {
+      issues.push({
+        path: 'trigger.schedule',
+        message: 'informe um horario (schedule) ou um disparo relativo a uma data',
+      })
     }
   } else if (triggerType === 'tag_added') {
     if (!nonEmpty(cfg.tag_id)) {
@@ -188,6 +218,16 @@ export function validateTriggerForActivation(
   } else if (triggerType === 'deal_stage_changed') {
     if (!nonEmpty(cfg.stage_id)) {
       issues.push({ path: 'trigger.stage_id', message: 'stage is required' })
+    }
+  } else if (triggerType === 'awaiting_reply') {
+    // Sem config obrigatoria: `horas_uteis` ausente = 0 = avisa na hora.
+    // So um valor explicitamente invalido e recusado.
+    const h = cfg.horas_uteis
+    if (h != null && (typeof h !== 'number' || !Number.isFinite(h) || h < 0)) {
+      issues.push({
+        path: 'trigger.horas_uteis',
+        message: 'horas de espera deve ser um numero maior ou igual a zero',
+      })
     }
   } else if (triggerType === 'interactive_reply') {
     const ids = cfg.reply_ids

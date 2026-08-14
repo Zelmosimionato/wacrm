@@ -251,11 +251,42 @@ describe("validateTriggerForActivation", () => {
 
   it("requires schedule on time_based triggers", () => {
     expect(validateTriggerForActivation("time_based", {})).toEqual([
-      { path: "trigger.schedule", message: "schedule is required" },
+      {
+        path: "trigger.schedule",
+        message:
+          "informe um horario (schedule) ou um disparo relativo a uma data",
+      },
     ]);
     expect(
       validateTriggerForActivation("time_based", { schedule: "0 9 * * *" }),
     ).toEqual([]);
+  });
+
+  it("⭐ aceita time_based com disparo relativo e SEM schedule", () => {
+    // O motor (tempo.ts) aceita os dois eixos: horario fixo OU relativo a uma
+    // data do contato. Exigir `schedule` sempre barrava as FUP, que so usam o
+    // relativo — a automacao nao ligava e o titular via "Cannot keep
+    // automation active with invalid configuration" (14/08/2026).
+    expect(
+      validateTriggerForActivation("time_based", {
+        relativo: { campo: "abc", horas_antes: 1 },
+      }),
+    ).toEqual([]);
+  });
+
+  it("aceita awaiting_reply sem config e recusa horas negativas", () => {
+    expect(validateTriggerForActivation("awaiting_reply", {})).toEqual([]);
+    expect(
+      validateTriggerForActivation("awaiting_reply", { horas_uteis: 2 }),
+    ).toEqual([]);
+    expect(
+      validateTriggerForActivation("awaiting_reply", { horas_uteis: -1 }),
+    ).toEqual([
+      {
+        path: "trigger.horas_uteis",
+        message: "horas de espera deve ser um numero maior ou igual a zero",
+      },
+    ]);
   });
 
   it("requires tag_id on tag_added triggers", () => {
