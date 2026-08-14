@@ -326,6 +326,14 @@ interface ExecuteArgs {
   triggerEvent: string
 }
 
+/**
+ * Texto usado quando uma variavel de template resolve para vazio.
+ * ⛔ Nao e enfeite: a Meta REJEITA o envio quando um parametro vem vazio, e o
+ * resultado e a mensagem nao chegar. Em "Ola, {{1}}!" isto sai como
+ * "Ola, tudo bem!", que le natural. Preferir mandar imperfeito a nao mandar.
+ */
+const SEM_VALOR = 'tudo bem'
+
 async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
   const db = supabaseAdmin()
 
@@ -590,6 +598,23 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
           return a.localeCompare(b)
         })
         .map((k) => resolveTplVar(tplVars[k]))
+        .map((v, i) => {
+          // ⛔ Parametro VAZIO faz a Meta recusar o template inteiro — a
+          // mensagem nao sai, e a unica pista fica num `failed` que ninguem
+          // olha. Contato sem nome e comum aqui: formulario da Meta manda
+          // nome esquisito, e ja apareceu contato cujo "nome" era a frase
+          // que a pessoa digitou.
+          //
+          // Palavras do titular (14/08/2026): "sair Ola sem nome nao tem
+          // nenhum problema, o problema e nao sair ou sair com a variavel
+          // vazia". Entao: preenche e manda.
+          if (String(v ?? '').trim() !== '') return v
+          console.warn(
+            `[automations] parametro {{${i + 1}}} vazio em ${cfg.template_name} ` +
+              `(contato ${args.contactId}) — usando texto neutro para nao perder o envio`,
+          )
+          return SEM_VALOR
+        })
       const { whatsapp_message_id } = await engineSendTemplate({
         accountId: args.automation.account_id,
         userId: args.automation.user_id,
