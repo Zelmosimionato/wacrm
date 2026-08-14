@@ -478,7 +478,7 @@ export async function dispararAguardandoResposta(): Promise<ResultadoTempo[]> {
       const contactId = c.contact_id as string | null
       if (!contactId) continue
 
-      const desde = esperandoDesde(porConversa.get(c.id as string) ?? [], cfg.ia_conta_como_resposta === true)
+      const desde = esperandoDesde(porConversa.get(c.id as string) ?? [], cfg.ia_conta_como_resposta !== false)
       if (desde === null || desde < corte) continue
 
       const pronto = soComercial

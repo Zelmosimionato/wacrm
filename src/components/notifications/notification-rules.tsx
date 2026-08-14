@@ -72,7 +72,7 @@ export function NotificationRules() {
           is_active: Boolean(a.is_active),
           horas_uteis: Number(cfg.horas_uteis ?? 0),
           somente_horario_comercial: cfg.somente_horario_comercial !== false,
-          ia_conta_como_resposta: cfg.ia_conta_como_resposta === true,
+          ia_conta_como_resposta: cfg.ia_conta_como_resposta !== false,
           stepId: passo?.id ?? null,
           destinatario: (passo?.cfg.destinatario as string) ?? "atribuido",
         };
@@ -220,7 +220,7 @@ export function NotificationRules() {
                     void salvar(r, { ia_conta_como_resposta: e.target.checked })
                   }
                 />
-                resposta da IA encerra a espera
+                resposta da IA encerra a espera (desligue so para exigir humano)
               </label>
             </div>
           </div>

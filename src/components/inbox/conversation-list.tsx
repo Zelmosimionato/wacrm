@@ -36,14 +36,6 @@ interface ConversationListProps {
   resyncToken?: number;
 }
 
-import { esperandoDesde, type MsgResumo } from "@/lib/automations/aguardando-resposta";
-
-/**
- * ⛔ A bolinha vermelha usa a MESMA funcao que decide a notificacao de
- * "esperando resposta". Se um dia divergirem, a tela mostraria vermelho em
- * conversa que nao notifica (ou o contrario), e ninguem confiaria em nenhum
- * dos dois. Uma regra, duas superficies.
- */
 const STATUS_COLORS: Record<ConversationStatus, string> = {
   open: "bg-primary",
   pending: "bg-amber-500",
@@ -93,9 +85,6 @@ export function ConversationList({
   // the fetch runs once on mount so it's fine to read the slightly
   // older value — the very next render updates the ref for any
   // subsequent async completion.
-  // Conversas em que o cliente falou por ultimo e ninguem respondeu.
-  const [esperando, setEsperando] = useState<Set<string>>(new Set());
-
   const onConversationsLoadedRef = useRef(onConversationsLoaded);
   useEffect(() => {
     onConversationsLoadedRef.current = onConversationsLoaded;
@@ -129,37 +118,6 @@ export function ConversationList({
       onConversationsLoadedRef.current(conversas);
       setLoading(false);
 
-      // Quem esta esperando resposta. Uma consulta so para toda a lista: o
-      // `last_message_text` da conversa nao diz QUEM falou, e e isso que
-      // separa "precisa de mim" de "ja respondi".
-      const ids = conversas.map((c) => c.id).slice(0, 200);
-      if (ids.length === 0) return;
-      const desde = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
-      const { data: msgs } = await supabase
-        .from("messages")
-        .select("conversation_id, sender_type, created_at")
-        .in("conversation_id", ids)
-        .gte("created_at", desde)
-        .order("created_at", { ascending: false })
-        .limit(4000);
-      if (cancelled) return;
-
-      const porConversa = new Map<string, MsgResumo[]>();
-      for (const m of msgs ?? []) {
-        const k = m.conversation_id as string;
-        const item = {
-          sender_type: m.sender_type as string,
-          created_at: m.created_at as string,
-        };
-        const lista = porConversa.get(k);
-        if (lista) lista.push(item);
-        else porConversa.set(k, [item]);
-      }
-      const pendentes = new Set<string>();
-      for (const [id, lista] of porConversa) {
-        if (esperandoDesde(lista) !== null) pendentes.add(id);
-      }
-      setEsperando(pendentes);
     })();
 
     return () => {
@@ -440,27 +398,6 @@ export function ConversationList({
           every conversation instead of shrinking to the remaining
           space — the list then overflows and gets clipped by the
           parent's overflow-hidden with no scrollbar (issue #229). */}
-      {/* Legenda. As cores existiam sem explicacao nenhuma — o titular via
-          roxo, ambar e cinza sem saber o que era. */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-4 py-1.5 text-[11px] text-muted-foreground">
-        <span className="flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full bg-red-500" />
-          esperando voce
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full bg-primary" />
-          aberta
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full bg-amber-500" />
-          pendente
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full bg-muted-foreground" />
-          encerrada
-        </span>
-      </div>
-
       <ScrollArea className="min-h-0 flex-1">
         {loading ? (
           <div className="flex items-center justify-center py-12">
@@ -476,7 +413,6 @@ export function ConversationList({
               <ConversationItem
                 key={conv.id}
                 conversation={conv}
-                esperando={esperando.has(conv.id)}
                 isActive={conv.id === activeConversationId}
                 onSelect={handleSelect}
                 t={t}
@@ -498,11 +434,11 @@ interface ConversationItemProps {
 
 function ConversationItem({
   conversation,
-  esperando,
   isActive,
   onSelect,
   t,
-}: ConversationItemProps & { esperando?: boolean }) {
+}: ConversationItemProps) {
+  const naoLida = (conversation.unread_count ?? 0) > 0;
   const contact = conversation.contact;
   const displayName = contact?.name || contact?.phone || t("unknown");
   const initials = displayName.charAt(0).toUpperCase();
@@ -561,9 +497,14 @@ function ConversationItem({
                 "h-2 w-2 rounded-full",
                 // ⛔ Vermelho ganha do status: "precisa de voce" e mais
                 // urgente do que "esta aberta".
-                esperando ? "bg-red-500" : STATUS_COLORS[conversation.status]
+                // Vermelho = NAO LIDA. Regra do titular: "eu abro a
+                // conversa, se nada tiver que fazer, beleza, dei atencao
+                // — mas a bolinha volta" quando ele escrever de novo.
+                // ⛔ Reusa o mesmo `unread_count` do seletor "nao lidas":
+                // abrir a conversa ja zera no banco (message-thread).
+                naoLida ? "bg-red-500" : STATUS_COLORS[conversation.status]
               )}
-              title={esperando ? "esperando resposta" : conversation.status}
+              title={naoLida ? "nao lida" : conversation.status}
             />
           </div>
         </div>

@@ -508,8 +508,9 @@ export interface AwaitingReplyTriggerConfig {
   horas_uteis: number;
   /** Conta so minuto util (seg-sex, 09-12 e 13-17). Default: true. */
   somente_horario_comercial?: boolean;
-  /** Resposta da IA encerra a espera? Default: false — quando a IA
-   *  entrega o bastao, a conversa segue esperando humano. */
+  /** Resposta da IA encerra a espera? Default: TRUE — quem foi atendido
+   *  pela IA foi atendido. Desligar so se o escritorio quiser exigir
+   *  humano em toda conversa. */
   ia_conta_como_resposta?: boolean;
 }
 

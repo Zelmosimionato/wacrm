@@ -22,19 +22,20 @@ describe('esperandoDesde', () => {
     ])).toBe(t('2026-08-13T13:00:00Z'))
   })
 
-  it('⛔ resposta da IA NAO encerra a espera por padrao', () => {
-    // é o caso real: a Márcia responde e entrega o bastão; segue esperando gente.
+  it('⭐ resposta da IA encerra a espera (padrao)', () => {
+    // quem foi atendido pela Márcia foi atendido — o sinal existe para não
+    // deixar ninguém SEM atendimento, não para exigir humano em tudo.
     expect(esperandoDesde([
       m('customer', '2026-08-13T13:00:00Z'),
       m('bot', '2026-08-13T13:01:00Z'),
-    ])).toBe(t('2026-08-13T13:00:00Z'))
+    ])).toBeNull()
   })
 
-  it('a IA encerra a espera quando a automacao pede isso', () => {
+  it('a IA deixa de encerrar quando a automacao pede isso', () => {
     expect(esperandoDesde([
       m('customer', '2026-08-13T13:00:00Z'),
       m('bot', '2026-08-13T13:01:00Z'),
-    ], true)).toBeNull()
+    ], false)).toBe(t('2026-08-13T13:00:00Z'))
   })
 
   it('conta desde a primeira do cliente quando nunca respondemos', () => {

@@ -77,6 +77,8 @@ export function Header({ onOpenSidebar }: HeaderProps) {
 
       <GlobalSearch />
 
+      {pathname.startsWith("/inbox") ? <LegendaCores /> : null}
+
       <div className="flex items-center gap-1 sm:gap-2">
         <MessageAlerts />
         <ModeToggle />
@@ -149,5 +151,31 @@ export function Header({ onOpenSidebar }: HeaderProps) {
         </DropdownMenu>
       </div>
     </header>
+  );
+}
+
+/**
+ * Legenda das cores da lista de conversas, ao lado da busca global.
+ *
+ * ⛔ So aparece na Caixa de entrada: em Contatos ou Funis ela seria ruido.
+ * Nasceu porque as bolinhas existiam ha meses sem explicacao nenhuma — o
+ * titular via roxo, ambar e cinza e nao sabia o que era nenhum deles.
+ */
+function LegendaCores() {
+  const itens: [string, string][] = [
+    ["bg-red-500", "esperando voce"],
+    ["bg-primary", "aberta"],
+    ["bg-amber-500", "pendente"],
+    ["bg-muted-foreground", "encerrada"],
+  ];
+  return (
+    <div className="hidden shrink-0 items-center gap-3 text-[11px] text-muted-foreground xl:flex">
+      {itens.map(([cor, rotulo]) => (
+        <span key={rotulo} className="flex items-center gap-1 whitespace-nowrap">
+          <span className={`h-2 w-2 rounded-full ${cor}`} />
+          {rotulo}
+        </span>
+      ))}
+    </div>
   );
 }
