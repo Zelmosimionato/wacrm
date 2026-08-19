@@ -266,7 +266,20 @@ export async function resumePendingExecution(pending: {
 // Internal execution
 // ------------------------------------------------------------
 
-async function executeAutomation(automation: Automation, input: DispatchInput) {
+/**
+ * Roda UMA automação específica, já identificada pelo chamador — sem
+ * escolher entre as ativas do mesmo trigger_type.
+ *
+ * Exportada para o `tempo.ts`: antes ele avisava o motor genérico só com
+ * `triggerType: 'time_based'` (ou 'awaiting_reply'), e `runAutomationsForTrigger`
+ * buscava e rodava TODAS as automações ativas daquele tipo pro contato — não
+ * só a que tinha decidido, na sua própria janela/horário, que era a hora.
+ * Resultado: "1h antes" decidia que era a hora, chamava o motor genérico, e
+ * "véspera" (mesmo trigger_type, outra janela) vinha de carona, disparando
+ * fora do horário dela. `tempo.ts` já sabe QUAL automação é — chamar isto
+ * direto, em vez de `runAutomationsForTrigger`, fecha esse buraco.
+ */
+export async function executeAutomation(automation: Automation, input: DispatchInput) {
   const db = supabaseAdmin()
 
   const { data: log, error: logErr } = await db
@@ -501,11 +514,20 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         email: string | null
         company: string | null
       } | null = null
-      // Auto-fill: if the automation left the template variables empty,
-      // default {{1}} to the contact's first name -- so "just move the card"
-      // works without configuring the variable on every automation.
+      // Auto-fill: only when the automation never configured variables at
+      // all (cfg.variables is undefined/null) do we default to {{1}} = the
+      // contact's first name, so "just move the card" works without
+      // configuring the variable on every automation.
+      //
+      // ⛔ An EXPLICIT empty object ({}) must NOT trigger this fallback.
+      // A template can be edited on Meta's side to drop its only variable
+      // (happened to noshow_faltou_d0 on 18/08/2026) -- at that point the
+      // automation step is deliberately configured with zero variables, and
+      // treating "empty" the same as "unconfigured" silently re-injects a
+      // parameter Meta no longer expects, failing every send with
+      // #132000 "Number of parameters does not match".
       const tplVars: Record<string, unknown> =
-        cfg.variables && Object.keys(cfg.variables).length > 0
+        cfg.variables !== undefined && cfg.variables !== null
           ? cfg.variables
           : { '1': '{{nome}}' }
       const varsHaveToken = Object.values(tplVars).some(
@@ -524,6 +546,30 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
             email: string | null
             company: string | null
           } | null) ?? null
+      }
+      // {{card}} / {{card.titulo}} — o nome que está no CARD, não no contato.
+      //
+      // ⛔ Contato entra sem nome com frequência (WhatsApp só traz o número
+      // quando a pessoa não tem perfil público). Aí {{nome}} resolve vazio, a
+      // Meta RECUSA o template inteiro por parâmetro vazio, e o envio falha
+      // sem sintoma na tela. O card sempre tem título — é preenchido na
+      // criação, pelo formulário ou à mão. Por ordem do titular (14/08/2026),
+      // a cobrança de decisão puxa o nome do card.
+      // Pega o card ABERTO mais recente do contato: o mesmo critério que a
+      // condição `deal_stage` já usa, para as duas não divergirem.
+      let cardTitulo = ''
+      const pedeCard = Object.values(tplVars).some(
+        (v) => typeof v === 'string' && /\{\{\s*card/i.test(v),
+      )
+      if (pedeCard && args.contactId) {
+        const { data: dl } = await db
+          .from('deals')
+          .select('title')
+          .eq('contact_id', args.contactId)
+          .eq('status', 'open')
+          .order('updated_at', { ascending: false })
+          .limit(1)
+        cardTitulo = String(dl?.[0]?.title ?? '').trim()
       }
       // Campos personalizados: {{campo.Nome do campo}}.
       // ⛔ Sem isto a automacao nao alcanca a data da reuniao nem o link do
@@ -551,6 +597,10 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       }
 
       const tpl = tplContact
+      // Primeiro nome do card: "Keyza Nascimento dos Santos" -> "Keyza".
+      // Mesmo tratamento que {{nome}} dá ao nome do contato, para as duas
+      // fontes soarem iguais na mensagem. {{card.titulo}} devolve inteiro.
+      const cardPrimeiro = cardTitulo ? cardTitulo.split(/\s+/)[0] : ''
       const resolveTplVar = (raw: unknown): string => {
         let s = String(raw ?? '')
         s = s.replace(
@@ -558,9 +608,17 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
           (_m, nomeCampo: string) =>
             camposDoContato[String(nomeCampo).trim().toLowerCase()] ?? '',
         )
+        s = s
+          .replace(/\{\{\s*card\.titulo\s*\}\}/gi, () => cardTitulo)
+          .replace(/\{\{\s*card\s*\}\}/gi, () => cardPrimeiro)
         const c = tpl
         if (!c) return s
-        const firstName = c.name ? c.name.trim().split(/\s+/)[0] : ''
+        // ⛔ Nunca deixar {{nome}}/{{name}} virar string vazia: a Meta
+        // rejeita parâmetro de template vazio com #132000 "Number of
+        // parameters does not match". Contato sem nome (perfil do
+        // WhatsApp sem nome salvo) caía direto em '' antes deste fallback.
+        const nomeContato = (c.name && c.name.trim()) || cardPrimeiro || 'Cliente'
+        const firstName = nomeContato.trim().split(/\s+/)[0]
         return s
           .replace(
             /\{\{\s*contact\.(name|phone|email|company)\s*\}\}/gi,
@@ -571,7 +629,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
             /\{\{\s*(first_name|primeiro_nome|nome)\s*\}\}/gi,
             () => firstName,
           )
-          .replace(/\{\{\s*name\s*\}\}/gi, () => c.name ?? '')
+          .replace(/\{\{\s*name\s*\}\}/gi, () => nomeContato)
       }
 
       // Meta templates use positional {{1}}, {{2}}, … placeholders, so

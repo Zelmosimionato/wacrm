@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import { runAutomationsForTrigger } from './engine'
+import { executeAutomation } from './engine'
 import type { Automation, AwaitingReplyTriggerConfig } from '@/types'
 import { dentroDoExpediente, passaramHorasUteis } from './horario-comercial'
 import { esperandoDesde, type MsgResumo } from './aguardando-resposta'
@@ -314,6 +314,33 @@ export async function dispararPorTempo(): Promise<ResultadoTempo[]> {
     if (cfg.schedule && !estaNaHora(cfg.schedule, minutos)) continue
     if (!cfg.schedule && !cfg.relativo) continue
 
+    // ⭐ TRAVA DE RODADA — uma execução por agenda, custe o que custar.
+    // Em 14/08/2026 as duas batidas da janela (12:00 e 12:05) rodaram EM
+    // PARALELO: a primeira ainda estava enviando quando a segunda conferiu a
+    // repetição, e ~23 contatos receberam o template em dobro (TOCTOU — os
+    // dois loops checavam antes de o outro gravar). A trava é um UPDATE
+    // condicional em last_executed_at: só o processo que vencer a atualização
+    // roda a automação; o perdedor vê 0 linhas e pula inteira. Vale só para
+    // agenda fixa — automação puramente relativa PRECISA rodar a cada tick.
+    if (cfg.schedule) {
+      const { data: venceu } = await db
+        .from('automations')
+        .update({ last_executed_at: new Date().toISOString() })
+        .eq('id', a.id)
+        .or(`last_executed_at.is.null,last_executed_at.lt.${dia}T${cfg.schedule}:00-03:00`)
+        .select('id')
+      if (!venceu?.length) {
+        saida.push({
+          automacao: (a as Automation).name,
+          ensaio: cfg.ensaio !== false,
+          alcancados: 0,
+          pulados: 0,
+          contatos: [],
+        })
+        continue
+      }
+    }
+
     const ensaio = cfg.ensaio !== false // ⛔ só manda com `false` explícito
     const contatos = cfg.relativo
       ? await publicoPorData(db, cfg.relativo, Date.now())
@@ -343,7 +370,28 @@ export async function dispararPorTempo(): Promise<ResultadoTempo[]> {
       }
       enviados.push(contactId)
       if (!ensaio) {
-        await runAutomationsForTrigger({
+        // ⭐ RESERVA antes do envio: grava AQUI o registro EXATO que
+        // jaDisparouHoje procura. O motor loga trigger_event='time_based'
+        // fixo — que NUNCA casa com a chave 'time_based:<data>' do dedup
+        // por_data: a trava dos lembretes relativos comparava com um
+        // registro que não existia (repetição a cada tick da janela).
+        // Reservar primeiro também encolhe a corrida checagem→envio de
+        // minutos para milissegundos. Se o envio falhar depois, o custo é
+        // não repetir — mais barato que mandar duas vezes.
+        await db.from('automation_logs').insert({
+          automation_id: a.id,
+          account_id: a.account_id,
+          user_id: a.user_id,
+          contact_id: contactId,
+          trigger_event: chave ?? 'time_based',
+          steps_executed: [],
+          status: 'success',
+        })
+        // ⭐ 17/08/2026: chama SÓ esta automação (`a`), não mais o motor
+        // genérico por trigger_type — ver o comentário em cima de
+        // `executeAutomation` no engine.ts. Rodar por tipo fazia "1h antes"
+        // acordar "véspera" de carona, fora da janela dela.
+        await executeAutomation(a as Automation, {
           accountId: a.account_id as string,
           triggerType: 'time_based',
           contactId,
@@ -366,10 +414,15 @@ export async function dispararPorTempo(): Promise<ResultadoTempo[]> {
       alcancados++
     }
 
-    console.log(
-      `[tempo] ${hhmm} · ${(a as Automation).name} · ${ensaio ? 'ENSAIO' : 'ENVIO REAL'} · ` +
-      `alcançados=${alcancados} pulados=${pulados}`,
-    )
+    // ⛔ Só registra ciclo que FEZ algo. Uma linha por automação a cada 5 min,
+    // quase sempre "alcançados=0 pulados=0", enche o log da VPS e afoga a
+    // linha que interessa — a de quando a mensagem realmente saiu.
+    if (alcancados || pulados) {
+      console.log(
+        `[tempo] ${hhmm} · ${(a as Automation).name} · ${ensaio ? 'ENSAIO' : 'ENVIO REAL'} · ` +
+        `alcançados=${alcancados} pulados=${pulados}`,
+      )
+    }
     saida.push({
       automacao: (a as Automation).name,
       ensaio,
@@ -417,9 +470,24 @@ export async function dispararAguardandoResposta(): Promise<ResultadoTempo[]> {
 
   const saida: ResultadoTempo[] = []
 
+  // ⛔ TETO DA FAIXA — o degrau tem começo E fim, igual à régua de etapa.
+  //
+  // Cada regra só tinha PISO ("esperando há >= N horas"). Quem espera 5h
+  // satisfaz 0h, 2h e 4h ao mesmo tempo e recebe os TRÊS avisos no mesmo
+  // minuto — foi o que apareceu na tela em 14/08/2026. É o mesmo defeito que
+  // `dias_parado_max` já resolveu para a nutrição, e que aqui ninguém pôs.
+  //
+  // O teto de cada regra é o piso da regra seguinte: com 0h, 2h e 4h ligadas,
+  // "na hora" vale de 0 a 2, "2h" de 2 a 4, e "4h" daí para cima (a última
+  // faixa fica aberta, senão a espera longa não avisaria ninguém).
+  const degraus = automacoes
+    .map((x) => Number(((x.trigger_config ?? {}) as AwaitingReplyTriggerConfig).horas_uteis ?? 0))
+    .sort((x, y) => x - y)
+
   for (const a of automacoes) {
     const cfg = (a.trigger_config ?? {}) as AwaitingReplyTriggerConfig
     const horas = Number(cfg.horas_uteis ?? 0)
+    const tetoHoras = degraus.find((h) => h > horas) ?? Infinity
     const soComercial = cfg.somente_horario_comercial !== false
     const corte = new Date(a.created_at as string).getTime()
 
@@ -472,6 +540,9 @@ export async function dispararAguardandoResposta(): Promise<ResultadoTempo[]> {
     let alcancados = 0
     let pulados = 0
     const avisados: string[] = []
+    // Conversas que JÁ foram atendidas neste ciclo — o aviso delas não serve
+    // mais e é apagado da caixa (ver baixa em massa depois do laço).
+    const atendidas: string[] = []
     let truncou = false
 
     for (const c of convs) {
@@ -483,7 +554,10 @@ export async function dispararAguardandoResposta(): Promise<ResultadoTempo[]> {
       // cumpriu o papel dele. Sem isto, o titular seria lembrado de algo que
       // ele acabou de ler — e aviso que insiste no que ja se sabe e o que faz
       // parar de ler aviso.
-      if (((c as { unread_count?: number }).unread_count ?? 0) === 0) continue
+      if (((c as { unread_count?: number }).unread_count ?? 0) === 0) {
+        atendidas.push(c.id as string)
+        continue
+      }
 
       const desde = esperandoDesde(porConversa.get(c.id as string) ?? [], cfg.ia_conta_como_resposta !== false)
       if (desde === null || desde < corte) continue
@@ -492,6 +566,14 @@ export async function dispararAguardandoResposta(): Promise<ResultadoTempo[]> {
         ? passaramHorasUteis(desde, horas, agora)
         : agora - desde >= horas * 3_600_000
       if (!pronto) continue
+      // Passou do degrau seguinte? Então este aviso não é mais o desta faixa —
+      // quem avisa é a regra de cima. Sem isto, os três disparam juntos.
+      const passouDoTeto =
+        tetoHoras !== Infinity &&
+        (soComercial
+          ? passaramHorasUteis(desde, tetoHoras, agora)
+          : agora - desde >= tetoHoras * 3_600_000)
+      if (passouDoTeto) continue
 
       // Uma vez por episódio de espera: a chave é o instante em que ela
       // começou. Reusa a mesma trava do disparo por tempo.
@@ -508,12 +590,45 @@ export async function dispararAguardandoResposta(): Promise<ResultadoTempo[]> {
 
       avisados.push(contactId)
       alcancados++
-      await runAutomationsForTrigger({
+      // ⭐ RESERVA antes do envio — mesma razão do disparo por tempo: o motor
+      // loga trigger_event='awaiting_reply' fixo, que nunca casa com a chave
+      // 'awaiting_reply:<início>' que a trava procura. Sem esta linha, "uma
+      // vez por episódio" era promessa sem registro: o aviso repetiria a
+      // cada tick de 5 min enquanto a espera durasse.
+      await db.from('automation_logs').insert({
+        automation_id: a.id,
+        account_id: a.account_id,
+        user_id: a.user_id,
+        contact_id: contactId,
+        trigger_event: chave,
+        steps_executed: [],
+        status: 'success',
+      })
+      // Mesma razão do disparo por tempo (ver comentário lá em cima e em
+      // `executeAutomation` no engine.ts): chama SÓ esta automação (`a`),
+      // não o motor genérico por trigger_type.
+      await executeAutomation(a as Automation, {
         accountId: a.account_id as string,
         triggerType: 'awaiting_reply',
         contactId,
         context: { conversation_id: c.id as string, esperando_desde: new Date(desde).toISOString() },
       })
+    }
+
+    // ⭐ ATENDEU, LIMPA. O aviso é um lembrete de pendência, não um histórico:
+    // depois que o humano abre e responde, ele só ocupa a caixa e some no meio
+    // dos novos. Baixa em massa (`read_at`) nas conversas que já foram
+    // atendidas — e a regra REARMA sozinha, porque a memória é por episódio de
+    // espera (`awaiting_reply:<início>`): a próxima espera é outra chave e
+    // avisa de novo.
+    if (atendidas.length) {
+      const { error: errBaixa } = await db
+        .from('notifications')
+        .update({ read_at: new Date().toISOString() })
+        .eq('type', 'awaiting_reply')
+        .is('read_at', null)
+        .in('conversation_id', atendidas)
+      if (errBaixa) console.error('[aguardando] baixa dos avisos falhou:', errBaixa.message)
     }
 
     if (truncou) {
