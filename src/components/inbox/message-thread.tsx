@@ -235,10 +235,22 @@ export function MessageThread({
   const sessionInfo = useMemo(() => {
     if (!messages.length) return { expired: false, remaining: "" };
 
-    // Find last customer message
+    // Find last customer message ON THE OFFICIAL CHANNEL ONLY. Meta's 24h
+    // free-form window is per WhatsApp number: a reply on the unofficial
+    // number (channel 'web') does NOT reopen the official API's window,
+    // but before this filter any customer message — regardless of channel
+    // — counted, so the composer showed the window as open (no warning,
+    // send button enabled) while Meta's server rejected every "api" send
+    // as failed. Real incident 19/08/2026: contract + payment details sent
+    // to a client all silently failed for ~3h because their last message
+    // had come in on the unofficial number.
     const lastCustomerMsg = [...messages]
       .reverse()
-      .find((m) => m.sender_type === "customer");
+      .find(
+        (m) =>
+          m.sender_type === "customer" &&
+          (m as { channel?: string }).channel === "api",
+      );
 
     if (!lastCustomerMsg) return { expired: true, remaining: "No customer messages" };
 
