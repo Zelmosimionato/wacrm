@@ -547,16 +547,10 @@ export function MessageThread({
     async (payload: SendMediaPayload) => {
       if (!conversation) return;
 
-      // Mídia, modelos e botões existem só do lado do número oficial: o
-      // gateway do segundo número fala texto e nada mais. Deixar passar
-      // mandaria o arquivo pelo OUTRO número sem avisar — e o operador
-      // escolheu este de propósito. Recusa dizendo o motivo.
-      if (canal === "web") {
-        toast.error(
-          "Anexos só saem pelo número oficial. Troque o canal acima para enviar arquivo."
-        );
-        return;
-      }
+      // Modelos e botões continuam só do número oficial (recurso da API da
+      // Meta, o segundo número não tem). Anexo, desde 19/08/2026, sai pelos
+      // dois — o gateway do segundo número ganhou suporte a mídia
+      // (evo-adaptador + Evolution /message/sendMedia).
 
       // Documents show their filename in our own bubble (and to the
       // recipient as the Meta caption when no caption was typed); other
@@ -582,23 +576,41 @@ export function MessageThread({
       setReplyTo(null);
 
       try {
-        const res = await fetch("/api/whatsapp/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            conversation_id: conversation.id,
-            message_type: payload.kind,
-            media_url: payload.mediaUrl,
-            content_text: contentText,
-            filename: payload.filename,
-            reply_to_message_id: payload.replyToId,
-          }),
-        });
+        // Reply-to é recurso só da API oficial (a Meta guarda o contexto
+        // da citação); o segundo número não tem — por isso a rota web nem
+        // recebe esse campo, e a bolha citada não aparece nesse canal.
+        const res =
+          canal === "web"
+            ? await fetch("/api/whatsapp-web/mensagem", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  conversation_id: conversation.id,
+                  message_type: payload.kind,
+                  media_url: payload.mediaUrl,
+                  content_text: contentText,
+                  filename: payload.filename,
+                }),
+              })
+            : await fetch("/api/whatsapp/send", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  conversation_id: conversation.id,
+                  message_type: payload.kind,
+                  media_url: payload.mediaUrl,
+                  content_text: contentText,
+                  filename: payload.filename,
+                  reply_to_message_id: payload.replyToId,
+                }),
+              });
 
         const data = await res.json().catch(() => ({}));
 
         if (!res.ok) {
-          const reason = data?.error || `HTTP ${res.status}`;
+          // The official route answers {error}, the web route {erro} (PT) —
+          // same shape otherwise, different key.
+          const reason = data?.error || data?.erro || `HTTP ${res.status}`;
           console.error("Failed to send media:", reason);
           toast.error(`Failed to send: ${reason}`);
           onUpdateMessage(tempId, { status: "failed" });
