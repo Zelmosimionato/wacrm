@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, type MouseEvent } from "react";
 import { cn } from "@/lib/utils";
 import type { Message, MessageReaction } from "@/types";
 import {
@@ -70,21 +70,28 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
   const loadImage = useCallback(async () => {
     if (!url) return;
 
-    // Proxy URLs need auth fetch to create blob URL
-    if (url.startsWith("/api/whatsapp/media/")) {
-      try {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error("Failed to load media");
-        const blob = await res.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        setSrc(blobUrl);
-      } catch {
-        setError(true);
-      } finally {
-        setLoading(false);
-      }
-    } else {
+    // Sempre busca o arquivo e vira blob: antes de mostrar — não só pra
+    // URLs do proxy interno (/api/whatsapp/media/...). O atributo `download`
+    // do botão "Baixar", abaixo, só funciona em link de MESMA origem (regra
+    // de segurança do navegador); num link de outro domínio (ex: o bucket
+    // do Supabase usado pela mídia do número não-oficial) o navegador
+    // ignora `download` e só abre a página — daí só dava pra baixar via
+    // menu do próprio visualizador do navegador, não pelo botão do CRM.
+    // blob: é sempre "local", então o download sempre funciona.
+    if (url.startsWith("blob:") || url.startsWith("data:")) {
       setSrc(url);
+      setLoading(false);
+      return;
+    }
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("Failed to load media");
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      setSrc(blobUrl);
+    } catch {
+      setError(true);
+    } finally {
       setLoading(false);
     }
   }, [url]);
@@ -160,6 +167,46 @@ function MediaImage({ url, alt }: { url: string; alt: string }) {
   );
 }
 
+// Mesmo motivo do MediaImage: o atributo `download` do navegador só
+// funciona pra link de MESMA origem, e o media_url pode ser de outro
+// domínio (bucket do Supabase, número não-oficial). Busca o arquivo,
+// vira blob: (sempre local) e dispara o download a partir dele — se a
+// busca falhar por algum motivo, cai pro comportamento antigo (abre a
+// URL numa aba nova) em vez de travar o clique sem fazer nada.
+function DocumentLink({ url, label }: { url: string; label: string }) {
+  const baixar = useCallback(
+    async (e: MouseEvent) => {
+      e.preventDefault();
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Failed to load media");
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const nomeDoArquivo = (url.split("/").pop() || "documento").split("?")[0] || "documento";
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = label || nomeDoArquivo;
+        a.click();
+        URL.revokeObjectURL(blobUrl);
+      } catch {
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
+    },
+    [url, label],
+  );
+
+  return (
+    <a
+      href={url}
+      onClick={baixar}
+      className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-sm hover:bg-muted"
+    >
+      <FileText className="h-5 w-5 shrink-0 text-muted-foreground" />
+      <span className="truncate">{label}</span>
+    </a>
+  );
+}
+
 function MessageContent({ message, t }: { message: Message, t: ReturnType<typeof useTranslations> }) {
   switch (message.content_type) {
     case "text":
@@ -221,17 +268,10 @@ function MessageContent({ message, t }: { message: Message, t: ReturnType<typeof
         return <MediaUnavailable label={message.content_text || t("document")} t={t} />;
       }
       return (
-        <a
-          href={message.media_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-sm hover:bg-muted"
-        >
-          <FileText className="h-5 w-5 shrink-0 text-muted-foreground" />
-          <span className="truncate">
-            {message.content_text || t("document")}
-          </span>
-        </a>
+        <DocumentLink
+          url={message.media_url}
+          label={message.content_text || t("document")}
+        />
       );
 
     case "template":
