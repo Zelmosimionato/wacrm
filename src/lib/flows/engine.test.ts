@@ -17,6 +17,20 @@ const h = vi.hoisted(() => ({
     // offer_slots — cada teste seta o retorno que quer que
     // horariosLivres devolva (o mock nunca bate no Cal.com de verdade).
     horariosLivresReturn: [] as { iso: string; rotulo: string }[],
+    // book_meeting — a linha de `contacts` que a leitura de e-mail/nome/
+    // telefone lê, e o retorno que criarReserva devolve (também nunca
+    // bate no Cal.com de verdade).
+    contactRow: null as Record<string, unknown> | null,
+    criarReservaReturn: { ok: true, uid: "uid-1", inicio: "2026-08-12T18:00:00.000Z" } as
+      | { ok: true; uid: string; inicio: string }
+      | { ok: false; motivo: "indisponivel" | "email_invalido" | "recusado" },
+    // book_meeting — quando true, o UPDATE de flow_runs que grava
+    // booking_uid/booking_inicio_iso (identificado pelo payload) falha,
+    // pra exercitar o log de erro sem derrubar o UPDATE anterior do
+    // collect_input (que precisa continuar passando).
+    forceBookingVarsUpdateError: false,
+    // Todo insert em flow_run_events (= toda chamada a logEvent).
+    flowRunEvents: [] as { event_type: string; node_key: unknown; payload: unknown }[],
   },
 }));
 
@@ -33,6 +47,14 @@ vi.mock("./admin-client", () => {
     if (table === "flow_runs") {
       if (type === "update") {
         state.flowRunUpdates.push(payload as Record<string, unknown>);
+        const p = payload as { vars?: Record<string, unknown> } | undefined;
+        if (
+          state.forceBookingVarsUpdateError &&
+          p?.vars &&
+          "booking_uid" in p.vars
+        ) {
+          return { data: null, error: { message: "connection reset" } };
+        }
         return { data: null, error: null };
       }
       // Both loadActiveRunForContact and isDuplicateInbound read from
@@ -43,6 +65,11 @@ vi.mock("./admin-client", () => {
     if (table === "flow_run_events") {
       // insert() is logEvent(); the bare select() is the
       // isDuplicateInbound count query — always "not a duplicate" here.
+      if (type === "insert") {
+        state.flowRunEvents.push(
+          payload as { event_type: string; node_key: unknown; payload: unknown },
+        );
+      }
       return { data: [], error: null, count: 0 };
     }
     if (table === "flow_nodes") {
@@ -56,6 +83,9 @@ vi.mock("./admin-client", () => {
     }
     if (table === "flows") {
       return { data: state.flow, error: null };
+    }
+    if (table === "contacts") {
+      return { data: state.contactRow, error: null };
     }
     return { data: null, error: null };
   }
@@ -109,8 +139,16 @@ vi.mock("@/lib/appointments/calcom-slots", () => {
   };
 });
 
+vi.mock("@/lib/appointments/calcom-book", () => {
+  const { state } = h;
+  return {
+    criarReserva: vi.fn(async () => state.criarReservaReturn),
+  };
+});
+
 import { engineSendInteractiveList } from "./meta-send";
 import { horariosLivres } from "@/lib/appointments/calcom-slots";
+import { criarReserva } from "@/lib/appointments/calcom-book";
 import {
   matchReplyId,
   matchesKeywordTrigger,
@@ -259,12 +297,13 @@ describe("matchesKeywordTrigger", () => {
 });
 
 describe("node classification helpers", () => {
-  it("isAutoAdvancing covers start + send_message + send_media + condition + set_tag", () => {
+  it("isAutoAdvancing covers start + send_message + send_media + condition + set_tag + book_meeting", () => {
     expect(isAutoAdvancing("start")).toBe(true);
     expect(isAutoAdvancing("send_message")).toBe(true);
     expect(isAutoAdvancing("send_media")).toBe(true);
     expect(isAutoAdvancing("condition")).toBe(true);
     expect(isAutoAdvancing("set_tag")).toBe(true);
+    expect(isAutoAdvancing("book_meeting")).toBe(true);
     expect(isAutoAdvancing("send_buttons")).toBe(false);
     expect(isAutoAdvancing("send_list")).toBe(false);
     expect(isAutoAdvancing("collect_input")).toBe(false);
@@ -280,6 +319,7 @@ describe("node classification helpers", () => {
     expect(isSuspending("send_message")).toBe(false);
     expect(isSuspending("condition")).toBe(false);
     expect(isSuspending("set_tag")).toBe(false);
+    expect(isSuspending("book_meeting")).toBe(false);
     expect(isSuspending("handoff")).toBe(false);
     expect(isSuspending("end")).toBe(false);
   });
@@ -496,9 +536,14 @@ beforeEach(() => {
   h.state.flowRunUpdates = [];
   h.state.pendingResumeUpdates = [];
   h.state.horariosLivresReturn = [];
+  h.state.contactRow = null;
+  h.state.criarReservaReturn = { ok: true, uid: "uid-1", inicio: "2026-08-12T18:00:00.000Z" };
+  h.state.forceBookingVarsUpdateError = false;
+  h.state.flowRunEvents = [];
   vi.unstubAllEnvs();
   vi.mocked(engineSendInteractiveList).mockClear();
   vi.mocked(horariosLivres).mockClear();
+  vi.mocked(criarReserva).mockClear();
 });
 
 describe("dispatchInboundToFlows — wait node keyword interrupt", () => {
@@ -831,5 +876,209 @@ describe("dispatchInboundToFlows — offer_slots reply matching", () => {
     // matchReplyId (ramo pré-existente) resolveu normalmente — o ramo
     // novo exige node_type === "offer_slots" e nunca dispara aqui.
     expect(result.outcome).toBe("completed");
+  });
+});
+
+// ============================================================
+// dispatchInboundToFlows — nó book_meeting (Task 4). Entra pelo mesmo
+// caminho já usado acima pro collect_input: collect1 (collect_input,
+// só pra ter um nó suspenso que dispara o avanço) → book1
+// (book_meeting) → um dos ends. O vars pré-existente na run já traz
+// o slot escolhido (o que um offer_slots real teria gravado). Nem
+// criarReserva nem a leitura de `contacts` batem no mundo real —
+// ambos mockados via h.state.
+// ============================================================
+
+const BOOK_MEETING_CFG = {
+  slot_var_key: "horario_escolhido",
+  email_var_key: "email_capturado",
+  success_next_node_key: "booked_end",
+  failure_next_node_keys: {
+    indisponivel: "indisponivel_end",
+    sem_email: "sem_email_end",
+    generico: "generico_end",
+    // "email_invalido" e "recusado" ficam de fora de propósito — cobre
+    // o fallback pro ramo generico quando o motivo não tem ramo próprio.
+  },
+};
+
+const BOOK_MEETING_NODES = [
+  node({
+    node_key: "collect1",
+    node_type: "collect_input",
+    config: { prompt_text: "Qual seu nome?", var_key: "nome", next_node_key: "book1" },
+  }),
+  node({ node_key: "book1", node_type: "book_meeting", config: BOOK_MEETING_CFG }),
+  node({ node_key: "booked_end", node_type: "end", config: {} }),
+  node({ node_key: "indisponivel_end", node_type: "end", config: {} }),
+  node({ node_key: "sem_email_end", node_type: "end", config: {} }),
+  node({ node_key: "generico_end", node_type: "end", config: {} }),
+];
+
+function sendBookMeetingReply(
+  vars: Record<string, unknown> = {},
+  metaMessageId = "m-bm-1",
+) {
+  h.state.activeRun = waitRun({ current_node_key: "collect1", vars });
+  h.state.nodeRows = BOOK_MEETING_NODES;
+  return dispatchInboundToFlows({
+    accountId: "acct-1",
+    userId: "user-1",
+    contactId: "contact-1",
+    conversationId: "conv-1",
+    message: { kind: "text", text: "Zelmo", meta_message_id: metaMessageId },
+    isFirstInboundMessage: false,
+  });
+}
+
+describe("dispatchInboundToFlows — book_meeting node", () => {
+  it("reserva com sucesso — grava booking_uid/booking_inicio_iso em vars e avança pro success_next_node_key", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "sk_test");
+    vi.stubEnv("CALCOM_EVENT_TYPE_ID", "42");
+    h.state.contactRow = { name: "Zelmo Simionato", phone: "+5511999999999", email: "zelmo@example.com" };
+    h.state.criarReservaReturn = { ok: true, uid: "uid-abc", inicio: "2026-08-12T18:00:00.000Z" };
+
+    const result = await sendBookMeetingReply({ horario_escolhido: "2026-08-12T18:00:00.000Z" });
+
+    // booked_end é nó "end" → advanceFromNodeKey encerra a run.
+    expect(result.outcome).toBe("completed");
+    expect(criarReserva).toHaveBeenCalledWith({
+      eventTypeId: "42",
+      apiKey: "sk_test",
+      iso: "2026-08-12T18:00:00.000Z",
+      nome: "Zelmo Simionato",
+      email: "zelmo@example.com",
+      telefone: "+5511999999999",
+    });
+
+    const varsUpdate = h.state.flowRunUpdates.find(
+      (u) => u.vars !== undefined && "booking_uid" in (u.vars as object),
+    ) as { vars: Record<string, unknown> } | undefined;
+    expect(varsUpdate?.vars).toEqual({
+      nome: "Zelmo",
+      horario_escolhido: "2026-08-12T18:00:00.000Z",
+      booking_uid: "uid-abc",
+      booking_inicio_iso: "2026-08-12T18:00:00.000Z",
+    });
+  });
+
+  it("e-mail vem de vars[email_var_key], não do contato, quando presente", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "sk_test");
+    vi.stubEnv("CALCOM_EVENT_TYPE_ID", "42");
+    h.state.contactRow = { name: "Zelmo", phone: "+5511999999999", email: "do-contato@example.com" };
+    h.state.criarReservaReturn = { ok: true, uid: "uid-abc", inicio: "2026-08-12T18:00:00.000Z" };
+
+    await sendBookMeetingReply({
+      horario_escolhido: "2026-08-12T18:00:00.000Z",
+      email_capturado: "digitado@example.com",
+    });
+
+    expect(criarReserva).toHaveBeenCalledWith(
+      expect.objectContaining({ email: "digitado@example.com" }),
+    );
+  });
+
+  it("criarReserva devolve falha com motivo mapeado (indisponivel) — avança pro ramo correspondente, sem gravar booking_uid", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "sk_test");
+    vi.stubEnv("CALCOM_EVENT_TYPE_ID", "42");
+    h.state.contactRow = { name: "Zelmo", phone: "+5511999999999", email: "zelmo@example.com" };
+    h.state.criarReservaReturn = { ok: false, motivo: "indisponivel" };
+
+    const result = await sendBookMeetingReply({ horario_escolhido: "2026-08-12T18:00:00.000Z" });
+
+    expect(result.outcome).toBe("completed");
+    expect(
+      h.state.flowRunUpdates.some(
+        (u) => u.vars !== undefined && "booking_uid" in (u.vars as object),
+      ),
+    ).toBe(false);
+  });
+
+  it("motivo de falha sem ramo próprio configurado (recusado) — cai no fallback generico", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "sk_test");
+    vi.stubEnv("CALCOM_EVENT_TYPE_ID", "42");
+    h.state.contactRow = { name: "Zelmo", phone: "+5511999999999", email: "zelmo@example.com" };
+    h.state.criarReservaReturn = { ok: false, motivo: "recusado" };
+
+    // Sem ramo "recusado" no BOOK_MEETING_CFG.failure_next_node_keys —
+    // a ramificação em si (generico_end) não é observável só pelo
+    // outcome (generico_end também é "end"), então a prova é o evento
+    // logado com o motivo real antes do fallback.
+    const result = await sendBookMeetingReply({ horario_escolhido: "2026-08-12T18:00:00.000Z" });
+
+    expect(result.outcome).toBe("completed");
+    expect(criarReserva).toHaveBeenCalledTimes(1);
+    const falhaEvent = h.state.flowRunEvents.find(
+      (e) =>
+        e.event_type === "node_entered" &&
+        (e.payload as { result?: string; motivo?: string } | undefined)?.result === "falha",
+    );
+    expect((falhaEvent?.payload as { motivo?: string } | undefined)?.motivo).toBe("recusado");
+  });
+
+  it("sem slot_var_key em vars — avança pro ramo generico sem chamar criarReserva", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "sk_test");
+    vi.stubEnv("CALCOM_EVENT_TYPE_ID", "42");
+    h.state.contactRow = { name: "Zelmo", phone: "+5511999999999", email: "zelmo@example.com" };
+
+    const result = await sendBookMeetingReply({});
+
+    expect(result.outcome).toBe("completed");
+    expect(criarReserva).not.toHaveBeenCalled();
+  });
+
+  it("sem CALCOM_API_KEY/CALCOM_EVENT_TYPE_ID configurados — avança pro ramo generico sem chamar criarReserva", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "");
+    vi.stubEnv("CALCOM_EVENT_TYPE_ID", "");
+    h.state.contactRow = { name: "Zelmo", phone: "+5511999999999", email: "zelmo@example.com" };
+
+    const result = await sendBookMeetingReply({ horario_escolhido: "2026-08-12T18:00:00.000Z" });
+
+    expect(result.outcome).toBe("completed");
+    expect(criarReserva).not.toHaveBeenCalled();
+  });
+
+  it("sem e-mail (nem em vars, nem no contato) — avança pro ramo sem_email sem chamar criarReserva", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "sk_test");
+    vi.stubEnv("CALCOM_EVENT_TYPE_ID", "42");
+    h.state.contactRow = { name: "Zelmo", phone: "+5511999999999", email: null };
+
+    const result = await sendBookMeetingReply({ horario_escolhido: "2026-08-12T18:00:00.000Z" });
+
+    expect(result.outcome).toBe("completed");
+    expect(criarReserva).not.toHaveBeenCalled();
+  });
+
+  it("update de flow_runs falha ao gravar booking_uid/booking_inicio_iso — loga o erro (padrão de offer_slots_vars_persist_failed) mas ainda avança pro success_next_node_key", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "sk_test");
+    vi.stubEnv("CALCOM_EVENT_TYPE_ID", "42");
+    h.state.contactRow = { name: "Zelmo", phone: "+5511999999999", email: "zelmo@example.com" };
+    h.state.criarReservaReturn = { ok: true, uid: "uid-abc", inicio: "2026-08-12T18:00:00.000Z" };
+    h.state.forceBookingVarsUpdateError = true;
+
+    const result = await sendBookMeetingReply({ horario_escolhido: "2026-08-12T18:00:00.000Z" });
+
+    // Booking já existe no Cal.com — só a gravação local falhou, o que
+    // NÃO deve travar o avanço (best-effort, igual offer_slots).
+    expect(result.outcome).toBe("completed");
+
+    const errEvent = h.state.flowRunEvents.find(
+      (e) =>
+        e.event_type === "error" &&
+        (e.payload as { reason?: string } | undefined)?.reason ===
+          "book_meeting_vars_persist_failed",
+    );
+    expect(errEvent).toBeDefined();
+    expect((errEvent?.payload as { detail?: string }).detail).toBe("connection reset");
+
+    // run.vars em memória não espelhou o UPDATE que falhou — mas o
+    // node_entered de sucesso ainda foi logado (a reserva de fato
+    // aconteceu no Cal.com, só a gravação local que falhou).
+    const successEvent = h.state.flowRunEvents.find(
+      (e) =>
+        e.event_type === "node_entered" &&
+        (e.payload as { result?: string } | undefined)?.result === "sucesso",
+    );
+    expect(successEvent).toBeDefined();
   });
 });

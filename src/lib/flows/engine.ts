@@ -40,8 +40,10 @@ import {
   engineSendText,
 } from "./meta-send";
 import { horariosLivres } from "@/lib/appointments/calcom-slots";
+import { criarReserva } from "@/lib/appointments/calcom-book";
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
 import {
+  type BookMeetingNodeConfig,
   type CollectInputNodeConfig,
   type ConditionNodeConfig,
   type DispatchInboundInput,
@@ -149,7 +151,8 @@ export function isAutoAdvancing(node_type: string): boolean {
     node_type === "send_message" ||
     node_type === "send_media" ||
     node_type === "condition" ||
-    node_type === "set_tag"
+    node_type === "set_tag" ||
+    node_type === "book_meeting"
   );
 }
 
@@ -814,6 +817,87 @@ async function advanceFromNodeKey(
         });
       }
       return { outcome: "advanced" };
+    }
+    if (node.node_type === "book_meeting") {
+      // Auto-advancing — the decision (which slot) already happened at
+      // the offer_slots node upstream; this node just executes the
+      // booking and branches by outcome. No isSuspending entry.
+      const cfg = node.config as unknown as BookMeetingNodeConfig;
+      const iso = run.vars[cfg.slot_var_key] as string | undefined;
+      const apiKey = process.env.CALCOM_API_KEY;
+      const eventTypeId = process.env.CALCOM_EVENT_TYPE_ID;
+      const { data: contactRow } = await db
+        .from("contacts")
+        .select("name, phone, email")
+        .eq("id", run.contact_id!)
+        .maybeSingle();
+      const contact = contactRow as
+        | { name: string | null; phone: string | null; email: string | null }
+        | null;
+      const email =
+        (cfg.email_var_key ? (run.vars[cfg.email_var_key] as string | undefined) : undefined) ||
+        contact?.email ||
+        undefined;
+
+      let failReason: keyof BookMeetingNodeConfig["failure_next_node_keys"] | null = null;
+      if (!iso || !apiKey || !eventTypeId) {
+        failReason = "generico";
+      } else if (!email) {
+        failReason = "sem_email";
+      }
+
+      if (!failReason) {
+        const reserva = await criarReserva({
+          eventTypeId: eventTypeId!,
+          apiKey: apiKey!,
+          iso: iso!,
+          nome: contact?.name ?? "Cliente",
+          email: email!,
+          telefone: contact?.phone ?? "",
+        });
+        if (reserva.ok) {
+          const newVars = {
+            ...run.vars,
+            booking_uid: reserva.uid,
+            booking_inicio_iso: reserva.inicio,
+          };
+          const { error: varsErr } = await db
+            .from("flow_runs")
+            .update({ vars: newVars })
+            .eq("id", run.id);
+          if (varsErr) {
+            // Booking already happened on Cal.com's side — only the
+            // local mirror failed. Same "engolido" failure the Task 2
+            // review flagged for offer_slots_vars_persist_failed:
+            // logging it here (rather than staying silent) is the fix,
+            // applied up front instead of waiting for a review round.
+            await logEvent(db, run.id, "error", node.node_key, {
+              reason: "book_meeting_vars_persist_failed",
+              detail: varsErr.message,
+            });
+          } else {
+            run.vars = newVars;
+          }
+          await logEvent(db, run.id, "node_entered", node.node_key, {
+            node_type: "book_meeting",
+            result: "sucesso",
+            booking_uid: reserva.uid,
+          });
+          currentKey = cfg.success_next_node_key;
+          continue;
+        }
+        failReason = reserva.motivo;
+      }
+
+      await logEvent(db, run.id, "node_entered", node.node_key, {
+        node_type: "book_meeting",
+        result: "falha",
+        motivo: failReason,
+      });
+      currentKey =
+        cfg.failure_next_node_keys[failReason as keyof typeof cfg.failure_next_node_keys] ??
+        cfg.failure_next_node_keys.generico;
+      continue;
     }
     if (node.node_type === "condition") {
       const cfg = node.config as unknown as ConditionNodeConfig;
