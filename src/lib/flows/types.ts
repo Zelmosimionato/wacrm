@@ -155,6 +155,49 @@ export interface WaitNodeConfig {
   }[];
 }
 
+export interface OfferSlotsNodeConfig {
+  /** Texto antes da lista (ex.: "Temos estes horários disponíveis:"). */
+  prompt_text: string;
+  /** Rótulo do botão que abre a lista — Meta exige, ≤ 20 caracteres. */
+  button_label: string;
+  /** Chave em vars onde grava o ISO escolhido. O nó book_meeting seguinte
+   *  lê desta MESMA chave via seu próprio slot_var_key — o autor do fluxo
+   *  amarra os dois usando o mesmo nome, igual ao var_key do collect_input. */
+  result_var_key: string;
+  /** Pra onde vai depois que a pessoa escolhe QUALQUER horário da lista. */
+  next_node_key: string;
+  /** Pra onde vai se o Cal.com não tiver horário livre (ou a chave/evento
+   *  não estiver configurado no ambiente) — nó auto-avança, não suspende. */
+  no_slots_next_node_key: string;
+}
+
+export interface BookMeetingNodeConfig {
+  /** Chave em vars onde está o ISO escolhido (setado por um offer_slots
+   *  anterior no mesmo fluxo, usando o mesmo nome em result_var_key). */
+  slot_var_key: string;
+  /** Chave em vars onde está o e-mail digitado (de um collect_input
+   *  anterior). Se ausente/vazio, cai pro e-mail já salvo no contato —
+   *  se também não tiver, é o motivo de falha "sem_email". */
+  email_var_key?: string;
+  success_next_node_key: string;
+  /** Um ramo por motivo de falha — cada um pode ter o texto certo no nó
+   *  de destino, em vez de um texto genérico. `generico` é obrigatório
+   *  (cobre qualquer motivo sem ramo próprio configurado). */
+  failure_next_node_keys: {
+    indisponivel?: string;
+    email_invalido?: string;
+    recusado?: string;
+    sem_email?: string;
+    generico: string;
+  };
+}
+
+export interface CancelMeetingNodeConfig {
+  /** Segue pra cá independente do cancelamento ter sucedido ou não —
+   *  best-effort, igual ao "cancela e libera" do desenho original. */
+  next_node_key: string;
+}
+
 export type ConditionOperator =
   | "equals"
   | "contains"
@@ -211,6 +254,9 @@ export type FlowNodeConfig =
   | { node_type: "send_media"; config: SendMediaNodeConfig }
   | { node_type: "collect_input"; config: CollectInputNodeConfig }
   | { node_type: "wait"; config: WaitNodeConfig }
+  | { node_type: "offer_slots"; config: OfferSlotsNodeConfig }
+  | { node_type: "book_meeting"; config: BookMeetingNodeConfig }
+  | { node_type: "cancel_meeting"; config: CancelMeetingNodeConfig }
   | { node_type: "condition"; config: ConditionNodeConfig }
   | { node_type: "set_tag"; config: SetTagNodeConfig }
   | { node_type: "handoff"; config: HandoffNodeConfig }
