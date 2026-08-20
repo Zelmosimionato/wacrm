@@ -39,6 +39,7 @@ import {
   engineSendMedia,
   engineSendText,
 } from "./meta-send";
+import { horariosLivres } from "@/lib/appointments/calcom-slots";
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
 import {
   type CollectInputNodeConfig,
@@ -48,6 +49,7 @@ import {
   type FlowNodeRow,
   type FlowRow,
   type FlowRunRow,
+  type OfferSlotsNodeConfig,
   type ParsedInbound,
   type SendButtonsNodeConfig,
   type SendListNodeConfig,
@@ -117,6 +119,29 @@ export function waitMs(cfg: { unit: "minutes" | "hours" | "days"; amount: number
   return Math.max(1_000, cfg.amount * unitMs);
 }
 
+/**
+ * Título curto pra linha de lista do WhatsApp — o `rotulo` que
+ * `horariosLivres` devolve ("segunda-feira, 11/08 às 14:00") passa dos
+ * 24 caracteres que a Meta aceita no título. Isto gera "11/08 14:00"
+ * (sempre ≤ 24); o `rotulo` completo vai na DESCRIÇÃO da linha, que
+ * aceita até 72 — ninguém perde informação, só muda de campo.
+ */
+export function rotuloCurto(iso: string): string {
+  const d = new Date(iso);
+  const data = new Intl.DateTimeFormat("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: "America/Sao_Paulo",
+  }).format(d);
+  const hora = new Intl.DateTimeFormat("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "America/Sao_Paulo",
+  }).format(d);
+  return `${data} ${hora}`;
+}
+
 /** Nodes that advance to a next_node_key without waiting for input. */
 export function isAutoAdvancing(node_type: string): boolean {
   return (
@@ -134,7 +159,8 @@ export function isSuspending(node_type: string): boolean {
     node_type === "send_buttons" ||
     node_type === "send_list" ||
     node_type === "collect_input" ||
-    node_type === "wait"
+    node_type === "wait" ||
+    node_type === "offer_slots"
   );
 }
 
@@ -708,6 +734,67 @@ async function advanceFromNodeKey(
         await endRun(db, run.id, "failed", "wait_schedule_failed");
         return { outcome: "completed" };
       }
+      const advanced = await advanceCurrentNodeKey(
+        db,
+        run.id,
+        run.current_node_key,
+        node.node_key,
+      );
+      if (!advanced) {
+        await logEvent(db, run.id, "error", node.node_key, {
+          reason: "lost_race_during_advance",
+        });
+      }
+      return { outcome: "advanced" };
+    }
+    if (node.node_type === "offer_slots") {
+      const cfg = node.config as unknown as OfferSlotsNodeConfig;
+      const apiKey = process.env.CALCOM_API_KEY;
+      const eventTypeId = process.env.CALCOM_EVENT_TYPE_ID;
+      const slots =
+        apiKey && eventTypeId ? await horariosLivres(eventTypeId, apiKey, 45, 10) : [];
+      if (slots.length === 0) {
+        currentKey = cfg.no_slots_next_node_key;
+        continue;
+      }
+      const offered = slots.map((s, i) => ({ id: `slot_${i}`, iso: s.iso }));
+      try {
+        const { whatsapp_message_id } = await engineSendInteractiveList({
+          accountId: run.account_id,
+          userId: run.user_id,
+          conversationId: run.conversation_id!,
+          contactId: run.contact_id!,
+          bodyText: interpolateVars(cfg.prompt_text, run.vars),
+          buttonLabel: cfg.button_label,
+          sections: [
+            {
+              rows: slots.map((s, i) => ({
+                id: `slot_${i}`,
+                title: rotuloCurto(s.iso),
+                description: s.rotulo,
+              })),
+            },
+          ],
+        });
+        await logEvent(db, run.id, "message_sent", node.node_key, {
+          node_type: "offer_slots",
+          whatsapp_message_id,
+          offered_count: offered.length,
+        });
+      } catch (err) {
+        await logEvent(db, run.id, "error", node.node_key, {
+          reason: "offer_slots_send_failed",
+          detail: err instanceof Error ? err.message : String(err),
+        });
+        await endRun(db, run.id, "failed", "offer_slots_send_failed");
+        return { outcome: "completed" };
+      }
+      const newVars = { ...run.vars, _offered_slots: offered };
+      const { error: varsErr } = await db
+        .from("flow_runs")
+        .update({ vars: newVars })
+        .eq("id", run.id);
+      if (!varsErr) run.vars = newVars;
       const advanced = await advanceCurrentNodeKey(
         db,
         run.id,

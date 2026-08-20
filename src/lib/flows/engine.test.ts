@@ -14,6 +14,9 @@ const h = vi.hoisted(() => ({
       payload: unknown;
       filters: [string, string, unknown][];
     }[],
+    // offer_slots — cada teste seta o retorno que quer que
+    // horariosLivres devolva (o mock nunca bate no Cal.com de verdade).
+    horariosLivresReturn: [] as { iso: string; rotulo: string }[],
   },
 }));
 
@@ -99,6 +102,15 @@ vi.mock("./meta-send", () => ({
   engineSendText: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
 }));
 
+vi.mock("@/lib/appointments/calcom-slots", () => {
+  const { state } = h;
+  return {
+    horariosLivres: vi.fn(async () => state.horariosLivresReturn),
+  };
+});
+
+import { engineSendInteractiveList } from "./meta-send";
+import { horariosLivres } from "@/lib/appointments/calcom-slots";
 import {
   matchReplyId,
   matchesKeywordTrigger,
@@ -107,6 +119,7 @@ import {
   isTerminal,
   evaluateConditionPredicate,
   waitMs,
+  rotuloCurto,
   dispatchInboundToFlows,
 } from "./engine";
 
@@ -482,6 +495,10 @@ beforeEach(() => {
   h.state.flow = null;
   h.state.flowRunUpdates = [];
   h.state.pendingResumeUpdates = [];
+  h.state.horariosLivresReturn = [];
+  vi.unstubAllEnvs();
+  vi.mocked(engineSendInteractiveList).mockClear();
+  vi.mocked(horariosLivres).mockClear();
 });
 
 describe("dispatchInboundToFlows — wait node keyword interrupt", () => {
@@ -571,5 +588,147 @@ describe("dispatchInboundToFlows — wait node keyword interrupt", () => {
     // === "wait" e nunca dispara aqui).
     expect(result.outcome).toBe("completed");
     expect(h.state.pendingResumeUpdates).toHaveLength(0);
+  });
+});
+
+// ============================================================
+// rotuloCurto — título curto de linha de lista (≤ 24 chars, exigência
+// da Meta), a partir do ISO cru que horariosLivres devolve.
+// ============================================================
+
+describe("rotuloCurto", () => {
+  it("formata dia/mês hora:minuto, sempre dentro do limite de 24 caracteres da Meta", () => {
+    const r = rotuloCurto("2026-08-11T17:00:00.000Z"); // 14:00 BRT (UTC-3)
+    expect(r).toBe("11/08 14:00");
+    expect(r.length).toBeLessThanOrEqual(24);
+  });
+});
+
+// ============================================================
+// dispatchInboundToFlows — nó offer_slots. Entra pelo mesmo caminho já
+// usado acima pro collect_input (reply de texto que captura e avança):
+// collect1 (collect_input) → offer1 (offer_slots) → book1/no_slots_end
+// (end). horariosLivres é mockado (não bate no Cal.com de verdade).
+// ============================================================
+
+const OFFER_SLOTS_CFG = {
+  prompt_text: "Temos estes horários disponíveis:",
+  button_label: "Ver horários",
+  result_var_key: "horario_escolhido",
+  next_node_key: "book1",
+  no_slots_next_node_key: "no_slots_end",
+};
+
+const OFFER_SLOTS_NODES = [
+  node({
+    node_key: "collect1",
+    node_type: "collect_input",
+    config: { prompt_text: "Qual seu nome?", var_key: "nome", next_node_key: "offer1" },
+  }),
+  node({ node_key: "offer1", node_type: "offer_slots", config: OFFER_SLOTS_CFG }),
+  node({ node_key: "book1", node_type: "end", config: {} }),
+  node({ node_key: "no_slots_end", node_type: "end", config: {} }),
+];
+
+function sendOfferSlotsReply(metaMessageId = "m-os-1") {
+  h.state.activeRun = waitRun({ current_node_key: "collect1" });
+  h.state.nodeRows = OFFER_SLOTS_NODES;
+  return dispatchInboundToFlows({
+    accountId: "acct-1",
+    userId: "user-1",
+    contactId: "contact-1",
+    conversationId: "conv-1",
+    message: { kind: "text", text: "Zelmo", meta_message_id: metaMessageId },
+    isFirstInboundMessage: false,
+  });
+}
+
+describe("dispatchInboundToFlows — offer_slots node", () => {
+  it("sem CALCOM_API_KEY/CALCOM_EVENT_TYPE_ID configurados — avança direto pro no_slots_next_node_key, sem chamar horariosLivres nem a lista", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "");
+    vi.stubEnv("CALCOM_EVENT_TYPE_ID", "");
+
+    const result = await sendOfferSlotsReply();
+
+    // no_slots_end é nó "end" → advanceFromNodeKey encerra a run.
+    expect(result.outcome).toBe("completed");
+    expect(horariosLivres).not.toHaveBeenCalled();
+    expect(engineSendInteractiveList).not.toHaveBeenCalled();
+  });
+
+  it("horariosLivres devolve lista vazia — avança direto pro no_slots_next_node_key, sem mandar a lista", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "sk_test");
+    vi.stubEnv("CALCOM_EVENT_TYPE_ID", "42");
+    h.state.horariosLivresReturn = [];
+
+    const result = await sendOfferSlotsReply();
+
+    expect(result.outcome).toBe("completed");
+    expect(horariosLivres).toHaveBeenCalledTimes(1);
+    expect(engineSendInteractiveList).not.toHaveBeenCalled();
+  });
+
+  it("com horários disponíveis — manda a lista formatada (título=rotuloCurto, descrição=rotulo completo) e grava _offered_slots", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "sk_test");
+    vi.stubEnv("CALCOM_EVENT_TYPE_ID", "42");
+    h.state.horariosLivresReturn = [
+      { iso: "2026-08-11T17:00:00.000Z", rotulo: "segunda-feira, 11/08 às 14:00" },
+      { iso: "2026-08-12T18:00:00.000Z", rotulo: "terça-feira, 12/08 às 15:00" },
+    ];
+
+    const result = await sendOfferSlotsReply();
+
+    // offer_slots suspende aguardando o tap na lista (Task 3 casa a
+    // resposta) — não é terminal.
+    expect(result.outcome).toBe("advanced");
+    expect(horariosLivres).toHaveBeenCalledWith("42", "sk_test", 45, 10);
+    expect(engineSendInteractiveList).toHaveBeenCalledTimes(1);
+
+    const args = vi.mocked(engineSendInteractiveList).mock.calls[0][0] as {
+      bodyText: string;
+      buttonLabel: string;
+      sections: { rows: { id: string; title: string; description?: string }[] }[];
+    };
+    expect(args.bodyText).toBe(OFFER_SLOTS_CFG.prompt_text);
+    expect(args.buttonLabel).toBe(OFFER_SLOTS_CFG.button_label);
+    expect(args.sections[0].rows).toEqual([
+      { id: "slot_0", title: "11/08 14:00", description: "segunda-feira, 11/08 às 14:00" },
+      { id: "slot_1", title: "12/08 15:00", description: "terça-feira, 12/08 às 15:00" },
+    ]);
+
+    // vars gravados: a captura do collect_input ("nome") sobrevive, e
+    // _offered_slots entra com o mapeamento id → iso. Duas UPDATEs de
+    // "vars" acontecem (a captura do collect_input, depois esta) —
+    // pega a que já tem _offered_slots.
+    const varsUpdate = h.state.flowRunUpdates.find(
+      (u) => u.vars !== undefined && "_offered_slots" in (u.vars as object),
+    ) as { vars: Record<string, unknown> } | undefined;
+    expect(varsUpdate?.vars).toEqual({
+      nome: "Zelmo",
+      _offered_slots: [
+        { id: "slot_0", iso: "2026-08-11T17:00:00.000Z" },
+        { id: "slot_1", iso: "2026-08-12T18:00:00.000Z" },
+      ],
+    });
+  });
+
+  it("engineSendInteractiveList lança erro — loga o erro, encerra a run como failed e devolve outcome completed", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "sk_test");
+    vi.stubEnv("CALCOM_EVENT_TYPE_ID", "42");
+    h.state.horariosLivresReturn = [
+      { iso: "2026-08-11T17:00:00.000Z", rotulo: "segunda-feira, 11/08 às 14:00" },
+    ];
+    vi.mocked(engineSendInteractiveList).mockImplementationOnce(async () => {
+      throw new Error("meta 400");
+    });
+
+    const result = await sendOfferSlotsReply();
+
+    expect(result.outcome).toBe("completed");
+    expect(
+      h.state.flowRunUpdates.some(
+        (u) => u.status === "failed" && u.end_reason === "offer_slots_send_failed",
+      ),
+    ).toBe(true);
   });
 });
