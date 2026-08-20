@@ -29,6 +29,9 @@ const h = vi.hoisted(() => ({
     // pra exercitar o log de erro sem derrubar o UPDATE anterior do
     // collect_input (que precisa continuar passando).
     forceBookingVarsUpdateError: false,
+    // cancel_meeting — o retorno que cancelCalcomBooking devolve (nunca
+    // bate no Cal.com de verdade); cada teste seta o que quer.
+    cancelCalcomBookingReturn: true as boolean,
     // Todo insert em flow_run_events (= toda chamada a logEvent).
     flowRunEvents: [] as { event_type: string; node_key: unknown; payload: unknown }[],
   },
@@ -146,9 +149,17 @@ vi.mock("@/lib/appointments/calcom-book", () => {
   };
 });
 
+vi.mock("@/lib/appointments/calcom-cancel", () => {
+  const { state } = h;
+  return {
+    cancelCalcomBooking: vi.fn(async () => state.cancelCalcomBookingReturn),
+  };
+});
+
 import { engineSendInteractiveList } from "./meta-send";
 import { horariosLivres } from "@/lib/appointments/calcom-slots";
 import { criarReserva } from "@/lib/appointments/calcom-book";
+import { cancelCalcomBooking } from "@/lib/appointments/calcom-cancel";
 import {
   matchReplyId,
   matchesKeywordTrigger,
@@ -297,13 +308,14 @@ describe("matchesKeywordTrigger", () => {
 });
 
 describe("node classification helpers", () => {
-  it("isAutoAdvancing covers start + send_message + send_media + condition + set_tag + book_meeting", () => {
+  it("isAutoAdvancing covers start + send_message + send_media + condition + set_tag + book_meeting + cancel_meeting", () => {
     expect(isAutoAdvancing("start")).toBe(true);
     expect(isAutoAdvancing("send_message")).toBe(true);
     expect(isAutoAdvancing("send_media")).toBe(true);
     expect(isAutoAdvancing("condition")).toBe(true);
     expect(isAutoAdvancing("set_tag")).toBe(true);
     expect(isAutoAdvancing("book_meeting")).toBe(true);
+    expect(isAutoAdvancing("cancel_meeting")).toBe(true);
     expect(isAutoAdvancing("send_buttons")).toBe(false);
     expect(isAutoAdvancing("send_list")).toBe(false);
     expect(isAutoAdvancing("collect_input")).toBe(false);
@@ -320,6 +332,7 @@ describe("node classification helpers", () => {
     expect(isSuspending("condition")).toBe(false);
     expect(isSuspending("set_tag")).toBe(false);
     expect(isSuspending("book_meeting")).toBe(false);
+    expect(isSuspending("cancel_meeting")).toBe(false);
     expect(isSuspending("handoff")).toBe(false);
     expect(isSuspending("end")).toBe(false);
   });
@@ -539,11 +552,13 @@ beforeEach(() => {
   h.state.contactRow = null;
   h.state.criarReservaReturn = { ok: true, uid: "uid-1", inicio: "2026-08-12T18:00:00.000Z" };
   h.state.forceBookingVarsUpdateError = false;
+  h.state.cancelCalcomBookingReturn = true;
   h.state.flowRunEvents = [];
   vi.unstubAllEnvs();
   vi.mocked(engineSendInteractiveList).mockClear();
   vi.mocked(horariosLivres).mockClear();
   vi.mocked(criarReserva).mockClear();
+  vi.mocked(cancelCalcomBooking).mockClear();
 });
 
 describe("dispatchInboundToFlows — wait node keyword interrupt", () => {
@@ -1118,5 +1133,152 @@ describe("dispatchInboundToFlows — book_meeting node", () => {
         (u) => u.vars !== undefined && "booking_uid" in (u.vars as object),
       ),
     ).toBe(false);
+  });
+});
+
+// ============================================================
+// dispatchInboundToFlows — nó cancel_meeting (Task 5). Mesmo caminho de
+// entrada usado acima pro book_meeting: collect1 (collect_input, só pra
+// ter um nó suspenso que dispara o avanço) → cancel1 (cancel_meeting) →
+// cancel_end. `run.vars.booking_uid` já vem pré-populado na run (o que
+// book_meeting real teria gravado). cancelCalcomBooking é mockado via
+// h.state — nunca bate no Cal.com de verdade.
+// ============================================================
+
+const CANCEL_MEETING_CFG = { next_node_key: "cancel_end" };
+
+const CANCEL_MEETING_NODES = [
+  node({
+    node_key: "collect1",
+    node_type: "collect_input",
+    config: { prompt_text: "Confirma o cancelamento?", var_key: "confirmacao", next_node_key: "cancel1" },
+  }),
+  node({ node_key: "cancel1", node_type: "cancel_meeting", config: CANCEL_MEETING_CFG }),
+  node({ node_key: "cancel_end", node_type: "end", config: {} }),
+];
+
+function sendCancelMeetingReply(
+  vars: Record<string, unknown> = {},
+  metaMessageId = "m-cm-1",
+) {
+  h.state.activeRun = waitRun({ current_node_key: "collect1", vars });
+  h.state.nodeRows = CANCEL_MEETING_NODES;
+  return dispatchInboundToFlows({
+    accountId: "acct-1",
+    userId: "user-1",
+    contactId: "contact-1",
+    conversationId: "conv-1",
+    message: { kind: "text", text: "sim", meta_message_id: metaMessageId },
+    isFirstInboundMessage: false,
+  });
+}
+
+describe("dispatchInboundToFlows — cancel_meeting node", () => {
+  it("booking_uid + CALCOM_API_KEY presentes — chama cancelCalcomBooking, loga cancelado:true e avança pro next_node_key", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "sk_test");
+    h.state.cancelCalcomBookingReturn = true;
+
+    const result = await sendCancelMeetingReply({ booking_uid: "uid-abc" });
+
+    // cancel_end é nó "end" → advanceFromNodeKey encerra a run.
+    expect(result.outcome).toBe("completed");
+    expect(cancelCalcomBooking).toHaveBeenCalledWith("uid-abc", "sk_test");
+
+    // O loop do runner já loga um node_entered genérico {node_type} pra
+    // TODO nó ao entrar nele (advanceFromNodeKey, antes do handler
+    // específico rodar) — por isso o filtro exige a chave "cancelado",
+    // que só o log específico do cancel_meeting grava, pra não pegar o
+    // genérico por engano.
+    const entered = h.state.flowRunEvents.find(
+      (e) =>
+        e.event_type === "node_entered" &&
+        e.node_key === "cancel1" &&
+        (e.payload as { cancelado?: boolean } | undefined)?.cancelado !== undefined,
+    );
+    expect(entered).toBeDefined();
+    expect((entered?.payload as { cancelado?: boolean }).cancelado).toBe(true);
+  });
+
+  it("cancelCalcomBooking devolve false — loga cancelado:false mas avança do mesmo jeito (best-effort, não ramifica)", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "sk_test");
+    h.state.cancelCalcomBookingReturn = false;
+
+    const result = await sendCancelMeetingReply({ booking_uid: "uid-abc" });
+
+    expect(result.outcome).toBe("completed");
+    expect(cancelCalcomBooking).toHaveBeenCalledWith("uid-abc", "sk_test");
+
+    const entered = h.state.flowRunEvents.find(
+      (e) =>
+        e.event_type === "node_entered" &&
+        e.node_key === "cancel1" &&
+        (e.payload as { cancelado?: boolean } | undefined)?.cancelado !== undefined,
+    );
+    expect((entered?.payload as { cancelado?: boolean }).cancelado).toBe(false);
+  });
+
+  it("cancelCalcomBooking lança (rejeita) — loga error com reason cancel_meeting_call_threw e avança do mesmo jeito", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "sk_test");
+    vi.mocked(cancelCalcomBooking).mockRejectedValueOnce(new Error("fetch failed"));
+
+    const result = await sendCancelMeetingReply({ booking_uid: "uid-abc" });
+
+    expect(result.outcome).toBe("completed");
+    expect(cancelCalcomBooking).toHaveBeenCalledTimes(1);
+
+    const threwEvent = h.state.flowRunEvents.find(
+      (e) =>
+        e.event_type === "error" &&
+        (e.payload as { reason?: string } | undefined)?.reason === "cancel_meeting_call_threw",
+    );
+    expect(threwEvent).toBeDefined();
+    expect((threwEvent?.payload as { detail?: string }).detail).toBe("fetch failed");
+
+    // Best-effort: quando a chamada lança, o catch loga "error" — não
+    // existe node_entered específico de cancel_meeting (nem cancelado
+    // nem motivo) pra esse caso, só o genérico {node_type} que o loop
+    // já grava pra todo nó. A run ainda avançou e encerrou normalmente.
+    const specificEntered = h.state.flowRunEvents.find(
+      (e) =>
+        e.event_type === "node_entered" &&
+        e.node_key === "cancel1" &&
+        (e.payload as { cancelado?: boolean; motivo?: string } | undefined) &&
+        ("cancelado" in (e.payload as object) || "motivo" in (e.payload as object)),
+    );
+    expect(specificEntered).toBeUndefined();
+  });
+
+  it("sem booking_uid em vars — não chama cancelCalcomBooking, loga motivo sem_booking_uid_ou_api_key, avança do mesmo jeito", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "sk_test");
+
+    const result = await sendCancelMeetingReply({});
+
+    expect(result.outcome).toBe("completed");
+    expect(cancelCalcomBooking).not.toHaveBeenCalled();
+
+    const entered = h.state.flowRunEvents.find(
+      (e) =>
+        e.event_type === "node_entered" &&
+        e.node_key === "cancel1" &&
+        (e.payload as { motivo?: string } | undefined)?.motivo !== undefined,
+    );
+    expect((entered?.payload as { motivo?: string }).motivo).toBe("sem_booking_uid_ou_api_key");
+  });
+
+  it("sem CALCOM_API_KEY configurado — não chama cancelCalcomBooking, loga motivo sem_booking_uid_ou_api_key, avança do mesmo jeito", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "");
+
+    const result = await sendCancelMeetingReply({ booking_uid: "uid-abc" });
+
+    expect(result.outcome).toBe("completed");
+    expect(cancelCalcomBooking).not.toHaveBeenCalled();
+
+    const entered = h.state.flowRunEvents.find(
+      (e) =>
+        e.event_type === "node_entered" &&
+        e.node_key === "cancel1" &&
+        (e.payload as { motivo?: string } | undefined)?.motivo !== undefined,
+    );
+    expect((entered?.payload as { motivo?: string }).motivo).toBe("sem_booking_uid_ou_api_key");
   });
 });

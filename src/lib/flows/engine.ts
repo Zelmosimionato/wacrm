@@ -41,9 +41,11 @@ import {
 } from "./meta-send";
 import { horariosLivres } from "@/lib/appointments/calcom-slots";
 import { criarReserva } from "@/lib/appointments/calcom-book";
+import { cancelCalcomBooking } from "@/lib/appointments/calcom-cancel";
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
 import {
   type BookMeetingNodeConfig,
+  type CancelMeetingNodeConfig,
   type CollectInputNodeConfig,
   type ConditionNodeConfig,
   type DispatchInboundInput,
@@ -152,7 +154,8 @@ export function isAutoAdvancing(node_type: string): boolean {
     node_type === "send_media" ||
     node_type === "condition" ||
     node_type === "set_tag" ||
-    node_type === "book_meeting"
+    node_type === "book_meeting" ||
+    node_type === "cancel_meeting"
   );
 }
 
@@ -909,6 +912,39 @@ async function advanceFromNodeKey(
       currentKey =
         cfg.failure_next_node_keys[failReason as keyof typeof cfg.failure_next_node_keys] ??
         cfg.failure_next_node_keys.generico;
+      continue;
+    }
+    if (node.node_type === "cancel_meeting") {
+      // Best-effort, de propósito — "cancela e libera" do desenho
+      // original: sempre segue pro next_node_key, sucesso ou falha, sem
+      // ramificar. cancelCalcomBooking documenta que nunca lança (devolve
+      // true/false), mas o try/catch fica como a mesma rede de segurança
+      // já aplicada em book_meeting/criarReserva — proteção contra uma
+      // chamada de rede externa que rejeite de um jeito inesperado.
+      const cfg = node.config as unknown as CancelMeetingNodeConfig;
+      const uid = run.vars.booking_uid as string | undefined;
+      const apiKey = process.env.CALCOM_API_KEY;
+      if (uid && apiKey) {
+        try {
+          const ok = await cancelCalcomBooking(uid, apiKey);
+          await logEvent(db, run.id, "node_entered", node.node_key, {
+            node_type: "cancel_meeting",
+            cancelado: ok,
+          });
+        } catch (err) {
+          await logEvent(db, run.id, "error", node.node_key, {
+            reason: "cancel_meeting_call_threw",
+            detail: err instanceof Error ? err.message : String(err),
+          });
+        }
+      } else {
+        await logEvent(db, run.id, "node_entered", node.node_key, {
+          node_type: "cancel_meeting",
+          cancelado: false,
+          motivo: "sem_booking_uid_ou_api_key",
+        });
+      }
+      currentKey = cfg.next_node_key;
       continue;
     }
     if (node.node_type === "condition") {
