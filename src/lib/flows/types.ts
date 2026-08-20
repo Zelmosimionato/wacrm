@@ -136,6 +136,25 @@ export interface CollectInputNodeConfig {
   next_node_key: string;
 }
 
+export interface WaitNodeConfig {
+  /** Duração da espera a partir do momento em que o fluxo entra neste nó. */
+  unit: "minutes" | "hours" | "days";
+  amount: number;
+  /** Nó de destino quando o tempo esgota SEM interrupção por palavra-chave. */
+  next_node_key: string;
+  /**
+   * Ramos de interrupção: se o cliente escrever algo enquanto o fluxo espera
+   * aqui, e o texto casar com uma destas listas de palavras-chave, o fluxo
+   * pula pra `next_node_key` do ramo — sem esperar o tempo todo. Reaproveita
+   * o mesmo casador que já decide se um fluxo COMEÇA por palavra-chave
+   * (`matchesKeywordTrigger`), só que aplicado a um fluxo já em andamento.
+   */
+  keyword_branches?: {
+    trigger: KeywordTriggerConfig;
+    next_node_key: string;
+  }[];
+}
+
 export type ConditionOperator =
   | "equals"
   | "contains"
@@ -191,6 +210,7 @@ export type FlowNodeConfig =
   | { node_type: "send_list"; config: SendListNodeConfig }
   | { node_type: "send_media"; config: SendMediaNodeConfig }
   | { node_type: "collect_input"; config: CollectInputNodeConfig }
+  | { node_type: "wait"; config: WaitNodeConfig }
   | { node_type: "condition"; config: ConditionNodeConfig }
   | { node_type: "set_tag"; config: SetTagNodeConfig }
   | { node_type: "handoff"; config: HandoffNodeConfig }
