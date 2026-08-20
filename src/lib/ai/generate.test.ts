@@ -47,6 +47,7 @@ describe('parseGeneration', () => {
       agendar: null,
       desmarcar: false,
       portaAberta: false,
+      urgente: false,
       usage: null,
     })
   })
@@ -59,6 +60,7 @@ describe('parseGeneration', () => {
       agendar: null,
       desmarcar: false,
       portaAberta: false,
+      urgente: false,
       usage: null,
     })
     expect(parseGeneration('Let me get a human [[HANDOFF]]')).toEqual({
@@ -68,6 +70,7 @@ describe('parseGeneration', () => {
       agendar: null,
       desmarcar: false,
       portaAberta: false,
+      urgente: false,
       usage: null,
     })
   })
@@ -81,6 +84,7 @@ describe('parseGeneration', () => {
       agendar: null,
       desmarcar: false,
       portaAberta: false,
+      urgente: false,
       usage,
     })
   })
@@ -149,6 +153,24 @@ describe('parseGeneration', () => {
   })
 })
 
+describe('parseGeneration — [[URGENTE]]', () => {
+  it('reconhece o marcador de urgência e some do texto', () => {
+    const r = parseGeneration('Entendi, vou verificar os horários mais próximos. [[URGENTE]]')
+    expect(r.urgente).toBe(true)
+    expect(r.text).not.toContain('[[URGENTE]]')
+  })
+
+  it('sem o marcador, urgente é false', () => {
+    expect(parseGeneration('Qual horário fica melhor?').urgente).toBe(false)
+  })
+
+  it('convive com outro marcador na mesma resposta (ex.: SUPER + URGENTE)', () => {
+    const r = parseGeneration('Combinado! [[SUPER]][[URGENTE]]')
+    expect(r.move).toBe('super')
+    expect(r.urgente).toBe(true)
+  })
+})
+
 describe('generateReply — OpenAI', () => {
   it('calls the chat completions endpoint and returns the reply', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
@@ -172,6 +194,7 @@ describe('generateReply — OpenAI', () => {
       agendar: null,
       desmarcar: false,
       portaAberta: false,
+      urgente: false,
       usage: { promptTokens: 42, completionTokens: 8, totalTokens: 50 },
     })
     const [url, opts] = fetchMock.mock.calls[0]
@@ -235,6 +258,7 @@ describe('generateReply — Anthropic', () => {
       agendar: null,
       desmarcar: false,
       portaAberta: false,
+      urgente: false,
       usage: { promptTokens: 30, completionTokens: 6, totalTokens: 36 },
     })
     const [url, opts] = fetchMock.mock.calls[0]

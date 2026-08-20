@@ -10,6 +10,7 @@ import {
   QUALIFIED_SENTINEL,
   SUPER_SENTINEL,
   REAGENDAR_SENTINEL,
+  URGENTE_SENTINEL,
   AGENDAR_SENTINEL_RE,
   DESMARCAR_SENTINEL,
   PERDIDO_SENTINEL,
@@ -89,6 +90,9 @@ export function parseGeneration(
   const desmarcar = raw.includes(DESMARCAR_SENTINEL)
   // Recusou marcar agora: a despedida sai com o botão "Agendar agora" atrás.
   const portaAberta = raw.includes(PORTA_ABERTA_SENTINEL)
+  // Prazo/urgência real na conversa: independente do destino do card, pode
+  // vir junto com SUPER/QUALIFICADO na mesma resposta.
+  const urgente = raw.includes(URGENTE_SENTINEL)
   // `[[AGENDAR:2]]` → reservar o 2º horário da agenda desta resposta. Guardamos só o
   // número: quem marca (auto-reply) casa com a lista que ELE leu, e um número fora da
   // lista morre ali — o modelo nunca escreve a data.
@@ -102,9 +106,10 @@ export function parseGeneration(
     DESMARCAR_SENTINEL,
     PERDIDO_SENTINEL,
     PORTA_ABERTA_SENTINEL,
+    URGENTE_SENTINEL,
   ]
     .reduce((acc, s) => acc.split(s).join(''), raw)
     .replace(new RegExp(AGENDAR_SENTINEL_RE.source, 'gi'), '')
     .trim()
-  return { text, handoff, move, agendar, desmarcar, portaAberta, usage }
+  return { text, handoff, move, agendar, desmarcar, portaAberta, urgente, usage }
 }

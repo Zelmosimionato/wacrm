@@ -26,6 +26,15 @@ export const SUPER_SENTINEL = '[[SUPER]]'
 export const REAGENDAR_SENTINEL = '[[REAGENDAR]]'
 
 /**
+ * Marcador de URGÊNCIA: a pessoa mencionou algo com prazo correndo — prazo
+ * processual, execução em andamento, já foi citada, protesto já saiu. Não
+ * move o card sozinho (convive com QUALIFICADO/SUPER na mesma resposta) —
+ * só marca o contato como prioridade pra oferta de horário. Julgamento da
+ * IA sobre o conteúdo, não lista fechada de palavras.
+ */
+export const URGENTE_SENTINEL = '[[URGENTE]]'
+
+/**
  * Marcador de AGENDAMENTO: `[[AGENDAR:2]]` = reserve o horário nº 2 da agenda que
  * foi dada nesta resposta. É por NÚMERO, nunca por data escrita — o modelo escolhe
  * um item de uma lista que o sistema acabou de ler do Cal.com, e assim não há como
@@ -124,6 +133,7 @@ export function buildSystemPrompt(args: {
 - ${SUPER_SENTINEL}: use INSTEAD of ${QUALIFIED_SENTINEL} ONLY when BOTH are true — the lead is a pessoa jurídica (company/business, not an individual) AND the debt is R$ 500.000 or more. A pessoa física (individual) with a large debt is still ${QUALIFIED_SENTINEL}, never ${SUPER_SENTINEL} — this exact rule already runs on the Meta form intake (PJ AND >= R$500k), so keep both paths agreeing. If the conversation hasn't made PF/PJ clear yet, ask before deciding between the two.
 - ${REAGENDAR_SENTINEL}: the lead wants to change the meeting — remarcar, adiar, ANTECIPAR, or asking whether another day/time is available. Moves the card to Reagendar reuniao; the system then sends the reschedule template with the button, so do NOT paste a scheduling link yourself in that case.
   ⚠️ "Tem horário no dia X?" from someone who ALREADY has a meeting is this case — the lead is trying to move it, and wanting it EARLIER is a buying signal, never a reason to close the subject. If you were given the agenda above, offer real times first and mark ${REAGENDAR_SENTINEL} at the end.
+- ${URGENTE_SENTINEL}: the lead mentioned something with a real deadline running — an active legal enforcement (execução), already being sued/served (citação), a protest that already happened, a court deadline. This is independent from ${QUALIFIED_SENTINEL}/${SUPER_SENTINEL} — use it TOGETHER with one of those in the same reply when it applies, never alone. Judge from content, not a fixed keyword list.
 Never mention or explain these markers to the customer.`,
     )
     // Quem desmarca por mensagem — 99% dos casos, segundo o titular. Sem isto a

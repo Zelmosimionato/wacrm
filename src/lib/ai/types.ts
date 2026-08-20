@@ -67,6 +67,10 @@ export interface GenerateResult {
   desmarcar: boolean
   /** Recusou marcar agora: mandar a despedida com o botão "Agendar agora". */
   portaAberta: boolean
+  /** A IA identificou prazo/urgência real na conversa (execução em andamento,
+   *  citação, protesto). Independente de `move` — pode vir junto com
+   *  'qualified'/'super' na mesma resposta. */
+  urgente: boolean
   /** Horário da agenda que a IA pediu para RESERVAR (1 = o primeiro da lista
    *  mostrada nesta resposta), ou null. É índice, nunca data: o modelo escolhe
    *  da lista lida do Cal.com e assim não tem como inventar horário. */
