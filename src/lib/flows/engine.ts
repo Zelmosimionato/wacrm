@@ -768,10 +768,10 @@ async function advanceFromNodeKey(
           buttonLabel: cfg.button_label,
           sections: [
             {
-              rows: slots.map((s, i) => ({
-                id: `slot_${i}`,
-                title: rotuloCurto(s.iso),
-                description: s.rotulo,
+              rows: offered.map((o, i) => ({
+                id: o.id,
+                title: rotuloCurto(o.iso),
+                description: slots[i].rotulo,
               })),
             },
           ],
@@ -794,7 +794,14 @@ async function advanceFromNodeKey(
         .from("flow_runs")
         .update({ vars: newVars })
         .eq("id", run.id);
-      if (!varsErr) run.vars = newVars;
+      if (varsErr) {
+        await logEvent(db, run.id, "error", node.node_key, {
+          reason: "offer_slots_vars_persist_failed",
+          detail: varsErr.message,
+        });
+      } else {
+        run.vars = newVars;
+      }
       const advanced = await advanceCurrentNodeKey(
         db,
         run.id,
