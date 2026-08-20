@@ -169,6 +169,8 @@ const AI_STAGE_FUP = '8bd228cf-fba4-4b28-b704-068bdcfa7c8d'
 const AI_STAGE_NOSHOW = '8c39cc10-4568-432f-b4dd-9a4ba228add6'
 export const AI_ETAPAS_QUE_AVANCAM = new Set([AI_STAGE_NOVO, AI_STAGE_FUP, AI_STAGE_NOSHOW])
 const AI_TAG_SUPER = 'b9298582-dcc7-46a3-ae34-f54b3c6fece1'
+/** Criada em 20/08/2026 — ver Step 1 deste plano para o id real. */
+const AI_TAG_URGENTE = '9db3b56e-eecf-4b29-bace-2cc034b38f72'
 
 // Campos e tag que descrevem a reunião marcada. São os mesmos que o intake
 // grava ao receber o webhook do Cal.com — desfazer é apagar exatamente estes.
@@ -342,6 +344,27 @@ async function applyAiCardMove(
     contactId,
     context: { stage_id: target, pipeline_id: AI_VENDAS_PIPELINE },
   })
+}
+
+/**
+ * Marca o contato como urgente quando a IA identificou prazo real na
+ * conversa. Independente de `applyAiCardMove` — não move etapa, só marca;
+ * quem lê essa tag para priorizar horário é o Fluxo de Agendamento (fora
+ * deste plano).
+ */
+async function applyAiUrgente(
+  db: ReturnType<typeof supabaseAdmin>,
+  args: { contactId: string },
+): Promise<void> {
+  const { contactId } = args
+  const { count } = await db
+    .from('contact_tags')
+    .select('id', { count: 'exact', head: true })
+    .eq('contact_id', contactId)
+    .eq('tag_id', AI_TAG_URGENTE)
+  if (!count) {
+    await db.from('contact_tags').insert({ contact_id: contactId, tag_id: AI_TAG_URGENTE })
+  }
 }
 
 interface DispatchArgs {
@@ -1068,7 +1091,7 @@ export async function dispatchInboundToAiReply(
       return
     }
 
-    const { text, handoff, move, agendar, desmarcar, portaAberta, usage } = await generateReply({
+    const { text, handoff, move, agendar, desmarcar, portaAberta, urgente, usage } = await generateReply({
       config,
       systemPrompt,
       messages,
@@ -1290,6 +1313,16 @@ export async function dispatchInboundToAiReply(
         })
       } catch (err) {
         console.error('[ai auto-reply] card move failed:', err)
+      }
+    }
+
+    // Fase 3b: sinal de urgência — independente do move, pode vir em
+    // qualquer resposta que também qualificou/superqualificou (ou nenhuma).
+    if (urgente && !isClient) {
+      try {
+        await applyAiUrgente(db, { contactId })
+      } catch (err) {
+        console.error('[ai auto-reply] marcar urgente falhou:', err)
       }
     }
 
