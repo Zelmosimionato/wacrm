@@ -202,7 +202,8 @@ export type ConditionOperator =
   | "equals"
   | "contains"
   | "present"
-  | "absent";
+  | "absent"
+  | "keyword_match";
 
 export type ConditionSubject = "var" | "tag" | "contact_field";
 
@@ -222,6 +223,10 @@ export interface ConditionNodeConfig {
   operator: ConditionOperator;
   /** Compared against `subject` for `equals`/`contains`. Ignored for `present`/`absent`. */
   value?: string;
+  /** Used only for `keyword_match` — casa `subject` contra uma LISTA de
+   *  palavras-chave (mesmo tipo que `wait.keyword_branches[].trigger` já
+   *  usa). Ignorado pros outros operadores. */
+  keywords?: KeywordTriggerConfig;
   /** Node to advance to when the predicate evaluates true. */
   true_next: string;
   /** Node to advance to when it evaluates false. */

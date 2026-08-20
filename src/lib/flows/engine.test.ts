@@ -486,6 +486,50 @@ describe("evaluateConditionPredicate", () => {
       }),
     ).toBe(false);
   });
+
+  it("keyword_match: matches when subject contains any keyword (case-insensitive contains by default)", () => {
+    expect(
+      evaluateConditionPredicate({
+        operator: "keyword_match",
+        subjectValue: "tenho um prazo correndo",
+        configValue: undefined,
+        keywords: { keywords: ["urgente", "prazo"] },
+      }),
+    ).toBe(true);
+  });
+
+  it("keyword_match: no match when subject doesn't contain any keyword", () => {
+    expect(
+      evaluateConditionPredicate({
+        operator: "keyword_match",
+        subjectValue: "não, tudo tranquilo",
+        configValue: undefined,
+        keywords: { keywords: ["urgente", "prazo"] },
+      }),
+    ).toBe(false);
+  });
+
+  it("keyword_match: undefined subject never matches", () => {
+    expect(
+      evaluateConditionPredicate({
+        operator: "keyword_match",
+        subjectValue: undefined,
+        configValue: undefined,
+        keywords: { keywords: ["urgente"] },
+      }),
+    ).toBe(false);
+  });
+
+  it("keyword_match: missing keywords config defaults to empty array, always false", () => {
+    expect(
+      evaluateConditionPredicate({
+        operator: "keyword_match",
+        subjectValue: "qualquer texto",
+        configValue: undefined,
+        keywords: undefined,
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("waitMs", () => {

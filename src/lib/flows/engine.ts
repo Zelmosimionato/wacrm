@@ -190,6 +190,7 @@ export function evaluateConditionPredicate(args: {
   subjectValue: string | undefined;
   /** The configured comparison value, when applicable. */
   configValue: string | undefined;
+  keywords?: KeywordTriggerConfig;
 }): boolean {
   switch (args.operator) {
     case "present":
@@ -202,6 +203,9 @@ export function evaluateConditionPredicate(args: {
     case "contains":
       if (args.subjectValue === undefined) return false;
       return args.subjectValue.includes(args.configValue ?? "");
+    case "keyword_match":
+      if (args.subjectValue === undefined) return false;
+      return matchesKeywordTrigger(args.subjectValue, args.keywords ?? { keywords: [] });
   }
 }
 
@@ -545,6 +549,7 @@ async function evaluateConditionNode(
     operator: cfg.operator,
     subjectValue,
     configValue: cfg.value,
+    keywords: cfg.keywords,
   });
 }
 
