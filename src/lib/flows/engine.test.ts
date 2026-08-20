@@ -6,6 +6,7 @@ import {
   isSuspending,
   isTerminal,
   evaluateConditionPredicate,
+  waitMs,
 } from "./engine";
 
 describe("matchReplyId", () => {
@@ -295,5 +296,20 @@ describe("evaluateConditionPredicate", () => {
         configValue: "anything",
       }),
     ).toBe(false);
+  });
+});
+
+describe("waitMs", () => {
+  it("converte minutos/horas/dias pra ms, com piso de 1s", () => {
+    expect(waitMs({ unit: "minutes", amount: 3 })).toBe(180_000);
+    expect(waitMs({ unit: "hours", amount: 1 })).toBe(3_600_000);
+    expect(waitMs({ unit: "days", amount: 1 })).toBe(86_400_000);
+    expect(waitMs({ unit: "minutes", amount: 0 })).toBe(1_000);
+  });
+});
+
+describe("isSuspending — wait", () => {
+  it('trata "wait" como nó suspensivo', () => {
+    expect(isSuspending("wait")).toBe(true);
   });
 });

@@ -56,6 +56,7 @@ import {
   type SetTagNodeConfig,
   type StartNodeConfig,
   type KeywordTriggerConfig,
+  type WaitNodeConfig,
 } from "./types";
 
 // ============================================================
@@ -109,6 +110,13 @@ export function matchesKeywordTrigger(
   return false;
 }
 
+/** Converte a config do nó `wait` em milissegundos. */
+export function waitMs(cfg: { unit: "minutes" | "hours" | "days"; amount: number }): number {
+  const unitMs =
+    cfg.unit === "days" ? 86_400_000 : cfg.unit === "hours" ? 3_600_000 : 60_000;
+  return Math.max(1_000, cfg.amount * unitMs);
+}
+
 /** Nodes that advance to a next_node_key without waiting for input. */
 export function isAutoAdvancing(node_type: string): boolean {
   return (
@@ -125,7 +133,8 @@ export function isSuspending(node_type: string): boolean {
   return (
     node_type === "send_buttons" ||
     node_type === "send_list" ||
-    node_type === "collect_input"
+    node_type === "collect_input" ||
+    node_type === "wait"
   );
 }
 
@@ -666,6 +675,37 @@ async function advanceFromNodeKey(
           detail: err instanceof Error ? err.message : String(err),
         });
         await endRun(db, run.id, "failed", "collect_input_prompt_failed");
+        return { outcome: "completed" };
+      }
+      const advanced = await advanceCurrentNodeKey(
+        db,
+        run.id,
+        run.current_node_key,
+        node.node_key,
+      );
+      if (!advanced) {
+        await logEvent(db, run.id, "error", node.node_key, {
+          reason: "lost_race_during_advance",
+        });
+      }
+      return { outcome: "advanced" };
+    }
+    if (node.node_type === "wait") {
+      const cfg = node.config as unknown as WaitNodeConfig;
+      const runAt = new Date(Date.now() + waitMs(cfg));
+      const { error: schedErr } = await db.from("flow_pending_resumes").insert({
+        flow_run_id: run.id,
+        account_id: run.account_id,
+        node_key: node.node_key,
+        run_at: runAt.toISOString(),
+        status: "pending",
+      });
+      if (schedErr) {
+        await logEvent(db, run.id, "error", node.node_key, {
+          reason: "wait_schedule_failed",
+          detail: schedErr.message,
+        });
+        await endRun(db, run.id, "failed", "wait_schedule_failed");
         return { outcome: "completed" };
       }
       const advanced = await advanceCurrentNodeKey(
