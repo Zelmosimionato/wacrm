@@ -39,7 +39,7 @@ import {
   engineSendMedia,
   engineSendText,
 } from "./meta-send";
-import { horariosLivres } from "@/lib/appointments/calcom-slots";
+import { horariosLivres, type SlotLivre } from "@/lib/appointments/calcom-slots";
 import { criarReserva } from "@/lib/appointments/calcom-book";
 import { cancelCalcomBooking } from "@/lib/appointments/calcom-cancel";
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
@@ -757,13 +757,33 @@ async function advanceFromNodeKey(
       const cfg = node.config as unknown as OfferSlotsNodeConfig;
       const apiKey = process.env.CALCOM_API_KEY;
       const eventTypeId = process.env.CALCOM_EVENT_TYPE_ID;
-      const slots =
-        apiKey && eventTypeId ? await horariosLivres(eventTypeId, apiKey, 45, 10) : [];
+      let slots: SlotLivre[];
+      try {
+        slots =
+          apiKey && eventTypeId ? await horariosLivres(eventTypeId, apiKey, 45, 10) : [];
+      } catch (err) {
+        // Uma rejeição aqui (timeout, DNS, 5xx do Cal.com) não pode subir
+        // por advanceFromNodeKey inteiro — trata como "sem horário
+        // disponível", igual ao caminho já existente pra env vars ausentes.
+        await logEvent(db, run.id, "error", node.node_key, {
+          reason: "offer_slots_slots_threw",
+          detail: err instanceof Error ? err.message : String(err),
+        });
+        slots = [];
+      }
       if (slots.length === 0) {
         currentKey = cfg.no_slots_next_node_key;
         continue;
       }
-      const offered = slots.map((s, i) => ({ id: `slot_${i}`, iso: s.iso }));
+      // Defesa em profundidade: horariosLivres já limita a 10 no parâmetro
+      // e button_label já deveria ter ≤ 20 chars (exigência da Meta), mas
+      // nada garante isso estruturalmente se o parâmetro ou a config mudar.
+      const cappedSlots = slots.slice(0, 10);
+      const offered = cappedSlots.map((s, i) => ({
+        id: `slot_${i}`,
+        iso: s.iso,
+        rotulo: s.rotulo,
+      }));
       try {
         const { whatsapp_message_id } = await engineSendInteractiveList({
           accountId: run.account_id,
@@ -771,13 +791,13 @@ async function advanceFromNodeKey(
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
           bodyText: interpolateVars(cfg.prompt_text, run.vars),
-          buttonLabel: cfg.button_label,
+          buttonLabel: cfg.button_label.slice(0, 20),
           sections: [
             {
-              rows: offered.map((o, i) => ({
+              rows: offered.map((o) => ({
                 id: o.id,
                 title: rotuloCurto(o.iso),
-                description: slots[i].rotulo,
+                description: o.rotulo,
               })),
             },
           ],
@@ -801,13 +821,19 @@ async function advanceFromNodeKey(
         .update({ vars: newVars })
         .eq("id", run.id);
       if (varsErr) {
+        // Sem _offered_slots persistido, NENHUMA resposta futura do
+        // cliente pode ser casada com segurança (Task 3 acharia a lista
+        // ANTIGA ou nenhuma, arriscando reservar um horário diferente do
+        // escolhido). Mesma severidade que offer_slots_send_failed: aborta
+        // a run em vez de seguir com o estado divergente.
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "offer_slots_vars_persist_failed",
           detail: varsErr.message,
         });
-      } else {
-        run.vars = newVars;
+        await endRun(db, run.id, "failed", "offer_slots_vars_persist_failed");
+        return { outcome: "completed" };
       }
+      run.vars = newVars;
       const advanced = await advanceCurrentNodeKey(
         db,
         run.id,
@@ -871,10 +897,21 @@ async function advanceFromNodeKey(
           });
         }
         if (reserva?.ok) {
+          // Rótulo legível pra sobreviver na cadeia até um send_message
+          // futuro poder interpolar (em vez do ISO cru). Preferência: o
+          // rótulo que offer_slots já gravou pra esse mesmo slot; se o
+          // fluxo não passou por um offer_slots (slot_var_key setado de
+          // outra forma), cai no fallback formatado a partir do próprio
+          // horário reservado.
+          const rotuloDoSlot = run.vars[`${cfg.slot_var_key}_rotulo`] as
+            | string
+            | undefined;
+          const bookingRotulo = rotuloDoSlot || rotuloCurto(reserva.inicio);
           const newVars = {
             ...run.vars,
             booking_uid: reserva.uid,
             booking_inicio_iso: reserva.inicio,
+            booking_rotulo: bookingRotulo,
           };
           const { error: varsErr } = await db
             .from("flow_runs")
@@ -910,7 +947,7 @@ async function advanceFromNodeKey(
         motivo: failReason,
       });
       currentKey =
-        cfg.failure_next_node_keys[failReason as keyof typeof cfg.failure_next_node_keys] ??
+        cfg.failure_next_node_keys[failReason as keyof typeof cfg.failure_next_node_keys] ||
         cfg.failure_next_node_keys.generico;
       continue;
     }
@@ -931,6 +968,26 @@ async function advanceFromNodeKey(
             node_type: "cancel_meeting",
             cancelado: ok,
           });
+          if (ok) {
+            // Confirmado no Cal.com — limpa as 3 chaves de reunião ativa
+            // pra um condition node downstream não achar que ainda tem
+            // reunião marcada. Só limpa em SUCESSO confirmado (best-effort
+            // continua best-effort: falha/exceção não mexe em vars).
+            const { booking_uid: _bu, booking_inicio_iso: _bi, booking_rotulo: _br, ...rest } =
+              run.vars;
+            const { error: clearErr } = await db
+              .from("flow_runs")
+              .update({ vars: rest })
+              .eq("id", run.id);
+            if (clearErr) {
+              await logEvent(db, run.id, "error", node.node_key, {
+                reason: "cancel_meeting_vars_clear_failed",
+                detail: clearErr.message,
+              });
+            } else {
+              run.vars = rest;
+            }
+          }
         } catch (err) {
           await logEvent(db, run.id, "error", node.node_key, {
             reason: "cancel_meeting_call_threw",
@@ -1277,11 +1334,17 @@ async function handleReplyForActiveRun(
     currentNode.node_type === "offer_slots"
   ) {
     const offered =
-      (run.vars._offered_slots as { id: string; iso: string }[] | undefined) ?? [];
+      (run.vars._offered_slots as
+        | { id: string; iso: string; rotulo: string }[]
+        | undefined) ?? [];
     const hit = offered.find((o) => o.id === message.reply_id);
     if (hit) {
       const cfg = currentNode.config as unknown as OfferSlotsNodeConfig;
-      const newVars = { ...run.vars, [cfg.result_var_key]: hit.iso };
+      const newVars = {
+        ...run.vars,
+        [cfg.result_var_key]: hit.iso,
+        [`${cfg.result_var_key}_rotulo`]: hit.rotulo,
+      };
       const { error: capErr } = await db
         .from("flow_runs")
         .update({ vars: newVars, reprompt_count: 0 })
@@ -1290,6 +1353,11 @@ async function handleReplyForActiveRun(
         run.vars = newVars;
         run.reprompt_count = 0;
         matched = cfg.next_node_key;
+      } else {
+        await logEvent(db, run.id, "error", currentNode.node_key, {
+          reason: "offer_slots_reply_vars_persist_failed",
+          detail: capErr.message,
+        });
       }
     }
   }
