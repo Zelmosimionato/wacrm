@@ -732,3 +732,104 @@ describe("dispatchInboundToFlows — offer_slots node", () => {
     ).toBe(true);
   });
 });
+
+// ============================================================
+// dispatchInboundToFlows — casa o tap na lista com o horário
+// oferecido (Task 3). Simula o estado pós-offer_slots: run já parada
+// no nó offer_slots, com vars._offered_slots gravado pelo Task 2.
+// ============================================================
+
+const OFFERED_SLOTS_VARS = {
+  _offered_slots: [
+    { id: "slot_0", iso: "2026-08-11T17:00:00.000Z" },
+    { id: "slot_1", iso: "2026-08-12T18:00:00.000Z" },
+  ],
+};
+
+function sendOfferSlotsTap(replyId: string, metaMessageId = "m-tap-1") {
+  h.state.activeRun = waitRun({
+    current_node_key: "offer1",
+    vars: OFFERED_SLOTS_VARS,
+  });
+  h.state.nodeRows = OFFER_SLOTS_NODES;
+  return dispatchInboundToFlows({
+    accountId: "acct-1",
+    userId: "user-1",
+    contactId: "contact-1",
+    conversationId: "conv-1",
+    message: {
+      kind: "interactive_reply",
+      reply_id: replyId,
+      reply_title: "t",
+      meta_message_id: metaMessageId,
+    },
+    isFirstInboundMessage: false,
+  });
+}
+
+describe("dispatchInboundToFlows — offer_slots reply matching", () => {
+  it("reply_id bate com um item de _offered_slots — avança pro next_node_key e grava vars[result_var_key] com o iso", async () => {
+    const result = await sendOfferSlotsTap("slot_1");
+
+    // book1 é nó "end" (next_node_key do offer1) → advanceFromNodeKey
+    // encerra a run.
+    expect(result.outcome).toBe("completed");
+
+    const varsUpdate = h.state.flowRunUpdates.find(
+      (u) => u.vars !== undefined && "horario_escolhido" in (u.vars as object),
+    ) as { vars: Record<string, unknown>; reprompt_count?: number } | undefined;
+    expect(varsUpdate?.vars).toEqual({
+      ...OFFERED_SLOTS_VARS,
+      horario_escolhido: "2026-08-12T18:00:00.000Z",
+    });
+    expect(varsUpdate?.reprompt_count).toBe(0);
+  });
+
+  it("reply_id não bate com nenhum item de _offered_slots — cai no fallback normal, vars inalterado", async () => {
+    const result = await sendOfferSlotsTap("slot_9");
+
+    expect(result.outcome).toBe("fallback_fired");
+    expect(
+      h.state.flowRunUpdates.some(
+        (u) => u.vars !== undefined && "horario_escolhido" in (u.vars as object),
+      ),
+    ).toBe(false);
+  });
+
+  it("nó atual não é offer_slots — ramo novo não interfere no send_buttons já existente", async () => {
+    h.state.activeRun = waitRun({ current_node_key: "btn1" });
+    h.state.nodeRows = [
+      node({
+        node_key: "btn1",
+        node_type: "send_buttons",
+        config: {
+          text: "Confirma?",
+          buttons: [
+            { reply_id: "yes", title: "Sim", next_node_key: "end_yes" },
+            { reply_id: "no", title: "Não", next_node_key: "end_no" },
+          ],
+        },
+      }),
+      node({ node_key: "end_yes", node_type: "end", config: {} }),
+      node({ node_key: "end_no", node_type: "end", config: {} }),
+    ];
+
+    const result = await dispatchInboundToFlows({
+      accountId: "acct-1",
+      userId: "user-1",
+      contactId: "contact-1",
+      conversationId: "conv-1",
+      message: {
+        kind: "interactive_reply",
+        reply_id: "yes",
+        reply_title: "Sim",
+        meta_message_id: "m-btn-1",
+      },
+      isFirstInboundMessage: false,
+    });
+
+    // matchReplyId (ramo pré-existente) resolveu normalmente — o ramo
+    // novo exige node_type === "offer_slots" e nunca dispara aqui.
+    expect(result.outcome).toBe("completed");
+  });
+});

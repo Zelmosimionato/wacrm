@@ -1140,6 +1140,26 @@ async function handleReplyForActiveRun(
         break;
       }
     }
+  } else if (
+    message.kind === "interactive_reply" &&
+    currentNode.node_type === "offer_slots"
+  ) {
+    const offered =
+      (run.vars._offered_slots as { id: string; iso: string }[] | undefined) ?? [];
+    const hit = offered.find((o) => o.id === message.reply_id);
+    if (hit) {
+      const cfg = currentNode.config as unknown as OfferSlotsNodeConfig;
+      const newVars = { ...run.vars, [cfg.result_var_key]: hit.iso };
+      const { error: capErr } = await db
+        .from("flow_runs")
+        .update({ vars: newVars, reprompt_count: 0 })
+        .eq("id", run.id);
+      if (!capErr) {
+        run.vars = newVars;
+        run.reprompt_count = 0;
+        matched = cfg.next_node_key;
+      }
+    }
   }
 
   if (matched) {
