@@ -1,4 +1,104 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+
+// Shared mock state for the service-role client, used only by the
+// dispatchInboundToFlows/handleReplyForActiveRun suite below. Lives in a
+// hoisted block so the vi.mock factory can close over it. Mirrors the
+// pattern in src/lib/automations/engine.test.ts.
+const h = vi.hoisted(() => ({
+  state: {
+    activeRun: null as Record<string, unknown> | null,
+    nodeRows: [] as Record<string, unknown>[],
+    flow: null as Record<string, unknown> | null,
+    flowRunUpdates: [] as Record<string, unknown>[],
+    pendingResumeUpdates: [] as {
+      payload: unknown;
+      filters: [string, string, unknown][];
+    }[],
+  },
+}));
+
+vi.mock("./admin-client", () => {
+  const { state } = h;
+
+  function resolve(ops: {
+    table: string;
+    type: string;
+    payload?: unknown;
+    filters: [string, string, unknown][];
+  }) {
+    const { table, type, payload, filters } = ops;
+    if (table === "flow_runs") {
+      if (type === "update") {
+        state.flowRunUpdates.push(payload as Record<string, unknown>);
+        return { data: null, error: null };
+      }
+      // Both loadActiveRunForContact and isDuplicateInbound read from
+      // flow_runs — the fixture run satisfies both (id is all
+      // isDuplicateInbound needs from the row).
+      return { data: state.activeRun ? [state.activeRun] : [], error: null };
+    }
+    if (table === "flow_run_events") {
+      // insert() is logEvent(); the bare select() is the
+      // isDuplicateInbound count query — always "not a duplicate" here.
+      return { data: [], error: null, count: 0 };
+    }
+    if (table === "flow_nodes") {
+      return { data: state.nodeRows, error: null };
+    }
+    if (table === "flow_pending_resumes") {
+      if (type === "update") {
+        state.pendingResumeUpdates.push({ payload, filters });
+      }
+      return { data: null, error: null };
+    }
+    if (table === "flows") {
+      return { data: state.flow, error: null };
+    }
+    return { data: null, error: null };
+  }
+
+  function builder(table: string) {
+    const ops = {
+      table,
+      type: "select",
+      payload: undefined as unknown,
+      filters: [] as [string, string, unknown][],
+    };
+    const b: Record<string, unknown> = {
+      select: () => b,
+      insert: (p: unknown) => ((ops.type = "insert"), (ops.payload = p), b),
+      update: (p: unknown) => ((ops.type = "update"), (ops.payload = p), b),
+      delete: () => ((ops.type = "delete"), b),
+      eq: (k: string, v: unknown) => (ops.filters.push(["eq", k, v]), b),
+      in: (k: string, v: unknown) => (ops.filters.push(["in", k, v]), b),
+      filter: (k: string, op: string, v: unknown) => (
+        ops.filters.push([`filter:${op}`, k, v]), b
+      ),
+      order: () => b,
+      limit: () => b,
+      single: () => Promise.resolve(resolve(ops)),
+      maybeSingle: () => Promise.resolve(resolve(ops)),
+      then: (onF: (v: unknown) => unknown, onR?: (e: unknown) => unknown) =>
+        Promise.resolve(resolve(ops)).then(onF, onR),
+    };
+    return b;
+  }
+
+  return {
+    supabaseAdmin: () => ({
+      from: (t: string) => builder(t),
+      rpc: () => Promise.resolve({ error: null }),
+    }),
+  };
+});
+
+vi.mock("./meta-send", () => ({
+  engineSendInteractiveButtons: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
+  engineSendInteractiveList: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
+  engineSendMedia: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
+  engineSendText: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
+}));
+
 import {
   matchReplyId,
   matchesKeywordTrigger,
@@ -7,6 +107,7 @@ import {
   isTerminal,
   evaluateConditionPredicate,
   waitMs,
+  dispatchInboundToFlows,
 } from "./engine";
 
 describe("matchReplyId", () => {
@@ -311,5 +412,164 @@ describe("waitMs", () => {
 describe("isSuspending — wait", () => {
   it('trata "wait" como nó suspensivo', () => {
     expect(isSuspending("wait")).toBe(true);
+  });
+});
+
+// ============================================================
+// dispatchInboundToFlows — interrupção por palavra-chave num nó wait.
+// Vai pela entrada pública (não handleReplyForActiveRun direto, que não
+// é exportada) com o admin-client mockado — mesmo padrão hoisted-mock
+// de src/lib/automations/engine.test.ts.
+// ============================================================
+
+const NOW = new Date().toISOString();
+
+function waitRun(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "run-1",
+    flow_id: "flow-1",
+    account_id: "acct-1",
+    user_id: "user-1",
+    contact_id: "contact-1",
+    conversation_id: "conv-1",
+    status: "active",
+    current_node_key: "wait1",
+    last_prompt_message_id: null,
+    vars: {},
+    reprompt_count: 0,
+    started_at: NOW,
+    last_advanced_at: NOW,
+    ended_at: null,
+    end_reason: null,
+    ...overrides,
+  };
+}
+
+function node(overrides: Record<string, unknown>) {
+  return {
+    id: `n-${overrides.node_key}`,
+    flow_id: "flow-1",
+    position_x: 0,
+    position_y: 0,
+    created_at: NOW,
+    ...overrides,
+  };
+}
+
+const WAIT_NODES = [
+  node({
+    node_key: "wait1",
+    node_type: "wait",
+    config: {
+      unit: "hours",
+      amount: 24,
+      next_node_key: "timeout_end",
+      keyword_branches: [
+        {
+          trigger: { keywords: ["remarcar"], match_type: "contains" },
+          next_node_key: "kw_end",
+        },
+      ],
+    },
+  }),
+  node({ node_key: "kw_end", node_type: "end", config: {} }),
+  node({ node_key: "timeout_end", node_type: "end", config: {} }),
+];
+
+beforeEach(() => {
+  h.state.activeRun = null;
+  h.state.nodeRows = [];
+  h.state.flow = null;
+  h.state.flowRunUpdates = [];
+  h.state.pendingResumeUpdates = [];
+});
+
+describe("dispatchInboundToFlows — wait node keyword interrupt", () => {
+  it("texto que casa com keyword_branches avança pro next_node_key do ramo e cancela a retomada agendada", async () => {
+    h.state.activeRun = waitRun();
+    h.state.nodeRows = WAIT_NODES;
+
+    const result = await dispatchInboundToFlows({
+      accountId: "acct-1",
+      userId: "user-1",
+      contactId: "contact-1",
+      conversationId: "conv-1",
+      message: { kind: "text", text: "quero remarcar", meta_message_id: "m-1" },
+      isFirstInboundMessage: false,
+    });
+
+    expect(result.consumed).toBe(true);
+    expect(result.flow_run_id).toBe("run-1");
+    // O ramo de palavra-chave levou pro nó "kw_end" (type "end") →
+    // advanceFromNodeKey encerra a run como "completed".
+    expect(result.outcome).toBe("completed");
+
+    // Cancelou a retomada pendente daquele nó específico.
+    expect(h.state.pendingResumeUpdates).toHaveLength(1);
+    const cancel = h.state.pendingResumeUpdates[0];
+    expect(cancel.payload).toEqual({ status: "cancelled" });
+    expect(cancel.filters).toEqual([
+      ["eq", "flow_run_id", "run-1"],
+      ["eq", "node_key", "wait1"],
+      ["eq", "status", "pending"],
+    ]);
+
+    // A run terminou pelo end_node do ramo de keyword, não pelo timeout.
+    expect(
+      h.state.flowRunUpdates.some(
+        (u) => u.status === "completed" && u.end_reason === "end_node",
+      ),
+    ).toBe(true);
+  });
+
+  it("texto que não casa com nenhuma keyword cai no fallback normal, sem cancelar a retomada", async () => {
+    h.state.activeRun = waitRun();
+    h.state.nodeRows = WAIT_NODES;
+
+    const result = await dispatchInboundToFlows({
+      accountId: "acct-1",
+      userId: "user-1",
+      contactId: "contact-1",
+      conversationId: "conv-1",
+      message: { kind: "text", text: "oi, tudo bem?", meta_message_id: "m-2" },
+      isFirstInboundMessage: false,
+    });
+
+    expect(result.consumed).toBe(true);
+    expect(result.flow_run_id).toBe("run-1");
+    // Sem match → fallback (policy default = reprompt; nó "wait" não
+    // tem reenvio próprio, então só sinaliza fallback_fired).
+    expect(result.outcome).toBe("fallback_fired");
+
+    // Nada de cancelamento — a retomada por tempo continua de pé.
+    expect(h.state.pendingResumeUpdates).toHaveLength(0);
+  });
+
+  it("nó atual não é wait — ramo novo não interfere no collect_input já existente", async () => {
+    h.state.activeRun = waitRun({ current_node_key: "collect1" });
+    h.state.nodeRows = [
+      node({
+        node_key: "collect1",
+        node_type: "collect_input",
+        config: { prompt_text: "Qual seu nome?", var_key: "nome", next_node_key: "end2" },
+      }),
+      node({ node_key: "end2", node_type: "end", config: {} }),
+    ];
+
+    const result = await dispatchInboundToFlows({
+      accountId: "acct-1",
+      userId: "user-1",
+      contactId: "contact-1",
+      conversationId: "conv-1",
+      message: { kind: "text", text: "Zelmo", meta_message_id: "m-3" },
+      isFirstInboundMessage: false,
+    });
+
+    expect(result.consumed).toBe(true);
+    // collect_input capturou e avançou pro end2 — comportamento
+    // pré-existente, inalterado pelo ramo novo (que exige node_type
+    // === "wait" e nunca dispara aqui).
+    expect(result.outcome).toBe("completed");
+    expect(h.state.pendingResumeUpdates).toHaveLength(0);
   });
 });

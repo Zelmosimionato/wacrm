@@ -999,6 +999,26 @@ async function handleReplyForActiveRun(
         matched = cfg.next_node_key;
       }
     }
+  } else if (
+    message.kind === "text" &&
+    currentNode.node_type === "wait"
+  ) {
+    const cfg = currentNode.config as unknown as WaitNodeConfig;
+    for (const branch of cfg.keyword_branches ?? []) {
+      if (matchesKeywordTrigger(message.text, branch.trigger)) {
+        matched = branch.next_node_key;
+        // A espera por tempo não vale mais — o fluxo saiu pelo ramo de
+        // palavra-chave antes do prazo. Cancela a retomada agendada pra
+        // o poller não tentar avançar um nó que o cliente já pulou.
+        await db
+          .from("flow_pending_resumes")
+          .update({ status: "cancelled" })
+          .eq("flow_run_id", run.id)
+          .eq("node_key", currentNode.node_key)
+          .eq("status", "pending");
+        break;
+      }
+    }
   }
 
   if (matched) {
