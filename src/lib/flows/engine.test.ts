@@ -1081,4 +1081,42 @@ describe("dispatchInboundToFlows — book_meeting node", () => {
     );
     expect(successEvent).toBeDefined();
   });
+
+  it("criarReserva lança (rejeita) — loga o erro e cai no ramo generico, igual reserva.ok===false sem motivo mapeado", async () => {
+    vi.stubEnv("CALCOM_API_KEY", "sk_test");
+    vi.stubEnv("CALCOM_EVENT_TYPE_ID", "42");
+    h.state.contactRow = { name: "Zelmo", phone: "+5511999999999", email: "zelmo@example.com" };
+    vi.mocked(criarReserva).mockRejectedValueOnce(new Error("fetch failed"));
+
+    const result = await sendBookMeetingReply({ horario_escolhido: "2026-08-12T18:00:00.000Z" });
+
+    // generico_end também é "end" — a prova da ramificação são os
+    // eventos logados, não o outcome (mesma observação já feita no
+    // teste do motivo "recusado" acima).
+    expect(result.outcome).toBe("completed");
+    expect(criarReserva).toHaveBeenCalledTimes(1);
+
+    const threwEvent = h.state.flowRunEvents.find(
+      (e) =>
+        e.event_type === "error" &&
+        (e.payload as { reason?: string } | undefined)?.reason ===
+          "book_meeting_criarreserva_threw",
+    );
+    expect(threwEvent).toBeDefined();
+    expect((threwEvent?.payload as { detail?: string }).detail).toBe("fetch failed");
+
+    const falhaEvent = h.state.flowRunEvents.find(
+      (e) =>
+        e.event_type === "node_entered" &&
+        (e.payload as { result?: string; motivo?: string } | undefined)?.result === "falha",
+    );
+    expect((falhaEvent?.payload as { motivo?: string } | undefined)?.motivo).toBe("generico");
+
+    // Não gravou booking_uid — a reserva nunca chegou a resolver.
+    expect(
+      h.state.flowRunUpdates.some(
+        (u) => u.vars !== undefined && "booking_uid" in (u.vars as object),
+      ),
+    ).toBe(false);
+  });
 });

@@ -847,15 +847,27 @@ async function advanceFromNodeKey(
       }
 
       if (!failReason) {
-        const reserva = await criarReserva({
-          eventTypeId: eventTypeId!,
-          apiKey: apiKey!,
-          iso: iso!,
-          nome: contact?.name ?? "Cliente",
-          email: email!,
-          telefone: contact?.phone ?? "",
-        });
-        if (reserva.ok) {
+        let reserva: Awaited<ReturnType<typeof criarReserva>> | undefined;
+        try {
+          reserva = await criarReserva({
+            eventTypeId: eventTypeId!,
+            apiKey: apiKey!,
+            iso: iso!,
+            nome: contact?.name ?? "Cliente",
+            email: email!,
+            telefone: contact?.phone ?? "",
+          });
+        } catch (err) {
+          // Same safety net the condition node already has just below: criarReserva
+          // documents that it never throws, but a rejection here (network failure,
+          // timeout, unexpected Cal.com 5xx) must still branch gracefully instead of
+          // bubbling out of dispatchInboundToFlows uncaught.
+          await logEvent(db, run.id, "error", node.node_key, {
+            reason: "book_meeting_criarreserva_threw",
+            detail: err instanceof Error ? err.message : String(err),
+          });
+        }
+        if (reserva?.ok) {
           const newVars = {
             ...run.vars,
             booking_uid: reserva.uid,
@@ -886,7 +898,7 @@ async function advanceFromNodeKey(
           currentKey = cfg.success_next_node_key;
           continue;
         }
-        failReason = reserva.motivo;
+        failReason = reserva ? reserva.motivo : "generico";
       }
 
       await logEvent(db, run.id, "node_entered", node.node_key, {
