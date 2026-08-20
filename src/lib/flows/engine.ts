@@ -921,6 +921,33 @@ export async function dispatchInboundToFlows(
   }
 }
 
+/**
+ * Retoma um fluxo que estava parado num nó `wait` cujo prazo venceu.
+ * Chamada pelo poller de `/api/flows/cron-resume`. Confere que o run
+ * ainda está ativo E ainda está no MESMO nó que agendou esta retomada
+ * — se o cliente já saiu por palavra-chave (Task 4 cancela a linha) ou
+ * o run terminou por outro motivo, isto é um no-op seguro.
+ */
+export async function resumeWaitingFlow(
+  db: AdminClient,
+  pending: { id: string; flow_run_id: string; node_key: string },
+): Promise<void> {
+  const { data: run } = await db
+    .from("flow_runs")
+    .select("*")
+    .eq("id", pending.flow_run_id)
+    .maybeSingle();
+  const runRow = run as FlowRunRow | null;
+  if (!runRow || runRow.status !== "active" || runRow.current_node_key !== pending.node_key) {
+    return;
+  }
+  const nodes = await loadAllNodes(db, runRow.flow_id);
+  const node = nodes.get(pending.node_key);
+  if (!node || node.node_type !== "wait") return;
+  const cfg = node.config as unknown as WaitNodeConfig;
+  await advanceFromNodeKey(db, runRow, cfg.next_node_key, nodes);
+}
+
 async function handleReplyForActiveRun(
   db: AdminClient,
   run: FlowRunRow,
