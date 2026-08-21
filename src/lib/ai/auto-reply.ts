@@ -348,15 +348,22 @@ async function applyAiCardMove(
 
 /**
  * Marca o contato como urgente quando a IA identificou prazo real na
- * conversa. Independente de `applyAiCardMove` — não move etapa, só marca;
- * quem lê essa tag para priorizar horário é o Fluxo de Agendamento (fora
- * deste plano).
+ * conversa. Independente de `applyAiCardMove` — não move etapa, só marca —
+ * e dispara um handoff IMEDIATO para todo mundo da conta em `notifications`
+ * (mesma tabela/forma de insert do passo `notify` das Automações, em
+ * `src/lib/automations/engine.ts`), porque urgência real não pode esperar
+ * o titular abrir o card.
+ *
+ * ⛔ O handoff dispara toda vez que a tag é (re)aplicada, não só na
+ * primeira: o titular pode já ter lido a notificação antiga, e o lead
+ * voltou a mencionar urgência numa conversa diferente depois. Só o insert
+ * da TAG é idempotente; o da notificação, não.
  */
 async function applyAiUrgente(
   db: ReturnType<typeof supabaseAdmin>,
-  args: { contactId: string },
+  args: { accountId: string; contactId: string; conversationId: string; motivo: string },
 ): Promise<void> {
-  const { contactId } = args
+  const { accountId, contactId, conversationId, motivo } = args
   const { count } = await db
     .from('contact_tags')
     .select('id', { count: 'exact', head: true })
@@ -364,6 +371,28 @@ async function applyAiUrgente(
     .eq('tag_id', AI_TAG_URGENTE)
   if (!count) {
     await db.from('contact_tags').insert({ contact_id: contactId, tag_id: AI_TAG_URGENTE })
+  }
+
+  const { data: membros } = await db
+    .from('profiles')
+    .select('user_id')
+    .eq('account_id', accountId)
+  const destinatarios = ((membros as { user_id: string }[] | null) ?? []).map((m) => m.user_id)
+  if (destinatarios.length === 0) return
+
+  const { error } = await db.from('notifications').insert(
+    destinatarios.map((uid) => ({
+      account_id: accountId,
+      user_id: uid,
+      type: 'urgent_lead',
+      conversation_id: conversationId,
+      contact_id: contactId,
+      title: 'Lead sinalizou urgência',
+      body: motivo,
+    })),
+  )
+  if (error) {
+    console.error('[ai auto-reply] notificar urgente falhou:', error.message)
   }
 }
 
@@ -1320,7 +1349,12 @@ export async function dispatchInboundToAiReply(
     // qualquer resposta que também qualificou/superqualificou (ou nenhuma).
     if (urgente && !isClient) {
       try {
-        await applyAiUrgente(db, { contactId })
+        await applyAiUrgente(db, {
+          accountId,
+          contactId,
+          conversationId,
+          motivo: String(ultimaDoLead || '').slice(0, 500),
+        })
       } catch (err) {
         console.error('[ai auto-reply] marcar urgente falhou:', err)
       }

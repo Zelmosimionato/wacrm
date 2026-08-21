@@ -123,6 +123,8 @@ const h = vi.hoisted(() => ({
     ultimaEntrada: [] as { id: string }[],
     /** Linhas por tabela, para consultas sem campo dedicado. */
     porTabela: {} as Record<string, unknown[]>,
+    /** Todo `.insert()` feito em qualquer tabela, na ordem em que ocorreram. */
+    inserts: [] as { table: string; rows: Record<string, unknown>[] }[],
   },
 }))
 
@@ -155,12 +157,21 @@ vi.mock('./admin-client', () => ({
           error: null,
         })
       chain.single = chain.maybeSingle
-      // await direto na consulta, sem .limit()/.maybeSingle()
+      // await direto na consulta, sem .limit()/.maybeSingle(). `count` sai
+      // do tamanho das linhas da tabela — cobre o padrao
+      // `.select('id', {count:'exact',head:true})` usado nos checks de tag
+      // (temReuniaoAgora, applyAiCardMove, applyAiUrgente).
       chain.then = (ok: (v: unknown) => unknown, erro?: (e: unknown) => unknown) =>
-        Promise.resolve({ data: linhas(), error: null }).then(ok, erro)
+        Promise.resolve({ data: linhas(), error: null, count: linhas().length }).then(ok, erro)
       chain.update = (payload: Record<string, unknown>) => {
         h.state.updatePayload = payload
         return { eq: () => Promise.resolve({ error: null }) }
+      }
+      // Registra o insert e devolve sucesso — o teste confere pelo que foi
+      // gravado em h.state.inserts, nao pelo retorno.
+      chain.insert = (rows: Record<string, unknown> | Record<string, unknown>[]) => {
+        h.state.inserts.push({ table, rows: Array.isArray(rows) ? rows : [rows] })
+        return Promise.resolve({ error: null })
       }
       return chain
     },
@@ -209,6 +220,7 @@ beforeEach(() => {
   h.state.rpcCalls = []
   h.state.ultimaEntrada = [{ id: 'msg-entrada-1' }]
   h.state.porTabela = {}
+  h.state.inserts = []
   h.loadAiConfig.mockResolvedValue(aiConfig())
   h.buildConversationContext.mockResolvedValue([{ role: 'user', content: 'hi' }])
   h.retrieveKnowledge.mockResolvedValue([])
@@ -333,5 +345,83 @@ describe('dispatchInboundToAiReply — handoff', () => {
       ai_autoreply_disabled: true,
       assigned_agent_id: 'agent-7',
     })
+  })
+})
+
+// Fase 3b: quando a IA sinaliza [[URGENTE]], além da tag "Urgente" (já
+// coberto por `applyAiCardMove`/tags), agora dispara um handoff IMEDIATO em
+// `notifications` — o titular não pode depender de abrir o card para saber
+// que um lead falou de prazo real.
+describe('dispatchInboundToAiReply — sinal de urgência ([[URGENTE]])', () => {
+  it('insere em notifications com type urgent_lead e body com o texto do lead', async () => {
+    h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false, urgente: true })
+    h.buildConversationContext.mockResolvedValue([
+      { role: 'user', content: 'preciso resolver isso até amanhã, é urgente' },
+    ])
+    h.state.porTabela.profiles = [{ user_id: 'user-a' }]
+
+    await dispatchInboundToAiReply(ARGS)
+
+    const notifInsert = h.state.inserts.find((i) => i.table === 'notifications')
+    expect(notifInsert?.rows).toHaveLength(1)
+    expect(notifInsert?.rows[0]).toMatchObject({
+      account_id: 'acct-1',
+      user_id: 'user-a',
+      type: 'urgent_lead',
+      conversation_id: 'conv-1',
+      contact_id: 'contact-1',
+      title: 'Lead sinalizou urgência',
+    })
+    expect(notifInsert?.rows[0].body).toContain('urgente')
+  })
+
+  it('todos os membros da conta recebem uma linha — não só um "atribuído"', async () => {
+    h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false, urgente: true })
+    h.state.porTabela.profiles = [
+      { user_id: 'user-a' },
+      { user_id: 'user-b' },
+      { user_id: 'user-c' },
+    ]
+
+    await dispatchInboundToAiReply(ARGS)
+
+    const notifInsert = h.state.inserts.find((i) => i.table === 'notifications')
+    expect(notifInsert?.rows.map((r) => r.user_id).sort()).toEqual(['user-a', 'user-b', 'user-c'])
+    expect(notifInsert?.rows.every((r) => r.type === 'urgent_lead')).toBe(true)
+  })
+
+  it('mesmo com a tag já aplicada antes, ainda dispara a notificação (não idempotente pro handoff)', async () => {
+    h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false, urgente: true })
+    // `contact_tags` já tem uma linha → count > 0 → applyAiUrgente NAO
+    // insere a tag de novo. A linha nao carrega `tags`, entao nao afeta o
+    // calculo de isClient/hasMeeting (mesma tabela, consulta anterior).
+    h.state.porTabela.contact_tags = [{ id: 'ja-tinha-a-tag' }]
+    h.state.porTabela.profiles = [{ user_id: 'user-a' }]
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.state.inserts.find((i) => i.table === 'contact_tags')).toBeUndefined()
+    const notifInsert = h.state.inserts.find((i) => i.table === 'notifications')
+    expect(notifInsert?.rows).toHaveLength(1)
+    expect(notifInsert?.rows[0]).toMatchObject({ type: 'urgent_lead', user_id: 'user-a' })
+  })
+
+  it('sem membros na conta, nao insere notificacao nenhuma (mas nao quebra)', async () => {
+    h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false, urgente: true })
+    h.state.porTabela.profiles = []
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.state.inserts.find((i) => i.table === 'notifications')).toBeUndefined()
+    expect(h.engineSendText).toHaveBeenCalled()
+  })
+
+  it('sem sinal de urgência, não grava nada em notifications', async () => {
+    h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false, urgente: false })
+    h.state.porTabela.profiles = [{ user_id: 'user-a' }]
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.state.inserts.find((i) => i.table === 'notifications')).toBeUndefined()
   })
 })
