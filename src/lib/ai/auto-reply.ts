@@ -95,9 +95,18 @@ const AGENDAR_SEM_QUALIFICACAO =
  * (`book_meeting`), que pode já estar rodando em paralelo — pedir de novo
  * por aqui confunde o lead. Este texto não pede nada e não promete reunião
  * confirmada.
+ *
+ * ⚠️ 3ª revisão de 20/08/2026 (achado N2): a 1ª e a 2ª rodada de correção
+ * cada uma trocou este texto por uma frase nova que "parecia" segura mas
+ * continuava prometendo um aviso que nada no sistema garantia — a IA aqui
+ * é reativa (só responde de novo se o lead escrever), então ninguém
+ * avisava ninguém. A frase só é verdade agora porque o disparo da trava
+ * (mais abaixo) passa a acionar `passarParaHumano` NO MESMO INSTANTE: um
+ * humano de fato é avisado, então "já te retorno" deixou de ser promessa
+ * vazia.
  */
 const AGENDAMENTO_EM_ANDAMENTO =
-  'Só um instante enquanto confirmo os detalhes por aqui — te aviso assim que estiver tudo certo.'
+  'Deixa eu confirmar os detalhes com a nossa equipe antes de seguir — já te retorno.'
 /**
  * Frases com que ela anuncia reunião feita. Serve à trava abaixo — por isso é
  * deliberadamente estreita: pega afirmação ("agendei", "está confirmado",
@@ -1405,6 +1414,21 @@ export async function dispatchInboundToAiReply(
           `[ia-agenda] ⛔ resposta afirmava reunião marcada sem reserva nenhuma — substituída. Original: ${textoFinal.slice(0, 200)}`,
         )
         textoFinal = AGENDAMENTO_EM_ANDAMENTO
+        // 3ª revisão de 20/08/2026 (achado N2): a frase acima só é verdade
+        // se um humano de fato for avisado — as duas rodadas anteriores só
+        // trocaram o texto por outro que "parecia" seguro e continuava sem
+        // nenhum mecanismo real por trás. A IA acabou de provar, NESTA
+        // MESMA resposta, que não é confiável para seguir sozinha neste
+        // atendimento — então aciona o MESMO handoff (`passarParaHumano`)
+        // que o resto do arquivo usa (teto de respostas, frase repetida,
+        // divergência de reunião), no mesmo instante.
+        await passarParaHumano(
+          db,
+          conversationId,
+          `${MARCA_ATENCAO} A IA tentou confirmar um agendamento sem reserva real (trava anti-mentira disparou) — handoff automático de segurança. Confira a conversa antes de responder.`,
+          config.handoffAgentId,
+          !!conv.assigned_agent_id,
+        )
       }
     }
 

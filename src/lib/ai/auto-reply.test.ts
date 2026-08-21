@@ -593,10 +593,54 @@ describe('dispatchInboundToAiReply — [[AGENDAR]] revisão 20/08/2026 (C1/C3/C4
     // as duas coisas que esta trava existe para evitar. O texto novo não
     // faz nenhuma das duas.
     expect(enviado).not.toMatch(/e-mail/i)
+    // ⚠️ Regex deliberadamente frouxa aqui (3ª revisão de 20/08/2026): o
+    // texto substituto atual ("Deixa eu confirmar os detalhes com a nossa
+    // equipe...") contém "confirmar" de propósito — a promessa de contato
+    // agora é sustentada por um handoff humano REAL (ver o teste de N2
+    // logo abaixo), então esta é a ÚNICA mensagem da suíte que tem
+    // permissão de usar essas palavras. O regex rigoroso (/confirm|reserv|
+    // agend|marc/i) vale para o caminho SEM handoff (teste C4/N1, abaixo)
+    // — aqui aplicá-lo quebraria o teste pelo motivo errado.
     expect(enviado).not.toMatch(/reservad|confirmad|agendad|marcad/i)
     // Asserção positiva sobre o texto substituto real (não só ausência de
     // palavras proibidas) — a decisão tomada no N2.
-    expect(enviado).toContain('Só um instante enquanto confirmo os detalhes por aqui')
+    expect(enviado).toContain(
+      'Deixa eu confirmar os detalhes com a nossa equipe antes de seguir — já te retorno.',
+    )
+  })
+
+  it('N2 (3ª revisão de 20/08/2026): a trava AFIRMA_QUE_AGENDOU aciona handoff humano REAL, não só troca o texto', async () => {
+    // Mesmo cenário do teste C1/N2/N4 acima (a trava dispara) — mas aqui a
+    // prova é sobre o EFEITO COLATERAL na conversa, não sobre o texto
+    // enviado. As duas rodadas de correção anteriores só trocaram a frase
+    // por outra que "parecia" segura; nada no sistema garantia o aviso
+    // prometido. A correção certa faz a frase virar verdade: o mesmo
+    // `passarParaHumano` que o resto do arquivo usa (teto de respostas,
+    // frase repetida, divergência de reunião) precisa disparar no MESMO
+    // instante em que a trava substitui o texto.
+    h.startManualFlowRun.mockResolvedValue({
+      consumed: true,
+      outcome: 'started',
+      flow_run_id: 'run-1',
+    })
+    h.generateReply.mockResolvedValue({
+      text: 'Prontinho, agendei para quarta às 16:15!',
+      handoff: false,
+      move: 'qualified',
+      agendar: true,
+    })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    // `h.state.updatePayload` guarda o payload do ÚLTIMO `.update()` feito
+    // em qualquer tabela nesta chamada. Como o cenário não tem `deals` nem
+    // `contact_tags` cadastrados, `applyAiCardMove` não encontra card e
+    // devolve cedo sem gravar nada — então o que sobra capturado é
+    // exatamente o update de handoff que a trava deve ter disparado.
+    expect(h.state.updatePayload).toMatchObject({
+      ai_autoreply_disabled: true,
+    })
+    expect(h.state.updatePayload?.ai_handoff_summary).toMatch(/agendamento/i)
   })
 
   it('C3: [[DESMARCAR]] SEM [[AGENDAR]] não move o card sozinho (restaura o comportamento anterior à Task 4 — incidente de 08/08/2026)', async () => {
@@ -635,8 +679,27 @@ describe('dispatchInboundToAiReply — [[AGENDAR]] revisão 20/08/2026 (C1/C3/C4
     expect(h.startManualFlowRun).not.toHaveBeenCalled()
     expect(h.engineSendText).toHaveBeenCalledTimes(1)
     const enviado = h.engineSendText.mock.calls[0]?.[0]?.text ?? ''
-    expect(enviado).not.toMatch(/cal\.com/i)
-    expect(enviado).not.toMatch(/reservad|confirmad|agendad|marcad/i)
+    // 3ª revisão de 20/08/2026 (N1, parte 2): `/cal\.com/i` só provava a
+    // ausência DAQUELE host — não de qualquer link. Trocado por uma
+    // checagem de ausência de QUALQUER URL, porque este lead não está
+    // qualificado e não tem handoff nenhum acontecendo: não pode ganhar
+    // link nenhum, do Cal.com ou de qualquer outro lugar.
+    expect(enviado).not.toMatch(/https?:\/\//i)
+    // 3ª revisão de 20/08/2026 (N2, parte do teste): a lista antiga
+    // (reservad|confirmad|agendad|marcad) não pega "confirmo", "confirmar",
+    // "agendar", "marco" etc. — flexões diferentes do radical. Radicais
+    // mais curtos cobrem as conjugações reais. Este é o caminho SEM
+    // handoff (lead não qualificado) — aqui a promessa tem que ficar
+    // totalmente ausente, ao contrário do teste de N2 acima.
+    //
+    // ⚠️ Adaptado na hora: `/confirm|reserv|agend|marc/i` sem ressalva
+    // reprovava o PRÓPRIO fallback certo deste caminho (AGENDAR_SEM_
+    // QUALIFICACAO), porque "agendamento" — substantivo neutro, "antes de
+    // seguir com o agendamento" — contém o radical "agend" sem ser
+    // promessa nenhuma. O `(?!amento)` poupa só esse substantivo; toda
+    // conjugação real de verbo (agendar, agendei, agendado, agendando,
+    // agenda) continua proibida.
+    expect(enviado).not.toMatch(/confirm|reserv|agend(?!amento)|marc/i)
     expect(enviado).toContain('me conta um pouco mais sobre o seu caso')
   })
 
