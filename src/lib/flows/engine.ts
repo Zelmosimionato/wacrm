@@ -756,6 +756,22 @@ async function advanceFromNodeKey(
           reason: "lost_race_during_advance",
         });
       }
+      const cfgTimeout = (node.config as unknown as CollectInputNodeConfig).timeout;
+      if (cfgTimeout) {
+        const runAt = new Date(
+          computeWaitRunAt(
+            { unit: cfgTimeout.unit ?? "hours", amount: cfgTimeout.amount ?? 0, until: cfgTimeout.until },
+            run.vars,
+          ),
+        );
+        await db.from("flow_pending_resumes").insert({
+          flow_run_id: run.id,
+          account_id: run.account_id,
+          node_key: node.node_key,
+          run_at: runAt.toISOString(),
+          status: "pending",
+        });
+      }
       return { outcome: "advanced" };
     }
     if (node.node_type === "wait") {

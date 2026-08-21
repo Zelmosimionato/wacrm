@@ -2122,3 +2122,65 @@ describe("dispatchInboundToFlows — wait não duplica a cancelação de timeout
     expect(h.state.pendingResumeUpdates).toHaveLength(1);
   });
 });
+
+describe("dispatchInboundToFlows — collect_input com timeout", () => {
+  it("ao suspender com timeout, agenda um flow_pending_resumes pro prazo calculado", async () => {
+    h.state.activeRun = waitRun({ current_node_key: "collect_prev" });
+    h.state.nodeRows = [
+      node({
+        node_key: "collect_prev",
+        node_type: "collect_input",
+        config: { prompt_text: "x", var_key: "nome", next_node_key: "pergunta" },
+      }),
+      node({
+        node_key: "pergunta",
+        node_type: "collect_input",
+        config: {
+          prompt_text: "Tem urgência?",
+          var_key: "urgencia_texto",
+          next_node_key: "fim_resposta",
+          timeout: { unit: "hours", amount: 24, next_node_key: "fim_timeout" },
+        },
+      }),
+      node({ node_key: "fim_resposta", node_type: "end", config: {} }),
+      node({ node_key: "fim_timeout", node_type: "end", config: {} }),
+    ];
+
+    await dispatchInboundToFlows({
+      accountId: "acct-1",
+      userId: "user-1",
+      contactId: "contact-1",
+      conversationId: "conv-1",
+      message: { kind: "text", text: "qualquer coisa", meta_message_id: "m8" },
+      isFirstInboundMessage: false,
+    });
+
+    expect(h.state.insertedPendingResumes).toHaveLength(1);
+    expect(h.state.insertedPendingResumes[0].node_key).toBe("pergunta");
+  });
+
+  it("resumeWaitingFlow avança pro next_node_key do timeout quando ninguém respondeu", async () => {
+    h.state.activeRun = waitRun({ id: "run-1", current_node_key: "pergunta" });
+    h.state.nodeRows = [
+      node({
+        node_key: "pergunta",
+        node_type: "collect_input",
+        config: {
+          prompt_text: "Tem urgência?",
+          var_key: "urgencia_texto",
+          next_node_key: "fim_resposta",
+          timeout: { unit: "hours", amount: 24, next_node_key: "fim_timeout" },
+        },
+      }),
+      node({ node_key: "fim_resposta", node_type: "end", config: {} }),
+      node({ node_key: "fim_timeout", node_type: "end", config: {} }),
+    ];
+
+    const db = supabaseAdmin();
+    await resumeWaitingFlow(db, { id: "pend-1", flow_run_id: "run-1", node_key: "pergunta" });
+
+    expect(
+      h.state.flowRunEvents.some((e) => e.node_key === "fim_timeout" && e.event_type === "completed"),
+    ).toBe(true);
+  });
+});

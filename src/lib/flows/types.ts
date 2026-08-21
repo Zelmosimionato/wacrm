@@ -143,6 +143,16 @@ export interface CollectInputNodeConfig {
   regex?: string;
   /** Node to advance to after capture. */
   next_node_key: string;
+  /** Mesma forma do `timeout` de `SendButtonsNodeConfig` (Task 4) —
+   *  se ninguem responder ate o prazo, avanca pra este no em vez de
+   *  esperar pra sempre. Perguntas abertas (sem botao) sao as que MAIS
+   *  precisam disto: ignorar e o caso comum, nao a excecao. */
+  timeout?: {
+    unit?: "minutes" | "hours" | "days";
+    amount?: number;
+    until?: WaitUntilConfig;
+    next_node_key: string;
+  };
 }
 
 export type WaitUntilConfig =
