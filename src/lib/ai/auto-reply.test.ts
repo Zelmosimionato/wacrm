@@ -565,7 +565,7 @@ describe('dispatchInboundToAiReply — [[AGENDAR]] revisão 20/08/2026 (C1/C3/C4
     vi.stubEnv('IA_AGENDA_ATIVA', '1')
   })
 
-  it('C1: Fluxo apenas INICIOU (outcome started, reunião ainda não existe) + texto afirma agendado → a trava troca o texto', async () => {
+  it('C1/N2/N4: Fluxo apenas INICIOU (outcome started, reunião ainda não existe) + texto afirma agendado → a trava troca por texto seguro, sem pedir e-mail nem prometer reunião confirmada', async () => {
     h.startManualFlowRun.mockResolvedValue({
       consumed: true,
       outcome: 'started',
@@ -581,8 +581,22 @@ describe('dispatchInboundToAiReply — [[AGENDAR]] revisão 20/08/2026 (C1/C3/C4
     await dispatchInboundToAiReply(ARGS)
 
     expect(h.startManualFlowRun).toHaveBeenCalledTimes(1)
+    // N4 da 2ª revisão (achado MINOR): antes disto a única checagem era
+    // "não contém /agendei/i", que passaria mesmo com texto vazio/undefined
+    // — falso positivo. Agora confere que o envio de fato aconteceu.
+    expect(h.engineSendText).toHaveBeenCalledTimes(1)
     const enviado = h.engineSendText.mock.calls[0]?.[0]?.text ?? ''
     expect(enviado).not.toMatch(/agendei/i)
+    // N2 da 2ª revisão (achado IMPORTANT): o fallback antigo, escolhido por
+    // `email ? NAO_CONFIRMADO : FALTA_EMAIL`, ou pedia e-mail (papel do
+    // Fluxo agora, não da IA) ou prometia "já deixo reservado"/confirmação —
+    // as duas coisas que esta trava existe para evitar. O texto novo não
+    // faz nenhuma das duas.
+    expect(enviado).not.toMatch(/e-mail/i)
+    expect(enviado).not.toMatch(/reservad|confirmad|agendad|marcad/i)
+    // Asserção positiva sobre o texto substituto real (não só ausência de
+    // palavras proibidas) — a decisão tomada no N2.
+    expect(enviado).toContain('Só um instante enquanto confirmo os detalhes por aqui')
   })
 
   it('C3: [[DESMARCAR]] SEM [[AGENDAR]] não move o card sozinho (restaura o comportamento anterior à Task 4 — incidente de 08/08/2026)', async () => {
@@ -602,7 +616,14 @@ describe('dispatchInboundToAiReply — [[AGENDAR]] revisão 20/08/2026 (C1/C3/C4
     expect(h.state.updatePayload).toBeNull()
   })
 
-  it('C4: [[AGENDAR]] + não qualificado → não deixa a transição solta, troca pelo fallback FALHA_AGENDA', async () => {
+  it('C4/N1: [[AGENDAR]] + não qualificado → não deixa a transição solta, troca por fallback SEM link de agendamento e SEM prometer nada', async () => {
+    // N1 da 2ª revisão de 20/08/2026 (achado CRITICAL): este teste antes
+    // provava o comportamento ERRADO — que o fallback continha o link
+    // público do Cal.com (FALHA_AGENDA). Isso deixava um lead NÃO
+    // qualificado com acesso direto à agenda do escritório, driblando a
+    // qualificação — pior que a versão anterior à correção C4. O gate
+    // agora responde sem link e sem promessa, só pedindo o que falta para
+    // qualificar.
     h.generateReply.mockResolvedValue({
       text: 'Perfeito, já vou te mostrar os horários disponíveis!',
       handoff: false,
@@ -612,11 +633,11 @@ describe('dispatchInboundToAiReply — [[AGENDAR]] revisão 20/08/2026 (C1/C3/C4
     await dispatchInboundToAiReply(ARGS)
 
     expect(h.startManualFlowRun).not.toHaveBeenCalled()
-    expect(h.engineSendText).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: expect.stringContaining('cal.com/simionato-advogados-n4sm0p'),
-      }),
-    )
+    expect(h.engineSendText).toHaveBeenCalledTimes(1)
+    const enviado = h.engineSendText.mock.calls[0]?.[0]?.text ?? ''
+    expect(enviado).not.toMatch(/cal\.com/i)
+    expect(enviado).not.toMatch(/reservad|confirmad|agendad|marcad/i)
+    expect(enviado).toContain('me conta um pouco mais sobre o seu caso')
   })
 
   // ⚠️ Mesmo workaround do teste "qualificado + PJ" logo acima: qualquer

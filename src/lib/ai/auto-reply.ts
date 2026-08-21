@@ -72,6 +72,33 @@ const FALHA_AGENDA =
 const PJ_AGENDAMENTO_MANUAL =
   'Entendido! Vou repassar para a equipe do escritório entrar em contato com você em breve para agendar.'
 /**
+ * Texto honesto para quando o [[AGENDAR]] chega e o lead AINDA não está
+ * qualificado (achado N1 da 2ª revisão de 20/08/2026 sobre o commit
+ * a34a8c8): antes disto o código reaproveitava FALHA_AGENDA aqui — mas
+ * FALHA_AGENDA TRAZ o link público do Cal.com, então um lead não qualificado
+ * ganhava acesso direto à agenda do escritório, sem passar pela
+ * qualificação (e pior: como este `if` roda antes do filtro de PJ, um PJ
+ * ainda não qualificado também caía aqui, sem notificação nenhuma). Este
+ * texto NÃO tem link e NÃO promete nada — só continua a conversa pedindo o
+ * que falta para qualificar, no mesmo espírito do prompt ("diga o que
+ * FALTA, nunca que está feito").
+ */
+const AGENDAR_SEM_QUALIFICACAO =
+  'Antes de seguir com o agendamento, me conta um pouco mais sobre o seu caso — qual é a situação e o valor envolvido? Assim consigo te orientar direito.'
+/**
+ * Fallback seguro para quando a trava anti-mentira (AFIRMA_QUE_AGENDOU)
+ * dispara (achado N2 da 2ª revisão de 20/08/2026): antes disto o código
+ * escolhia entre NAO_CONFIRMADO e FALTA_EMAIL — os dois são texto do
+ * mecanismo aposentado, de quando a própria IA reservava o horário (por
+ * isso fazia sentido ela pedir e-mail ou o horário preferido). Hoje quem
+ * pede e-mail e mostra a lista de horários é o Fluxo de Agendamento
+ * (`book_meeting`), que pode já estar rodando em paralelo — pedir de novo
+ * por aqui confunde o lead. Este texto não pede nada e não promete reunião
+ * confirmada.
+ */
+const AGENDAMENTO_EM_ANDAMENTO =
+  'Só um instante enquanto confirmo os detalhes por aqui — te aviso assim que estiver tudo certo.'
+/**
  * Frases com que ela anuncia reunião feita. Serve à trava abaixo — por isso é
  * deliberadamente estreita: pega afirmação ("agendei", "está confirmado",
  * "convite enviado") e não pega promessa ("assim que você confirmar").
@@ -101,8 +128,6 @@ export const PESSOA_AFIRMA_REUNIAO =
 export const AFIRMA_QUE_AGENDOU =
   /\b(agendei|remarquei|reservei|marquei)\b|\b(est[áa]|ficou|fica|segue|continua|permanece)\s+(tudo\s+)?(confirmad|agendad|remarcad|reservad|marcad)|\breuni[ãa]o\b[^.!?\n]{0,30}\b(confirmad|agendad|remarcad|reservad|marcad)|\bconvite\b[^.!?\n]{0,40}\benviad/i
 
-const NAO_CONFIRMADO =
-  'Só para eu não errar: me confirma qual horário você prefere que eu já deixo reservado?'
 const JA_TEM_REUNIAO =
   'Você já tem uma reunião marcada com a gente — vou cuidar da alteração do horário e te confirmo por aqui, tudo bem?'
 
@@ -1319,7 +1344,7 @@ export async function dispatchInboundToAiReply(
             console.warn(
               `[ai auto-reply] [[AGENDAR]] ignorado: contato ${contactId} ainda não está qualificado`,
             )
-            textoFinal = FALHA_AGENDA
+            textoFinal = AGENDAR_SEM_QUALIFICACAO
           } else if (segmentoPJ || moveFinal === 'super') {
             // Rollout faseado — só PF nesta fase. Ver Step 3 do plano de
             // agendamento (docs/superpowers/specs/2026-08-20-agendamento-fluxos-design.md).
@@ -1379,7 +1404,7 @@ export async function dispatchInboundToAiReply(
         console.error(
           `[ia-agenda] ⛔ resposta afirmava reunião marcada sem reserva nenhuma — substituída. Original: ${textoFinal.slice(0, 200)}`,
         )
-        textoFinal = email ? NAO_CONFIRMADO : FALTA_EMAIL
+        textoFinal = AGENDAMENTO_EM_ANDAMENTO
       }
     }
 
