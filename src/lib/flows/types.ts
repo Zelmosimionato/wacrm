@@ -136,6 +136,16 @@ export interface CollectInputNodeConfig {
   next_node_key: string;
 }
 
+export type WaitUntilConfig =
+  | {
+      mode: "before_var";
+      var_key: string;
+      hours_before: number;
+    }
+  | {
+      mode: "end_of_business_day";
+    };
+
 export interface WaitNodeConfig {
   /** Duração da espera a partir do momento em que o fluxo entra neste nó. */
   unit: "minutes" | "hours" | "days";
@@ -153,6 +163,8 @@ export interface WaitNodeConfig {
     trigger: KeywordTriggerConfig;
     next_node_key: string;
   }[];
+  /** Alvo dinamico: quando presente, manda em cima de unit/amount. */
+  until?: WaitUntilConfig;
 }
 
 export interface OfferSlotsNodeConfig {

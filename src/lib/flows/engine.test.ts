@@ -50,6 +50,8 @@ const h = vi.hoisted(() => ({
     // constraint).
     insertedFlowRuns: [] as Record<string, unknown>[],
     forceFlowRunsInsertDuplicateKeyError: false as boolean,
+    // Todo INSERT em flow_pending_resumes (wait/timeout agendando retomada).
+    insertedPendingResumes: [] as Record<string, unknown>[],
   },
 }));
 
@@ -129,6 +131,9 @@ vi.mock("./admin-client", () => {
     if (table === "flow_pending_resumes") {
       if (type === "update") {
         state.pendingResumeUpdates.push({ payload, filters });
+      }
+      if (type === "insert") {
+        state.insertedPendingResumes.push(payload as Record<string, unknown>);
       }
       return { data: null, error: null };
     }
@@ -652,6 +657,7 @@ beforeEach(() => {
   h.state.flowRunEvents = [];
   h.state.insertedFlowRuns = [];
   h.state.forceFlowRunsInsertDuplicateKeyError = false;
+  h.state.insertedPendingResumes = [];
   vi.unstubAllEnvs();
   vi.mocked(engineSendInteractiveList).mockClear();
   vi.mocked(horariosLivres).mockClear();
@@ -1717,5 +1723,118 @@ describe("startManualFlowRun", () => {
     });
 
     expect(result).toEqual({ consumed: true, outcome: "duplicate_inbound_ignored" });
+  });
+});
+
+describe("dispatchInboundToFlows — wait node com until (alvo dinâmico)", () => {
+  it("until.mode='before_var' agenda run_at = var menos hours_before", async () => {
+    const bookingIso = new Date(Date.now() + 30 * 86_400_000).toISOString(); // sempre no futuro
+    h.state.activeRun = waitRun({
+      current_node_key: "collect1",
+      vars: { booking_inicio_iso: bookingIso },
+    });
+    h.state.nodeRows = [
+      node({
+        node_key: "collect1",
+        node_type: "collect_input",
+        config: { prompt_text: "x", var_key: "nome", next_node_key: "wait1" },
+      }),
+      node({
+        node_key: "wait1",
+        node_type: "wait",
+        config: {
+          unit: "hours",
+          amount: 1,
+          next_node_key: "timeout_end",
+          until: { mode: "before_var", var_key: "booking_inicio_iso", hours_before: 18 },
+        },
+      }),
+      node({ node_key: "timeout_end", node_type: "end", config: {} }),
+    ];
+
+    await dispatchInboundToFlows({
+      accountId: "acct-1",
+      userId: "user-1",
+      contactId: "contact-1",
+      conversationId: "conv-1",
+      message: { kind: "text", text: "qualquer coisa", meta_message_id: "m1" },
+      isFirstInboundMessage: false,
+    });
+
+    expect(h.state.insertedPendingResumes).toHaveLength(1);
+    expect(h.state.insertedPendingResumes[0].node_key).toBe("wait1");
+    expect(new Date(h.state.insertedPendingResumes[0].run_at as string).getTime()).toBe(
+      Date.parse(bookingIso) - 18 * 3_600_000,
+    );
+  });
+
+  it("until.mode='before_var' com alvo já passado agenda pra agora (sem negativo)", async () => {
+    const passado = new Date(Date.now() - 3_600_000).toISOString();
+    h.state.activeRun = waitRun({
+      current_node_key: "collect1",
+      vars: { booking_inicio_iso: passado },
+    });
+    h.state.nodeRows = [
+      node({
+        node_key: "collect1",
+        node_type: "collect_input",
+        config: { prompt_text: "x", var_key: "nome", next_node_key: "wait1" },
+      }),
+      node({
+        node_key: "wait1",
+        node_type: "wait",
+        config: {
+          unit: "hours",
+          amount: 1,
+          next_node_key: "timeout_end",
+          until: { mode: "before_var", var_key: "booking_inicio_iso", hours_before: 1 },
+        },
+      }),
+      node({ node_key: "timeout_end", node_type: "end", config: {} }),
+    ];
+
+    const before = Date.now();
+    await dispatchInboundToFlows({
+      accountId: "acct-1",
+      userId: "user-1",
+      contactId: "contact-1",
+      conversationId: "conv-1",
+      message: { kind: "text", text: "oi", meta_message_id: "m2" },
+      isFirstInboundMessage: false,
+    });
+
+    const runAt = new Date(h.state.insertedPendingResumes[0].run_at as string).getTime();
+    expect(runAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it("sem until, continua usando unit/amount (compatibilidade)", async () => {
+    h.state.activeRun = waitRun({ current_node_key: "collect1" });
+    h.state.nodeRows = [
+      node({
+        node_key: "collect1",
+        node_type: "collect_input",
+        config: { prompt_text: "x", var_key: "nome", next_node_key: "wait1" },
+      }),
+      node({
+        node_key: "wait1",
+        node_type: "wait",
+        config: { unit: "hours", amount: 2, next_node_key: "timeout_end" },
+      }),
+      node({ node_key: "timeout_end", node_type: "end", config: {} }),
+    ];
+
+    const before = Date.now();
+    await dispatchInboundToFlows({
+      accountId: "acct-1",
+      userId: "user-1",
+      contactId: "contact-1",
+      conversationId: "conv-1",
+      message: { kind: "text", text: "oi", meta_message_id: "m4" },
+      isFirstInboundMessage: false,
+    });
+
+    const runAt = new Date(h.state.insertedPendingResumes[0].run_at as string).getTime();
+    expect(runAt).toBeGreaterThanOrEqual(before + 7_200_000 - 1_000);
+    expect(runAt).toBeLessThanOrEqual(before + 7_200_000 + 5_000);
   });
 });

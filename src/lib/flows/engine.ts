@@ -43,6 +43,7 @@ import { horariosLivres, type SlotLivre } from "@/lib/appointments/calcom-slots"
 import { criarReserva } from "@/lib/appointments/calcom-book";
 import { cancelCalcomBooking } from "@/lib/appointments/calcom-cancel";
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
+import { fimDoExpedienteAPartir } from "@/lib/automations/horario-comercial";
 import {
   type BookMeetingNodeConfig,
   type CancelMeetingNodeConfig,
@@ -63,6 +64,7 @@ import {
   type StartNodeConfig,
   type KeywordTriggerConfig,
   type WaitNodeConfig,
+  type WaitUntilConfig,
 } from "./types";
 
 // ============================================================
@@ -121,6 +123,27 @@ export function waitMs(cfg: { unit: "minutes" | "hours" | "days"; amount: number
   const unitMs =
     cfg.unit === "days" ? 86_400_000 : cfg.unit === "hours" ? 3_600_000 : 60_000;
   return Math.max(1_000, cfg.amount * unitMs);
+}
+
+
+/**
+ * Quando o `wait` (ou o `timeout` de um nó suspensivo) resolve. Sem
+ * `until`, é a duração simples de sempre (`unit`/`amount`). Com
+ * `until`, o alvo é calculado a partir de uma var do run ou do fim do
+ * expediente — nunca no passado.
+ */
+export function computeWaitRunAt(
+  cfg: { unit: "minutes" | "hours" | "days"; amount: number; until?: WaitUntilConfig },
+  vars: Record<string, unknown>,
+): number {
+  if (!cfg.until) return Date.now() + waitMs(cfg);
+  if (cfg.until.mode === "end_of_business_day") {
+    return fimDoExpedienteAPartir(Date.now());
+  }
+  const raw = vars[cfg.until.var_key];
+  const varTs = typeof raw === "string" ? Date.parse(raw) : NaN;
+  if (Number.isNaN(varTs)) return Date.now();
+  return Math.max(varTs - cfg.until.hours_before * 3_600_000, Date.now());
 }
 
 /**
@@ -729,7 +752,7 @@ async function advanceFromNodeKey(
     }
     if (node.node_type === "wait") {
       const cfg = node.config as unknown as WaitNodeConfig;
-      const runAt = new Date(Date.now() + waitMs(cfg));
+      const runAt = new Date(computeWaitRunAt(cfg, run.vars));
       const { error: schedErr } = await db.from("flow_pending_resumes").insert({
         flow_run_id: run.id,
         account_id: run.account_id,
