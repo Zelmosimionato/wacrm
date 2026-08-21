@@ -11,7 +11,7 @@ import {
   SUPER_SENTINEL,
   REAGENDAR_SENTINEL,
   URGENTE_SENTINEL,
-  AGENDAR_SENTINEL_RE,
+  AGENDAR_SENTINEL,
   DESMARCAR_SENTINEL,
   PERDIDO_SENTINEL,
   PORTA_ABERTA_SENTINEL,
@@ -93,11 +93,10 @@ export function parseGeneration(
   // Prazo/urgência real na conversa: independente do destino do card, pode
   // vir junto com SUPER/QUALIFICADO na mesma resposta.
   const urgente = raw.includes(URGENTE_SENTINEL)
-  // `[[AGENDAR:2]]` → reservar o 2º horário da agenda desta resposta. Guardamos só o
-  // número: quem marca (auto-reply) casa com a lista que ELE leu, e um número fora da
-  // lista morre ali — o modelo nunca escreve a data.
-  const mAgendar = raw.match(AGENDAR_SENTINEL_RE)
-  const agendar = mAgendar ? Number(mAgendar[1]) : null
+  // `[[AGENDAR]]` → a IA decidiu que é hora de mostrar horário pro lead. Não
+  // reserva nada sozinha: quem marca (auto-reply) entrega o bastão pro Fluxo
+  // de Agendamento, que mostra a lista real (WhatsApp) e reserva.
+  const agendar = raw.includes(AGENDAR_SENTINEL)
   const text = [
     HANDOFF_SENTINEL,
     SUPER_SENTINEL,
@@ -107,9 +106,9 @@ export function parseGeneration(
     PERDIDO_SENTINEL,
     PORTA_ABERTA_SENTINEL,
     URGENTE_SENTINEL,
+    AGENDAR_SENTINEL,
   ]
     .reduce((acc, s) => acc.split(s).join(''), raw)
-    .replace(new RegExp(AGENDAR_SENTINEL_RE.source, 'gi'), '')
     .trim()
   return { text, handoff, move, agendar, desmarcar, portaAberta, urgente, usage }
 }

@@ -71,10 +71,10 @@ export interface GenerateResult {
    *  citação, protesto). Independente de `move` — pode vir junto com
    *  'qualified'/'super' na mesma resposta. */
   urgente: boolean
-  /** Horário da agenda que a IA pediu para RESERVAR (1 = o primeiro da lista
-   *  mostrada nesta resposta), ou null. É índice, nunca data: o modelo escolhe
-   *  da lista lida do Cal.com e assim não tem como inventar horário. */
-  agendar: number | null
+  /** A IA decidiu que é hora de mostrar horário pro lead. NÃO reserva nada
+   *  sozinha: entrega o bastão pro Fluxo de Agendamento, que mostra a lista
+   *  real (WhatsApp) e reserva de forma determinística. */
+  agendar: boolean
   /** Provider token usage for this call, or null when unavailable. */
   usage: AiUsage | null
 }

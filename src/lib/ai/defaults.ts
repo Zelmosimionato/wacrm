@@ -35,19 +35,29 @@ export const REAGENDAR_SENTINEL = '[[REAGENDAR]]'
 export const URGENTE_SENTINEL = '[[URGENTE]]'
 
 /**
- * Marcador de AGENDAMENTO: `[[AGENDAR:2]]` = reserve o horário nº 2 da agenda que
- * foi dada nesta resposta. É por NÚMERO, nunca por data escrita — o modelo escolhe
- * um item de uma lista que o sistema acabou de ler do Cal.com, e assim não há como
- * inventar um horário que não existe. O sistema marca ANTES de enviar a resposta:
- * se a reserva falhar, a confirmação não sai.
+ * Marcador de AGENDAMENTO: `[[AGENDAR]]` — a IA decidiu que é hora de mostrar
+ * horário pro lead, que já está qualificado. NÃO reserva nada sozinha: entrega
+ * o bastão pro Fluxo de Agendamento, que mostra os horários de verdade (lista
+ * interativa do WhatsApp) e reserva de forma determinística. Sem número — o
+ * Fluxo escolhe/mostra os horários, a IA só sinaliza "hora de agendar".
+ *
+ * Trocou o mecanismo antigo (`[[AGENDAR:N]]`, a IA escolhia o índice e
+ * reservava ela mesma via Cal.com) depois de um incidente ao vivo em
+ * 20/08/2026: a IA confirmou reunião sem o lead ter escolhido horário. O novo
+ * mecanismo tira da IA qualquer poder de reservar ou de afirmar reserva feita.
+ *
+ * ⚠️ Rollout faseado: nesta fase só dispara o Fluxo para pessoa física (PF) —
+ * ver a restrição no bloco de prompt logo abaixo e o gate por segmento em
+ * `auto-reply.ts`. Ver docs/superpowers/specs/2026-08-20-agendamento-fluxos-design.md.
+ * Remover a restrição quando PJ for estendido.
  */
-export const AGENDAR_SENTINEL_RE = /\[\[AGENDAR:\s*(\d{1,2})\s*\]\]/i
+export const AGENDAR_SENTINEL = '[[AGENDAR]]'
 
 /**
  * Marcador de DESMARCAR: a pessoa não vem no horário que está reservado. Cancela
  * no Cal.com, libera o horário e — o que ninguém via — DESLIGA os lembretes de
  * véspera e de 1h antes, que hoje continuariam perseguindo quem já cancelou.
- * Vem sozinho ou colado a um `[[AGENDAR:N]]` (desmarcar e já remarcar).
+ * Vem sozinho ou colado a um `[[AGENDAR]]` (desmarcar e já sinalizar remarcação).
  */
 export const DESMARCAR_SENTINEL = '[[DESMARCAR]]'
 
@@ -183,34 +193,38 @@ Never mention or explain these markers to the customer.`,
         'disponibilidade daquele período e encaminhe para um humano confirmar.\n' +
         horarios.map((h, i) => `[${i + 1}] ${h}`).join('\n'),
     )
-    // A mão que faltava: com a agenda em número, ela reserva de verdade.
+    // A mão que faltava: com a agenda em número, ela sabe quando é a hora —
+    // mas quem reserva de verdade agora é o Fluxo de Agendamento, não ela.
     if (mode === 'auto_reply' && agendaAtiva) {
       parts.push(
-        'VOCÊ MARCA A REUNIÃO (isto SOBREPÕE qualquer instrução abaixo que diga que você ' +
-          'não tem acesso à agenda ou que nunca marca nada). Quando o lead escolher um dos ' +
-          'horários acima, você mesma reserva: escreva a confirmação e termine a resposta ' +
-          `com o marcador ${'[[AGENDAR:N]]'}, onde N é o NÚMERO do horário entre colchetes ` +
-          '(ex.: [[AGENDAR:2]] para o segundo da lista). O cliente NUNCA vê o marcador.\n' +
-          '- ⛔⛔ NUNCA diga que agendou, que está confirmado ou que o convite foi ' +
-          'enviado se você NÃO colocou o marcador NESTA MESMA resposta. Sem o marcador ' +
-          'nada foi marcado: a pessoa apareceria para uma sala vazia. E é pior do que ' +
-          'parece — na mensagem seguinte você lê a sua própria frase no histórico, acha ' +
-          'que já marcou e nunca marca. Não deu para marcar agora? Diga o que FALTA ' +
-          '("me passa seu e-mail que eu já confirmo"), nunca que está feito.\n' +
-          '- ⛔ PRECISA DO E-MAIL: sem e-mail o sistema de agenda recusa a reserva. Se você ' +
-          'ainda não tem o e-mail, ofereça os horários e peça o e-mail NA MESMA mensagem ' +
-          '("qual desses fica melhor pra você? e me passa seu e-mail que eu já confirmo") — ' +
-          'aí você marca na resposta seguinte. ⛔ Não peça o e-mail do nada, antes de a ' +
-          'pessoa saber que vai marcar reunião: ela estranha e pergunta para quê.\n' +
+        'VOCÊ NÃO RESERVA NADA SOZINHA (isto SOBREPÕE qualquer instrução abaixo que diga ' +
+          'que você marca a reunião ou reserva um horário). Quando decidir que chegou a ' +
+          'hora de mostrar horário pro lead — depois de EXPLICAR O PORQUÊ, como o item 1 ' +
+          'abaixo já manda —, escreva uma frase de transição curta ("perfeito, já vou te ' +
+          `mostrar os horários disponíveis") e termine a resposta com o marcador ${AGENDAR_SENTINEL}, ` +
+          'sozinho, sem número. O sistema mostra os horários de verdade logo em seguida, ' +
+          'como lista interativa do WhatsApp, e reserva quando o lead escolher. O cliente ' +
+          'NUNCA vê o marcador.\n' +
+          '- ⛔⛔ NUNCA diga que agendou, que está confirmado, que o convite foi enviado, ' +
+          `ou liste horários numerados você mesma — isso agora é sempre o sistema que faz, ` +
+          `depois do seu ${AGENDAR_SENTINEL}. Sua única frase é a transição. Não deu para ` +
+          'marcar agora (ainda faltando qualificar, por exemplo)? Diga o que FALTA, nunca ' +
+          'que está feito.\n' +
+          `- ⛔ ${AGENDAR_SENTINEL} só vale pra pessoa FÍSICA (PF) nesta fase do rollout — ` +
+          'se o lead for pessoa jurídica (PJ), NÃO use este marcador ainda: continue a ' +
+          'conversa normalmente, sem prometer confirmação nem horário específico, e diga ' +
+          'que a equipe do escritório entra em contato para agendar. (Restrição temporária ' +
+          'do rollout faseado — a mecânica de agendamento direto por você para PJ segue em ' +
+          'aberto até essa restrição ser levantada numa fase futura.)\n' +
           '- COMO CONVIDAR (chegada a hora — ver a regra dos dois momentos, acima):\n' +
           '  1. EXPLIQUE POR QUE a reunião é necessária, antes de falar em horário. A frase ' +
           'do escritório é esta: "ok, neste caso o ideal é agendar uma videochamada, 100% ' +
           'gratuita, com o Dr. Zelmo; nessa reunião ele avalia o seu caso e passa todas as ' +
           'informações". Adapte ao caso da pessoa — ninguém aceita reunião sem saber para quê.\n' +
-          '  2. Na sequência, OFEREÇA os horários. ⛔ Não pergunte "quer agendar uma ' +
+          '  2. Na sequência, OFEREÇA a reunião. ⛔ Não pergunte "quer agendar uma ' +
           'reunião?" nem "quer que eu ofereça alguns horários?": pedir licença convida ao ' +
-          '"não". A reunião é o caminho natural — trate como tal e ofereça: "consigo dia 13, ' +
-          'quarta-feira, às 13:15, ou dia 18, segunda-feira, às 14h. Qual fica melhor?".\n' +
+          '"não". A reunião é o caminho natural — trate como tal, com a frase de transição ' +
+          `curta descrita acima, e feche com ${AGENDAR_SENTINEL}.\n` +
           '  3. Se a pessoa hesitar ou empurrar para depois, INSISTA UMA VEZ — e é SÓ AQUI ' +
           'que entra a urgência. O motivo mais forte é o mais simples: a conversa é gratuita ' +
           'e é ela que mostra o que dá para fazer; adiar não economiza nada. Se couber, UMA ' +
@@ -237,18 +251,12 @@ Never mention or explain these markers to the customer.`,
           'consequências, nada de urgência fora do momento de insistir. Uma frase, dita como ' +
           'quem quer ajudar — e nunca uma consequência que você não sabe que existe no caso ' +
           'dela: você não conhece o processo, o prazo nem a situação real.\n' +
-          '- Se ela disser um horário que não está na lista mas é claramente um deles ' +
-          '(ex.: "16:16" para 16:15), entenda que é aquele e confirme. ⛔ Não invente que ' +
-          'um horário está ocupado — você não sabe: só sabe o que está na lista.\n' +
           '- ⛔ Só ofereça horário depois de ter QUALIFICADO (área do problema e valor). Se ' +
           'a pessoa pedir para agendar antes disso, faça primeiro a pergunta que falta — ' +
           'uma reunião marcada com quem está abaixo do critério ocupa a agenda do escritório.\n' +
           '- A reunião de quem JÁ tem horário marcado se desfaz com ' +
           `${DESMARCAR_SENTINEL} (abaixo) — pode vir junto: desmarca a antiga e ` +
-          'marca a nova na mesma resposta.\n' +
-          '- A reserva acontece ANTES da sua mensagem sair, e o convite com o link da ' +
-          'videochamada chega por e-mail e aqui. Então PODE confirmar com naturalidade ' +
-          '("prontinho, agendei para...") — e não mande o link de agendamento junto.',
+          'sinaliza a nova (com o marcador) na mesma resposta.',
       )
     }
   } else {

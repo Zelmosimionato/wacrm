@@ -112,6 +112,7 @@ const h = vi.hoisted(() => ({
   retrieveKnowledge: vi.fn(),
   generateReply: vi.fn(),
   engineSendText: vi.fn(),
+  startManualFlowRun: vi.fn(),
   state: {
     conv: null as Record<string, unknown> | null,
     autoResponders: [] as { id: string }[],
@@ -133,6 +134,7 @@ vi.mock('./context', () => ({ buildConversationContext: h.buildConversationConte
 vi.mock('./knowledge', () => ({ retrieveKnowledge: h.retrieveKnowledge }))
 vi.mock('./generate', () => ({ generateReply: h.generateReply }))
 vi.mock('@/lib/flows/meta-send', () => ({ engineSendText: h.engineSendText }))
+vi.mock('@/lib/flows/engine', () => ({ startManualFlowRun: h.startManualFlowRun }))
 vi.mock('./admin-client', () => ({
   supabaseAdmin: () => ({
     // Encadeador GENERICO. Antes havia um ramo por tabela, e qualquer consulta
@@ -226,6 +228,11 @@ beforeEach(() => {
   h.retrieveKnowledge.mockResolvedValue([])
   h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false })
   h.engineSendText.mockResolvedValue({ whatsapp_message_id: 'm1' })
+  h.startManualFlowRun.mockResolvedValue({
+    consumed: true,
+    outcome: 'started',
+    flow_run_id: 'run-1',
+  })
 })
 
 describe('dispatchInboundToAiReply — eligibility gates', () => {
@@ -423,5 +430,121 @@ describe('dispatchInboundToAiReply — sinal de urgência ([[URGENTE]])', () => 
     await dispatchInboundToAiReply(ARGS)
 
     expect(h.state.inserts.find((i) => i.table === 'notifications')).toBeUndefined()
+  })
+})
+
+// Task 4 do plano de agendamento: [[AGENDAR]] (sem número) não reserva nada
+// sozinha — entrega o bastão pro Fluxo de Agendamento via `startManualFlowRun`.
+// Trocou o [[AGENDAR:N]] antigo depois de um incidente ao vivo em 20/08/2026
+// (a IA confirmou reunião sem o lead ter escolhido horário). A IA só marca
+// o marcador; quem decide se o Fluxo roda de verdade é este bloco de código —
+// por isso os testes aqui exercitam o gate (qualificado / PF-only), não o
+// parser (já coberto em generate.test.ts).
+describe('dispatchInboundToAiReply — [[AGENDAR]] entrega o bastão pro Fluxo', () => {
+  beforeEach(() => {
+    // A IA só aprende/age sobre o marcador com a chave ligada — mesmo
+    // interruptor que já protegia o mecanismo antigo.
+    vi.stubEnv('IA_AGENDA_ATIVA', '1')
+  })
+
+  it('sem [[AGENDAR]] na resposta, não chama o Fluxo nem mexe no card', async () => {
+    h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false, agendar: false })
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.startManualFlowRun).not.toHaveBeenCalled()
+  })
+
+  it('[[AGENDAR]] + contato SEM tag/etapa de qualificado → não chama o Fluxo, loga o aviso', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // Sem `move` nesta resposta e sem card em `deals` (porTabela.deals vazio
+    // → `etapaDoCard` devolve null) — nada indica que este lead qualificou.
+    h.generateReply.mockResolvedValue({ text: 'Perfeito, já te mostro os horários!', handoff: false, agendar: true })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.startManualFlowRun).not.toHaveBeenCalled()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ainda não está qualificado'))
+    warn.mockRestore()
+  })
+
+  it('[[AGENDAR]] + qualificado (nesta resposta) + PF → chama o Fluxo com os args certos', async () => {
+    h.generateReply.mockResolvedValue({
+      text: 'Perfeito, já te mostro os horários!',
+      handoff: false,
+      move: 'qualified',
+      agendar: true,
+    })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.startManualFlowRun).toHaveBeenCalledTimes(1)
+    expect(h.startManualFlowRun).toHaveBeenCalledWith(expect.anything(), '', {
+      accountId: 'acct-1',
+      contactId: 'contact-1',
+      conversationId: 'conv-1',
+    })
+  })
+
+  it('[[AGENDAR]] + já qualificado (card em etapa avançada) + PF → chama o Fluxo', async () => {
+    // "Lead Qualificado" — mesmo id de AI_STAGE_QUALIFICADO — sem o `move`
+    // desta resposta apontar qualificação: o card JÁ tinha avançado antes.
+    h.state.porTabela.deals = [{ stage_id: '57bed09e-bc01-4691-8272-dcd8c3c078df' }]
+    h.generateReply.mockResolvedValue({
+      text: 'Perfeito, já te mostro os horários!',
+      handoff: false,
+      agendar: true,
+    })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.startManualFlowRun).toHaveBeenCalledTimes(1)
+  })
+
+  // ⚠️ O mock de `contact_tags` é genérico por tabela (não filtra por
+  // `.eq()`): qualquer linha ali também conta como "tem reunião marcada" para
+  // `temReuniaoAgora`. Por isso o cenário usa [[DESMARCAR]] junto — desliga
+  // essa releitura de propósito (`hasMeetingAgora = desmarcar ? false : ...`)
+  // e é uma combinação real: lead PJ que acabou de desmarcar e já tenta
+  // remarcar na mesma mensagem.
+  it('[[AGENDAR]] + qualificado + PJ → não chama o Fluxo, loga o aviso de rollout faseado', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    h.state.porTabela.contact_tags = [{ tags: { name: 'PJ' } }]
+    h.generateReply.mockResolvedValue({
+      text: 'Perfeito, já te mostro os horários!',
+      handoff: false,
+      move: 'super',
+      agendar: true,
+      desmarcar: true,
+    })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.startManualFlowRun).not.toHaveBeenCalled()
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('é PJ, fora do rollout faseado'),
+    )
+    log.mockRestore()
+  })
+
+  // FLUXO_AGENDAMENTO_ID está vazio até o plano de montagem do grafo rodar —
+  // nesta fase `startManualFlowRun` sempre devolve `no_match`. Sem este
+  // fallback, o cliente ficaria com a frase de transição da IA e nada vindo
+  // a seguir.
+  it('Fluxo não encontrado (id ainda não existe) → troca a resposta pelo fallback, não deixa a transição solta', async () => {
+    h.startManualFlowRun.mockResolvedValue({ consumed: false, outcome: 'no_match' })
+    h.generateReply.mockResolvedValue({
+      text: 'Perfeito, já vou te mostrar os horários disponíveis!',
+      handoff: false,
+      move: 'qualified',
+      agendar: true,
+    })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.startManualFlowRun).toHaveBeenCalledTimes(1)
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('cal.com/simionato-advogados-n4sm0p'),
+      }),
+    )
   })
 })

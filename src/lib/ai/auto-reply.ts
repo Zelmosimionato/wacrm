@@ -9,12 +9,25 @@ import { buildHandoffSummary } from './handoff'
 import { logAiUsage } from './usage'
 import { latestUserMessage } from './query'
 import { engineSendText, engineSendCtaUrl } from '@/lib/flows/meta-send'
+import { startManualFlowRun } from '@/lib/flows/engine'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { horariosLivres, type SlotLivre } from '@/lib/appointments/calcom-slots'
 import { criarReserva } from '@/lib/appointments/calcom-book'
 import { cancelCalcomBooking } from '@/lib/appointments/calcom-cancel'
 import { iaAgendaAtiva } from './defaults'
+
+/**
+ * O Fluxo de Agendamento (grafo com o nó `book_meeting`) ainda não existe —
+ * é criado por um plano futuro separado (montagem do grafo). Até lá, esta
+ * constante fica vazia de propósito: `[[AGENDAR]]` continua sendo detectado
+ * e o gate de qualificado/PF roda normalmente, mas `startManualFlowRun`
+ * devolve `outcome: 'no_match'` (fluxo não encontrado) — sem efeito nenhum,
+ * o que é esperado e seguro nesta fase.
+ * TODO: preencher com o id real depois que o plano de montagem do grafo
+ * rodar (ver docs/superpowers/specs/2026-08-20-agendamento-fluxos-design.md).
+ */
+const FLUXO_AGENDAMENTO_ID = ''
 
 /** Horários livres do escritório (rótulo para a frase + ISO para reservar).
  *  Silencioso por desenho: sem chave, sem tipo de evento ou com a API fora,
@@ -991,6 +1004,13 @@ export async function dispatchInboundToAiReply(
     let isClient = false
     let hasMeeting = false
     let qualTags: string[] = []
+    // PJ pelo mesmo sinal que o Typebot grava e o SUPER_SENTINEL já lê ('PJ' /
+    // 'Superqualificado' em QUAL_TAGS, acima): gate de rollout faseado do
+    // [[AGENDAR]] — ver Step 3 do plano de agendamento. Sem tag nenhuma
+    // (contato que não veio do intake), o padrão é NÃO-PJ: mais seguro tratar
+    // como PF (marcador novo e determinístico) do que arriscar o mecanismo
+    // antigo por falta de dado.
+    let segmentoPJ = false
     {
       const { data: tagRows } = await db
         .from('contact_tags')
@@ -1005,6 +1025,7 @@ export async function dispatchInboundToAiReply(
       isClient = names.has('Cliente')
       hasMeeting = names.has('Agendou')
       qualTags = QUAL_TAGS.filter((t) => names.has(t))
+      segmentoPJ = names.has('PJ') || names.has('Superqualificado')
     }
 
     // Contact's WhatsApp name + e-mail (used to greet by name and skip the
@@ -1208,29 +1229,58 @@ export async function dispatchInboundToAiReply(
         await desfazerReuniao(db, contactId)
       }
 
-      // 2) REMARCAR (ou marcar pela primeira vez).
-      if (agendar !== null) {
-        const nomeCompleto = legibleFirstName(contactRow?.name, contactRow?.phone)
-          ? (contactRow?.name?.trim() ?? null)
-          : null
-        const r = await reservarHorario({
-          indice: agendar,
-          slots,
-          nome: nomeCompleto,
-          email,
-          telefone: contactRow?.phone ?? null,
-          // Releitura na hora: pega a reserva que acabou de entrar pelo webhook
-          // e evita marcar duas. Desfeita agora, a antiga não bloqueia a nova.
-          hasMeeting: desmarcar ? false : await temReuniaoAgora(db, contactId),
-          textoDaIa: text,
-        })
-        textoFinal = r.texto
-        reservaFeita = r.ok
-        if (r.reagendar) moveFinal = 'reagendar'
-        // Desmarcou e a remarcação não saiu: o card não pode ficar parado em
-        // "Reunião Agendada" sem reunião nenhuma. Vai para Reagendar, e o
-        // fluxo de nutrição volta a puxar essa pessoa.
-        if (desmarcar && !r.ok && !moveFinal) moveFinal = 'reagendar'
+      // 2) MOSTRAR HORÁRIO — entrega o bastão pro Fluxo de Agendamento, que
+      //    mostra a lista real (WhatsApp) e reserva de forma determinística.
+      //    A IA NUNCA reserva nem confirma nada sozinha mais (trocado depois
+      //    do incidente de 20/08/2026 — ver `AGENDAR_SENTINEL`).
+      if (agendar) {
+        // Releitura na hora, mesmo motivo de sempre: pega a reserva que
+        // acabou de entrar pelo webhook e evita iniciar um agendamento NOVO
+        // para quem já tem um. Quem já tem reunião é remarcação — caminho de
+        // sempre (REAGENDAR_SENTINEL/DESMARCAR_SENTINEL), não agendamento novo.
+        const hasMeetingAgora = desmarcar ? false : await temReuniaoAgora(db, contactId)
+        if (hasMeetingAgora) {
+          textoFinal = JA_TEM_REUNIAO
+          moveFinal = 'reagendar'
+        } else {
+          // Freio de segurança: "proibir no prompt não basta" é o tema deste
+          // arquivo inteiro. O card já avançado (ou o próprio movimento desta
+          // resposta) decide se está QUALIFICADO — não só a instrução.
+          const jaQualificado =
+            moveFinal === 'qualified' ||
+            moveFinal === 'super' ||
+            (!!etapa && !AI_ETAPAS_QUE_AVANCAM.has(etapa.id))
+          if (!jaQualificado) {
+            console.warn(
+              `[ai auto-reply] [[AGENDAR]] ignorado: contato ${contactId} ainda não está qualificado`,
+            )
+          } else if (segmentoPJ) {
+            // Rollout faseado — só PF nesta fase. Ver Step 3 do plano de
+            // agendamento (docs/superpowers/specs/2026-08-20-agendamento-fluxos-design.md).
+            console.log(
+              `[ai auto-reply] [[AGENDAR]] ignorado: contato ${contactId} é PJ, fora do rollout faseado (só PF nesta fase)`,
+            )
+          } else {
+            const r = await startManualFlowRun(db, FLUXO_AGENDAMENTO_ID, {
+              accountId,
+              contactId,
+              conversationId,
+            })
+            reservaFeita = r.outcome === 'started'
+            if (!reservaFeita) {
+              // Hoje sempre cai aqui: `FLUXO_AGENDAMENTO_ID` ainda não existe
+              // (ver TODO no topo do arquivo) — o Fluxo real só nasce num
+              // plano futuro separado. Sem isto o cliente ficaria com a frase
+              // de transição da IA ("vou te mostrar os horários") e nada vindo
+              // a seguir — o mesmo tipo de buraco que este arquivo inteiro
+              // existe para fechar.
+              console.warn(
+                `[ai auto-reply] [[AGENDAR]] não iniciou o Fluxo de Agendamento (contato ${contactId}): ${r.outcome ?? 'sem outcome'}`,
+              )
+              textoFinal = FALHA_AGENDA
+            }
+          }
+        }
       }
       // ⛔ Desmarcar NÃO move o card sozinho. Mover para "Reagendar reunião"
       // acorda a automação de etapa, que dispara o template "vi que você
@@ -1238,7 +1288,8 @@ export async function dispatchInboundToAiReply(
       // depois de a IA já ter oferecido horários novos na conversa. Dois
       // atendimentos falando com a mesma pessoa ao mesmo tempo.
       // O card só se move quando a PESSOA adia ([[REAGENDAR]], que o modelo
-      // marca) ou quando a remarcação falhou (tratado acima).
+      // marca) ou quando o Fluxo não assumiu o agendamento (tratado acima).
+      if (desmarcar && !reservaFeita && !moveFinal) moveFinal = 'reagendar'
 
       // ⛔ TRAVA: ela não anuncia o que não fez.
       //
