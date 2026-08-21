@@ -847,7 +847,17 @@ async function processMessage(
   // eligibility gates + try/catch and never throws.
   // Botões do lembrete de véspera (quick-reply de template) — trato aqui,
   // deterministicamente. A IA nem entra (interactiveReplyId setado no parse).
-  if (isVesperaButton(contentText)) {
+  //
+  // ⚠️ Achado real R3 (3a auditoria): o gate NAO pode ser `!flowConsumed`.
+  // Com `fallback_policy.on_unknown_reply: 'ignore'` (Fluxo de Agendamento e
+  // Fluxo No-show), toda mensagem que nao bate com botao/palavra-chave
+  // devolve `consumed: false` DE PROPOSITO — inclusive com um Fluxo ativo
+  // cuidando do contato. O gate certo e "existe um Fluxo cuidando deste
+  // contato": `flow_run_id` vem preenchido tanto quando o Fluxo consumiu
+  // quanto quando ignorou de proposito, e so fica vazio quando nao havia
+  // Fluxo NENHUM. Sem isso, o botao "Confirmar presenca" do Fluxo colide
+  // com este handler antigo — um toque, duas respostas (achado NEW-3).
+  if (!flowResult.flow_run_id && isVesperaButton(contentText)) {
     try {
       await handleVesperaButton({
         accountId,
