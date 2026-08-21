@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
     fromCalls: [] as string[],
     updateCalls: [] as { table: string; filters: [string, string, unknown][] }[],
     upsertCalls: [] as { table: string; payload: unknown }[],
+    notificationsInserted: [] as Record<string, unknown>[],
   },
 }));
 
@@ -50,6 +51,14 @@ vi.mock("./admin-client", () => {
       return { data: { steps_executed: [], status: "success" }, error: null };
     }
     if (table === "automation_steps") return { data: state.steps, error: null };
+    if (table === "notifications") {
+      if (type === "insert") {
+        const rows = Array.isArray(ops.payload) ? ops.payload : [ops.payload];
+        state.notificationsInserted.push(...(rows as Record<string, unknown>[]));
+        return { data: rows, error: null };
+      }
+      return { data: null, error: null };
+    }
     return { data: null, error: null };
   }
 
@@ -110,6 +119,7 @@ beforeEach(() => {
   h.state.fromCalls = [];
   h.state.updateCalls = [];
   h.state.upsertCalls = [];
+  h.state.notificationsInserted = [];
 });
 
 describe("runAutomationsForTrigger — tenant isolation", () => {
@@ -335,6 +345,130 @@ describe("triggerMatches — interactive_reply", () => {
   it("does not match when no reply id is present or config is empty", () => {
     expect(triggerMatches(automation(["yes"]), {})).toBe(false);
     expect(triggerMatches(automation([]), { interactive_reply_id: "yes" })).toBe(false);
+  });
+});
+
+describe("triggerMatches — tag_added", () => {
+  const SUPERQUALIFICADO = "tag-super";
+  const NOVO_LEAD = "tag-novo-lead";
+
+  function automation(tag_id: string): Automation {
+    return {
+      id: "a1",
+      account_id: ACCOUNT,
+      user_id: "u1",
+      name: "Superqualificado — primeiro toque",
+      trigger_type: "tag_added",
+      trigger_config: { tag_id },
+      is_active: true,
+      execution_count: 0,
+      created_at: "",
+      updated_at: "",
+    };
+  }
+
+  it("⛔ 20/08/2026: NAO bate quando a tag adicionada é outra (era o bug — batia sempre)", () => {
+    expect(
+      triggerMatches(automation(SUPERQUALIFICADO), { tag_id: NOVO_LEAD }),
+    ).toBe(false);
+  });
+
+  it("bate só quando a tag adicionada é exatamente a configurada", () => {
+    expect(
+      triggerMatches(automation(SUPERQUALIFICADO), { tag_id: SUPERQUALIFICADO }),
+    ).toBe(true);
+  });
+
+  it("não bate sem tag_id no contexto ou sem tag_id configurado", () => {
+    expect(triggerMatches(automation(SUPERQUALIFICADO), {})).toBe(false);
+    expect(
+      triggerMatches(automation(""), { tag_id: SUPERQUALIFICADO }),
+    ).toBe(false);
+  });
+});
+
+describe("notify — tipo configuravel", () => {
+  it("grava o type configurado em vez do fixo awaiting_reply", async () => {
+    h.state.owned = { id: "contact-1" };
+    h.state.automations = [
+      {
+        id: "a1",
+        account_id: ACCOUNT,
+        user_id: "u1",
+        trigger_type: "tag_added",
+        // somente_horario_comercial: false — achado F1 da checagem Task 0:
+        // holdForBusinessHours() PARA a execução inteira pra trigger_type
+        // 'tag_added' fora do expediente (horario-comercial.ts) — sem isto
+        // o teste roda vermelho (ou verde só por sorte de horário) fora de
+        // seg-sex 9-12/13-17 BRT. Este campo aqui é só do FIXTURE de
+        // teste (não é o comportamento em produção da automação real).
+        trigger_config: { tag_id: "9db3b56e-eecf-4b29-bace-2cc034b38f72", somente_horario_comercial: false },
+        is_active: true,
+      },
+    ];
+    h.state.steps = [
+      {
+        id: "s1",
+        automation_id: "a1",
+        step_type: "notify",
+        position: 0,
+        parent_step_id: null,
+        step_config: {
+          destinatario: "usuario",
+          user_id: "user-1",
+          titulo: "Lead sinalizou urgência",
+          corpo: "Verificar a conversa.",
+          tipo: "urgent_lead",
+        },
+      },
+    ];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "tag_added",
+      contactId: "contact-1",
+      context: { tag_id: "9db3b56e-eecf-4b29-bace-2cc034b38f72", conversation_id: "conv-1" },
+    });
+
+    expect(h.state.notificationsInserted).toHaveLength(1);
+    expect(h.state.notificationsInserted[0]).toMatchObject({
+      type: "urgent_lead",
+      title: "Lead sinalizou urgência",
+      body: "Verificar a conversa.",
+    });
+  });
+
+  it("sem tipo configurado continua gravando awaiting_reply (compatibilidade)", async () => {
+    h.state.owned = { id: "contact-1" };
+    h.state.automations = [
+      {
+        id: "a1",
+        account_id: ACCOUNT,
+        user_id: "u1",
+        trigger_type: "tag_added",
+        trigger_config: { tag_id: "9db3b56e-eecf-4b29-bace-2cc034b38f72", somente_horario_comercial: false },
+        is_active: true,
+      },
+    ];
+    h.state.steps = [
+      {
+        id: "s1",
+        automation_id: "a1",
+        step_type: "notify",
+        position: 0,
+        parent_step_id: null,
+        step_config: { destinatario: "usuario", user_id: "user-1", titulo: "Aviso" },
+      },
+    ];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "tag_added",
+      contactId: "contact-1",
+      context: { tag_id: "9db3b56e-eecf-4b29-bace-2cc034b38f72", conversation_id: "conv-1" },
+    });
+
+    expect(h.state.notificationsInserted[0]).toMatchObject({ type: "awaiting_reply" });
   });
 });
 

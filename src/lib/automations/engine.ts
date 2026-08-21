@@ -7,6 +7,7 @@ import type {
   KeywordMatchTriggerConfig,
   InteractiveReplyTriggerConfig,
   DealStageTriggerConfig,
+  TagTriggerConfig,
   SendMessageStepConfig,
   SendButtonsStepConfig,
   SendListStepConfig,
@@ -24,6 +25,7 @@ import { supabaseAdmin } from './admin-client'
 import { engineSendText, engineSendTemplate, engineSendInteractive } from './meta-send'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
+import { dentroDoExpediente, proximoInstanteDeExpediente } from './horario-comercial'
 
 // ------------------------------------------------------------
 // Public API
@@ -305,16 +307,18 @@ export async function executeAutomation(automation: Automation, input: DispatchI
     return
   }
 
-  await executeStepsFrom({
-    automation,
-    contactId: input.contactId ?? null,
-    context: input.context ?? {},
-    parentStepId: null,
-    branch: null,
-    startPosition: 0,
-    logId: log.id,
-    triggerEvent: input.triggerType,
-  })
+  if (!(await holdForBusinessHours(automation, input, log.id))) {
+    await executeStepsFrom({
+      automation,
+      contactId: input.contactId ?? null,
+      context: input.context ?? {},
+      parentStepId: null,
+      branch: null,
+      startPosition: 0,
+      logId: log.id,
+      triggerEvent: input.triggerType,
+    })
+  }
 
   // Atomic counter update via the SQL function from migration 007.
   // Doing this with a client-side read-modify-write raced when the
@@ -326,6 +330,64 @@ export async function executeAutomation(automation: Automation, input: DispatchI
   if (rpcErr) {
     console.error('[automations] increment counter failed:', rpcErr)
   }
+}
+
+/**
+ * Gatilhos IMEDIATOS (hoje só `tag_added`) disparam no segundo em que o
+ * evento acontece — pode ser 3h da manhã, se a tag veio de um formulário
+ * da Meta preenchido de madrugada. Quando a automação pede
+ * `somente_horario_comercial` (default: true), esta função ADIA a
+ * execução para o próximo horário comercial em vez de mandar a mensagem
+ * na hora errada — reaproveitando o MESMO mecanismo de pausa que os
+ * passos `wait` já usam (`automation_pending_executions` + o cron de
+ * `/api/automations/cron`), só que com o `run_at` calculado dinamicamente
+ * em vez de "daqui a N minutos".
+ *
+ * Devolve `true` quando parkeou a execução — o chamador não deve rodar os
+ * passos agora, o cron cuida disso quando o expediente abrir.
+ */
+async function holdForBusinessHours(
+  automation: Automation,
+  input: DispatchInput,
+  logId: string,
+): Promise<boolean> {
+  if (automation.trigger_type !== 'tag_added') return false
+
+  const cfg = automation.trigger_config as TagTriggerConfig
+  const soComercial = cfg?.somente_horario_comercial !== false
+  const agora = Date.now()
+  if (!soComercial || dentroDoExpediente(agora)) return false
+
+  const runAt = proximoInstanteDeExpediente(agora)
+  await supabaseAdmin()
+    .from('automation_pending_executions')
+    .insert({
+      automation_id: automation.id,
+      account_id: automation.account_id,
+      user_id: automation.user_id,
+      contact_id: input.contactId ?? null,
+      log_id: logId,
+      parent_step_id: null,
+      branch: null,
+      next_step_position: 0,
+      context: input.context ?? {},
+      run_at: new Date(runAt).toISOString(),
+      status: 'pending',
+    })
+  await appendResults(
+    logId,
+    [
+      {
+        step_id: 'horario-comercial',
+        step_type: 'wait',
+        status: 'success',
+        detail: `fora do horário comercial — retomando às ${new Date(runAt).toISOString()}`,
+      },
+    ],
+    'partial',
+    null,
+  )
+  return true
 }
 
 interface ExecuteArgs {
@@ -919,7 +981,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         destinatarios.map((uid) => ({
           account_id: args.automation.account_id,
           user_id: uid,
-          type: 'awaiting_reply',
+          type: cfg.tipo ?? 'awaiting_reply',
           conversation_id: conversationId,
           contact_id: args.contactId ?? null,
           title: cfg.titulo,
@@ -1021,6 +1083,24 @@ export function triggerMatches(automation: Automation, ctx: AutomationContext | 
     return true
   }
 
+  /**
+   * ⛔ Faltava este caso: sem ele, QUALQUER tag adicionada a QUALQUER
+   * contato batia com toda automação `tag_added` ativa da conta — a tela
+   * deixa configurar `trigger_config.tag_id`, mas nada aqui conferia se
+   * era a tag certa. Foi assim que "Superqualificado — primeiro toque"
+   * (tag_id = Superqualificado, so' PJ >=500k) disparou para leads de
+   * R$100-500k: eles ganham as tags "Novo Lead"/"PJ" no cadastro, e
+   * qualquer uma das duas acordava esta automacao (20/08/2026).
+   */
+  if (automation.trigger_type === 'tag_added') {
+    const cfg = automation.trigger_config as TagTriggerConfig
+    if (!cfg?.tag_id) return false
+    return ctx?.tag_id === cfg.tag_id
+  }
+
+  // Gatilhos sem filtro por contexto (first_inbound_message) ou que nunca
+  // chegam aqui (time_based/awaiting_reply passam por `executeAutomation`
+  // direto, escolhidos pelo dispatcher em tempo.ts — ver seu comentário).
   return true
 }
 

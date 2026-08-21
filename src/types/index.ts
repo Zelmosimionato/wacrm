@@ -488,6 +488,11 @@ export interface KeywordMatchTriggerConfig {
 
 export interface TagTriggerConfig {
   tag_id: string;
+  /** So envia dentro do expediente (seg-sex, 9h-12h e 13h-17h BRT); fora
+   *  disso, ADIA para o proximo horario comercial em vez de mandar na
+   *  hora (tag pode ser aplicada por um lead a qualquer minuto). Default:
+   *  true. */
+  somente_horario_comercial?: boolean;
 }
 
 export interface TimeBasedTriggerConfig {
@@ -524,6 +529,10 @@ export interface NotifyStepConfig {
   fallback?: 'todos' | 'ninguem';
   titulo: string;
   corpo?: string;
+  /** Tipo gravado em `notifications.type` — union EXATA batendo com o
+   *  CHECK constraint real (migracoes 027/040/043/044). Default
+   *  'awaiting_reply' preserva o comportamento anterior a este campo. */
+  tipo?: 'conversation_assigned' | 'awaiting_reply' | 'urgent_lead' | 'pj_agendamento_bloqueado';
 }
 
 export interface InteractiveReplyTriggerConfig {
