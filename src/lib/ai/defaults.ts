@@ -54,6 +54,16 @@ export const URGENTE_SENTINEL = '[[URGENTE]]'
 export const AGENDAR_SENTINEL = '[[AGENDAR]]'
 
 /**
+ * Padrão do marcador ANTIGO (`[[AGENDAR:N]]`, aposentado nesta mesma troca —
+ * ver o comentário de `AGENDAR_SENTINEL` acima). Ele não é mais lido nem
+ * dispara ação nenhuma: isto é limpeza DEFENSIVA apenas, para o texto nunca
+ * vazar literalmente pro WhatsApp do cliente se a IA, por inércia de
+ * fine-tuning/exemplos antigos, escrever o padrão velho (achado I2 da
+ * revisão de 20/08/2026).
+ */
+export const AGENDAR_SENTINEL_ANTIGO = /\[\[AGENDAR:\s*\d{1,2}\s*\]\]/gi
+
+/**
  * Marcador de DESMARCAR: a pessoa não vem no horário que está reservado. Cancela
  * no Cal.com, libera o horário e — o que ninguém via — DESLIGA os lembretes de
  * véspera e de 1h antes, que hoje continuariam perseguindo quem já cancelou.
@@ -184,9 +194,16 @@ Never mention or explain these markers to the customer.`,
         'respondido, não agendado: responda o que a pessoa disse e descubra o que ela ' +
         'precisa. Oferecer horário a quem ainda não pediu reunião soa como robô ' +
         'empurrando agenda — e é o oposto de acolher.\n' +
-        'Quando for a hora, ofereça no máximo três DESTES, deixando escolher. ⛔ Não ' +
-        'invente outros, não afirme que a agenda está fechada, não prometa avisar ' +
-        'quando abrir vaga.\n' +
+        (mode === 'auto_reply' && agendaAtiva
+          ? 'Quando for a hora, NÃO liste estes horários você mesma nem os numere para o ' +
+            `cliente — siga a instrução do marcador ${AGENDAR_SENTINEL} logo abaixo: uma ` +
+            'frase de transição curta, e quem mostra a lista de verdade (e reserva) é o ' +
+            'sistema. Esta lista aqui é só para VOCÊ saber que existe agenda livre — contexto ' +
+            'interno, nunca para copiar ou recitar. ⛔ Não invente outros horários, não afirme ' +
+            'que a agenda está fechada, não prometa avisar quando abrir vaga.\n'
+          : 'Quando for a hora, ofereça no máximo três DESTES, deixando escolher. ⛔ Não ' +
+            'invente outros, não afirme que a agenda está fechada, não prometa avisar ' +
+            'quando abrir vaga.\n') +
         '⛔ Esta lista é uma AMOSTRA dos horários mais próximos, não a agenda inteira ' +
         'do escritório. Se a pessoa pedir uma data mais distante que não esteja aqui, ' +
         'NÃO diga que só existe agenda para as próximas semanas — diga que verifica a ' +
@@ -205,6 +222,11 @@ Never mention or explain these markers to the customer.`,
           'sozinho, sem número. O sistema mostra os horários de verdade logo em seguida, ' +
           'como lista interativa do WhatsApp, e reserva quando o lead escolher. O cliente ' +
           'NUNCA vê o marcador.\n' +
+          '⛔ POR QUÊ isto é rígido: se você disser que agendou sem o sistema ter reservado ' +
+          'de verdade, a pessoa aparece para uma sala vazia — e pior, na mensagem seguinte ' +
+          'você pode ler a SUA PRÓPRIA frase no histórico da conversa e concluir que já ' +
+          'marcou, repetindo o erro sozinha. Por isso só o sistema anuncia reunião marcada, ' +
+          'nunca você — mesmo que pareça óbvio que "vai dar certo".\n' +
           '- ⛔⛔ NUNCA diga que agendou, que está confirmado, que o convite foi enviado, ' +
           `ou liste horários numerados você mesma — isso agora é sempre o sistema que faz, ` +
           `depois do seu ${AGENDAR_SENTINEL}. Sua única frase é a transição. Não deu para ` +

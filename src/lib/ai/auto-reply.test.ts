@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { AiConfig } from './types'
-import { AFIRMA_QUE_AGENDOU, PESSOA_AFIRMA_REUNIAO, emailNaConversa } from './auto-reply'
+import {
+  AFIRMA_QUE_AGENDOU,
+  PESSOA_AFIRMA_REUNIAO,
+  emailNaConversa,
+  AI_STAGE_PERDIDO,
+} from './auto-reply'
 
 describe('emailNaConversa', () => {
   // O e-mail chega colado em outra coisa, com maiúscula, ou sozinho. Ler do
@@ -546,5 +551,135 @@ describe('dispatchInboundToAiReply — [[AGENDAR]] entrega o bastão pro Fluxo',
         text: expect.stringContaining('cal.com/simionato-advogados-n4sm0p'),
       }),
     )
+  })
+})
+
+// Achados C1/C3/C4/C5/I1 da revisão independente de 20/08/2026 sobre o
+// commit 599f358 — a troca do [[AGENDAR:N]] pelo [[AGENDAR]] reabriu, de
+// forma mascarada (só oculta porque FLUXO_AGENDAMENTO_ID está vazio hoje),
+// exatamente a classe de bug que motivou a troca: a IA (ou o código)
+// afirmando ou agindo como se uma reunião existisse sem o lead ter escolhido
+// horário.
+describe('dispatchInboundToAiReply — [[AGENDAR]] revisão 20/08/2026 (C1/C3/C4/C5/I1)', () => {
+  beforeEach(() => {
+    vi.stubEnv('IA_AGENDA_ATIVA', '1')
+  })
+
+  it('C1: Fluxo apenas INICIOU (outcome started, reunião ainda não existe) + texto afirma agendado → a trava troca o texto', async () => {
+    h.startManualFlowRun.mockResolvedValue({
+      consumed: true,
+      outcome: 'started',
+      flow_run_id: 'run-1',
+    })
+    h.generateReply.mockResolvedValue({
+      text: 'Prontinho, agendei para quarta às 16:15!',
+      handoff: false,
+      move: 'qualified',
+      agendar: true,
+    })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.startManualFlowRun).toHaveBeenCalledTimes(1)
+    const enviado = h.engineSendText.mock.calls[0]?.[0]?.text ?? ''
+    expect(enviado).not.toMatch(/agendei/i)
+  })
+
+  it('C3: [[DESMARCAR]] SEM [[AGENDAR]] não move o card sozinho (restaura o comportamento anterior à Task 4 — incidente de 08/08/2026)', async () => {
+    h.generateReply.mockResolvedValue({
+      text: 'Sem problema, já verifico para você.',
+      handoff: false,
+      agendar: false,
+      desmarcar: true,
+    })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.startManualFlowRun).not.toHaveBeenCalled()
+    // Nada chama `applyAiCardMove` (que move o card) neste caminho — se a
+    // linha do C3 tivesse disparado fora do bloco `if (agendar)`, moveFinal
+    // viraria 'reagendar' e isto teria gravado um update em `deals`.
+    expect(h.state.updatePayload).toBeNull()
+  })
+
+  it('C4: [[AGENDAR]] + não qualificado → não deixa a transição solta, troca pelo fallback FALHA_AGENDA', async () => {
+    h.generateReply.mockResolvedValue({
+      text: 'Perfeito, já vou te mostrar os horários disponíveis!',
+      handoff: false,
+      agendar: true,
+    })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.startManualFlowRun).not.toHaveBeenCalled()
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining('cal.com/simionato-advogados-n4sm0p'),
+      }),
+    )
+  })
+
+  // ⚠️ Mesmo workaround do teste "qualificado + PJ" logo acima: qualquer
+  // linha em `contact_tags` também conta como "tem reunião marcada" para
+  // `temReuniaoAgora` (mock genérico, não filtra por tag). `desmarcar: true`
+  // desliga essa releitura de propósito, senão o caminho vira JA_TEM_REUNIAO
+  // em vez do bloqueio de PJ que este teste quer provar.
+  it('C4/I4: [[AGENDAR]] + PJ (tag já salva) → não deixa a transição solta, envia aviso honesto e notifica a equipe', async () => {
+    h.state.porTabela.contact_tags = [{ tags: { name: 'PJ' } }]
+    h.state.porTabela.profiles = [{ user_id: 'user-a' }]
+    h.generateReply.mockResolvedValue({
+      text: 'Perfeito, já vou te mostrar os horários disponíveis!',
+      handoff: false,
+      move: 'qualified',
+      agendar: true,
+      desmarcar: true,
+    })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.startManualFlowRun).not.toHaveBeenCalled()
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining('equipe do escritório') }),
+    )
+    const notifInsert = h.state.inserts.find(
+      (i) => i.table === 'notifications' && i.rows.some((r) => r.type === 'pj_agendamento_bloqueado'),
+    )
+    expect(notifInsert?.rows[0]).toMatchObject({
+      user_id: 'user-a',
+      contact_id: 'contact-1',
+      conversation_id: 'conv-1',
+      type: 'pj_agendamento_bloqueado',
+    })
+  })
+
+  it('C5: [[AGENDAR]] + move super SEM tag PJ salva ainda → não chama o Fluxo (brecha fechada)', async () => {
+    h.state.porTabela.profiles = [{ user_id: 'user-a' }]
+    h.generateReply.mockResolvedValue({
+      text: 'Perfeito, já vou te mostrar os horários disponíveis!',
+      handoff: false,
+      move: 'super',
+      agendar: true,
+    })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.startManualFlowRun).not.toHaveBeenCalled()
+    const notifInsert = h.state.inserts.find(
+      (i) => i.table === 'notifications' && i.rows.some((r) => r.type === 'pj_agendamento_bloqueado'),
+    )
+    expect(notifInsert).toBeDefined()
+  })
+
+  it('I1: etapa "Perdido" NÃO conta como qualificada (lista positiva, não negação de AI_ETAPAS_QUE_AVANCAM)', async () => {
+    h.state.porTabela.deals = [{ stage_id: AI_STAGE_PERDIDO }]
+    h.generateReply.mockResolvedValue({
+      text: 'Perfeito, já vou te mostrar os horários disponíveis!',
+      handoff: false,
+      agendar: true,
+    })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.startManualFlowRun).not.toHaveBeenCalled()
   })
 })

@@ -12,6 +12,7 @@ import {
   REAGENDAR_SENTINEL,
   URGENTE_SENTINEL,
   AGENDAR_SENTINEL,
+  AGENDAR_SENTINEL_ANTIGO,
   DESMARCAR_SENTINEL,
   PERDIDO_SENTINEL,
   PORTA_ABERTA_SENTINEL,
@@ -109,6 +110,11 @@ export function parseGeneration(
     AGENDAR_SENTINEL,
   ]
     .reduce((acc, s) => acc.split(s).join(''), raw)
+    // Limpeza DEFENSIVA do marcador ANTIGO (I2 da revisão de 20/08/2026): ele
+    // não dispara mais ação nenhuma, mas se a IA ainda o escrever por inércia
+    // de fine-tuning/exemplos antigos, isto evita que vaze literalmente pro
+    // WhatsApp do cliente.
+    .replace(AGENDAR_SENTINEL_ANTIGO, '')
     .trim()
   return { text, handoff, move, agendar, desmarcar, portaAberta, urgente, usage }
 }

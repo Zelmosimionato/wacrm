@@ -62,6 +62,16 @@ const FALHA_AGENDA =
   'Não consegui concluir a reserva por aqui agora.\n\nPara você não ficar esperando, é só reservar o melhor horário neste link: ' +
   AGENDA_LINK
 /**
+ * Texto honesto para quando o [[AGENDAR]] é bloqueado por o contato ser PJ
+ * (fora do rollout faseado do Fluxo de Agendamento, que só atende PF nesta
+ * fase). NÃO promete data/horário — só promete o contato humano, e só
+ * porque `notificarPjAgendamentoBloqueado` de fato aciona esse contato
+ * (achado C4 da revisão de 20/08/2026: antes disto o texto prometia algo que
+ * nada no código acionava).
+ */
+const PJ_AGENDAMENTO_MANUAL =
+  'Entendido! Vou repassar para a equipe do escritório entrar em contato com você em breve para agendar.'
+/**
  * Frases com que ela anuncia reunião feita. Serve à trava abaixo — por isso é
  * deliberadamente estreita: pega afirmação ("agendei", "está confirmado",
  * "convite enviado") e não pega promessa ("assim que você confirmar").
@@ -157,6 +167,7 @@ export const AI_VENDAS_PIPELINE = '8e89e154-763c-4cf8-b73b-42f7368c59c3'
 export const AI_STAGE_NOVO = 'f6c4e8c1-f13a-442a-9668-414cadb81c01'
 export const AI_STAGE_QUALIFICADO = '57bed09e-bc01-4691-8272-dcd8c3c078df'
 const AI_STAGE_REAGENDAR = 'f2b7e7f6-c7d6-4d2b-ac6d-ad7842ab7045'
+const AI_STAGE_REUNIAO_AGENDADA = 'fd70e3b2-52e2-4f2c-b6e8-15450fe6c9d4'
 export const AI_STAGE_PERDIDO = '0d0382a5-f15d-4e43-88aa-0c70337d94d4'
 const AI_STAGE_FUP = '8bd228cf-fba4-4b28-b704-068bdcfa7c8d'
 
@@ -181,6 +192,20 @@ const AI_STAGE_FUP = '8bd228cf-fba4-4b28-b704-068bdcfa7c8d'
  */
 const AI_STAGE_NOSHOW = '8c39cc10-4568-432f-b4dd-9a4ba228add6'
 export const AI_ETAPAS_QUE_AVANCAM = new Set([AI_STAGE_NOVO, AI_STAGE_FUP, AI_STAGE_NOSHOW])
+/**
+ * Etapas em que o card SÓ chega tendo sido qualificado antes — lista
+ * POSITIVA, não negação (I1 da revisão de 20/08/2026: `!AI_ETAPAS_QUE_AVANCAM`
+ * deixava passar qualquer etapa terminal ou não modelada, ex. "Perdido",
+ * como se fosse qualificada). "Reunião Agendada" e "Reagendar reunião" só se
+ * alcançam depois de "Lead Qualificado" — por isso entram aqui. Etapas
+ * sensíveis (Proposta, Aguardando Decisão, Contrato PJ/PF) e "Perdido"
+ * ficam de fora de propósito: nelas a IA não deve iniciar agendamento.
+ */
+export const AI_ETAPAS_QUALIFICADAS = new Set([
+  AI_STAGE_QUALIFICADO,
+  AI_STAGE_REUNIAO_AGENDADA,
+  AI_STAGE_REAGENDAR,
+])
 const AI_TAG_SUPER = 'b9298582-dcc7-46a3-ae34-f54b3c6fece1'
 /** Criada em 20/08/2026 — ver Step 1 deste plano para o id real. */
 const AI_TAG_URGENTE = '9db3b56e-eecf-4b29-bace-2cc034b38f72'
@@ -406,6 +431,42 @@ async function applyAiUrgente(
   )
   if (error) {
     console.error('[ai auto-reply] notificar urgente falhou:', error.message)
+  }
+}
+
+/**
+ * Avisa a equipe quando o [[AGENDAR]] foi bloqueado por o contato ser PJ —
+ * fora do rollout faseado do Fluxo de Agendamento (só PF nesta fase, ver
+ * Step 3 do plano de agendamento). Mesma tabela/forma de insert de
+ * `applyAiUrgente` acima (o padrão que a Task 3 já criou) — sem isto, o
+ * texto `PJ_AGENDAMENTO_MANUAL` prometeria um contato humano que nada no
+ * código de fato aciona (achado C4/I4 da revisão de 20/08/2026).
+ */
+async function notificarPjAgendamentoBloqueado(
+  db: ReturnType<typeof supabaseAdmin>,
+  args: { accountId: string; contactId: string; conversationId: string },
+): Promise<void> {
+  const { accountId, contactId, conversationId } = args
+  const { data: membros } = await db
+    .from('profiles')
+    .select('user_id')
+    .eq('account_id', accountId)
+  const destinatarios = ((membros as { user_id: string }[] | null) ?? []).map((m) => m.user_id)
+  if (destinatarios.length === 0) return
+
+  const { error } = await db.from('notifications').insert(
+    destinatarios.map((uid) => ({
+      account_id: accountId,
+      user_id: uid,
+      type: 'pj_agendamento_bloqueado',
+      conversation_id: conversationId,
+      contact_id: contactId,
+      title: 'Lead PJ pediu agendamento — fora do rollout automático',
+      body: 'A IA identificou pedido de agendamento, mas o contato é PJ e o Fluxo de Agendamento automático só atende PF nesta fase. Entre em contato para agendar manualmente.',
+    })),
+  )
+  if (error) {
+    console.error('[ai auto-reply] notificar PJ sem agendamento falhou:', error.message)
   }
 }
 
@@ -1249,17 +1310,28 @@ export async function dispatchInboundToAiReply(
           const jaQualificado =
             moveFinal === 'qualified' ||
             moveFinal === 'super' ||
-            (!!etapa && !AI_ETAPAS_QUE_AVANCAM.has(etapa.id))
+            (!!etapa && AI_ETAPAS_QUALIFICADAS.has(etapa.id))
           if (!jaQualificado) {
+            // C4 da revisão de 20/08/2026: sem isto o cliente ficava com a
+            // frase de transição da IA ("já vou te mostrar os horários...")
+            // e nada vindo a seguir — o mesmo buraco que o resto deste
+            // arquivo existe para fechar, só que aberto de novo aqui.
             console.warn(
               `[ai auto-reply] [[AGENDAR]] ignorado: contato ${contactId} ainda não está qualificado`,
             )
-          } else if (segmentoPJ) {
+            textoFinal = FALHA_AGENDA
+          } else if (segmentoPJ || moveFinal === 'super') {
             // Rollout faseado — só PF nesta fase. Ver Step 3 do plano de
             // agendamento (docs/superpowers/specs/2026-08-20-agendamento-fluxos-design.md).
+            // `moveFinal === 'super'` entra aqui também (C5 da revisão de
+            // 20/08/2026): por definição só é 'super' quem a IA classificou
+            // como PJ com dívida >= R$ 500 mil NESTA MESMA resposta — a tag
+            // salva ainda não existe, mas o julgamento da IA já é PJ.
             console.log(
               `[ai auto-reply] [[AGENDAR]] ignorado: contato ${contactId} é PJ, fora do rollout faseado (só PF nesta fase)`,
             )
+            textoFinal = PJ_AGENDAMENTO_MANUAL
+            await notificarPjAgendamentoBloqueado(db, { accountId, contactId, conversationId })
           } else {
             const r = await startManualFlowRun(db, FLUXO_AGENDAMENTO_ID, {
               accountId,
@@ -1281,16 +1353,17 @@ export async function dispatchInboundToAiReply(
             }
           }
         }
+        // ⛔ Desmarcar NÃO move o card sozinho. Mover para "Reagendar reunião"
+        // acorda a automação de etapa, que dispara o template "vi que você
+        // precisou cancelar o horário" — e ele chegou, em 08/08/2026, um segundo
+        // depois de a IA já ter oferecido horários novos na conversa. Dois
+        // atendimentos falando com a mesma pessoa ao mesmo tempo.
+        // O card só se move quando a PESSOA adia ([[REAGENDAR]], que o modelo
+        // marca) ou quando o Fluxo não assumiu o agendamento (tratado acima).
+        // Restrito ao [[AGENDAR]] de propósito (C3 da revisão de 20/08/2026):
+        // fora deste bloco, desmarcar sozinho NÃO pode mexer no card.
+        if (desmarcar && !reservaFeita && !moveFinal) moveFinal = 'reagendar'
       }
-      // ⛔ Desmarcar NÃO move o card sozinho. Mover para "Reagendar reunião"
-      // acorda a automação de etapa, que dispara o template "vi que você
-      // precisou cancelar o horário" — e ele chegou, em 08/08/2026, um segundo
-      // depois de a IA já ter oferecido horários novos na conversa. Dois
-      // atendimentos falando com a mesma pessoa ao mesmo tempo.
-      // O card só se move quando a PESSOA adia ([[REAGENDAR]], que o modelo
-      // marca) ou quando o Fluxo não assumiu o agendamento (tratado acima).
-      if (desmarcar && !reservaFeita && !moveFinal) moveFinal = 'reagendar'
-
       // ⛔ TRAVA: ela não anuncia o que não fez.
       //
       // 08/08/2026, primeira conversa real: sem ter o e-mail, ela corretamente
@@ -1302,7 +1375,7 @@ export async function dispatchInboundToAiReply(
       //
       // Proibir no prompt não basta: o modelo escorrega, e escorregou. Aqui a
       // frase simplesmente não sai.
-      if (!reservaFeita && !hasMeeting && AFIRMA_QUE_AGENDOU.test(textoFinal)) {
+      if ((!reservaFeita || agendar) && !hasMeeting && AFIRMA_QUE_AGENDOU.test(textoFinal)) {
         console.error(
           `[ia-agenda] ⛔ resposta afirmava reunião marcada sem reserva nenhuma — substituída. Original: ${textoFinal.slice(0, 200)}`,
         )
