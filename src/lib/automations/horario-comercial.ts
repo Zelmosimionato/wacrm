@@ -84,3 +84,52 @@ export function passaramHorasUteis(de: number, horas: number, agora: number): bo
   if (horas <= 0) return agora >= de
   return minutosUteis(de, agora) >= horas * 60
 }
+
+/**
+ * Próximo instante (epoch ms) dentro do expediente, a partir de `t`.
+ * Se `t` já está dentro do expediente, devolve o próprio `t`.
+ *
+ * Existe para automações de gatilho IMEDIATO (ex.: `tag_added`, disparado
+ * por webhook no segundo em que o lead preenche o formulário — pode ser
+ * 3h da manhã). `dentroDoExpediente` só responde sim/não; quem precisa
+ * ADIAR o envio para a próxima janela, em vez de só pular, usa esta.
+ */
+export function proximoInstanteDeExpediente(t: number): number {
+  if (dentroDoExpediente(t)) return t
+
+  const TETO_DIAS = 14 // nunca deveria levar mais de 1 fim de semana longo
+  let dia = meiaNoiteBrt(t)
+  for (let i = 0; i < TETO_DIAS; i++, dia += 24 * 60 * MS_MIN) {
+    if (!ehDiaUtil(dia)) continue
+    for (const [ini] of EXPEDIENTE) {
+      const candidato = dia + ini * MS_MIN
+      if (candidato >= t) return candidato
+    }
+  }
+  return t // teto estourado (data absurda) — não trava o chamador
+}
+
+/**
+ * Fim (epoch ms) do EXPEDIENTE DO DIA — 17h do dia útil relevante:
+ * se `t` cai dentro de um bloco de expediente, o fim desse bloco (só
+ * bate com "fim do dia" quando `t` já está no bloco da tarde); se `t`
+ * está fora de todo bloco mas ainda é hoje e antes das 17h (antes de
+ * abrir, ou no almoço), o fim do ÚLTIMO bloco de HOJE (17h); se já
+ * passou das 17h ou não é dia útil, o fim do último bloco do PRÓXIMO
+ * dia útil.
+ */
+export function fimDoExpedienteAPartir(t: number): number {
+  const ULTIMO_FIM = EXPEDIENTE[EXPEDIENTE.length - 1][1] // 17*60
+  if (dentroDoExpediente(t)) {
+    const dia = meiaNoiteBrt(t)
+    const minuto = minutoDoDiaBrt(t)
+    for (const [ini, fim] of EXPEDIENTE) {
+      if (minuto >= ini && minuto < fim) return dia + fim * MS_MIN
+    }
+  }
+  if (ehDiaUtil(t) && minutoDoDiaBrt(t) < ULTIMO_FIM) {
+    return meiaNoiteBrt(t) + ULTIMO_FIM * MS_MIN
+  }
+  const proximoDiaUtil = proximoInstanteDeExpediente(t)
+  return meiaNoiteBrt(proximoDiaUtil) + ULTIMO_FIM * MS_MIN
+}

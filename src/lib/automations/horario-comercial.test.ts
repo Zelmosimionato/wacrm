@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { minutosUteis, passaramHorasUteis, dentroDoExpediente } from './horario-comercial'
+import {
+  minutosUteis,
+  passaramHorasUteis,
+  dentroDoExpediente,
+  proximoInstanteDeExpediente,
+  fimDoExpedienteAPartir,
+} from './horario-comercial'
 
 /** BRT = UTC−3. 13/08/2026 é quinta; 14 sexta; 15 sábado; 17 segunda. */
 const brt = (iso: string) => new Date(iso).getTime()
@@ -65,3 +71,56 @@ describe('dentroDoExpediente', () => {
     expect(dentroDoExpediente(brt('2026-08-15T13:00:00Z'))).toBe(false) // sábado
   })
 })
+
+describe('proximoInstanteDeExpediente', () => {
+  it('já dentro do expediente: devolve o próprio instante', () => {
+    expect(proximoInstanteDeExpediente(QUI_10H)).toBe(QUI_10H)
+  })
+
+  it('⭐ 20/08/2026: antes da abertura cai nas 9h do mesmo dia (era o caso do Clóvis, 3h20)', () => {
+    // QUI_07H = quinta 07:00 BRT
+    expect(proximoInstanteDeExpediente(QUI_07H)).toBe(brt('2026-08-13T12:00:00Z')) // 09:00 BRT
+  })
+
+  it('no intervalo do almoço, cai na reabertura das 13h do mesmo dia', () => {
+    const almoco = brt('2026-08-13T15:30:00Z') // 12:30 BRT
+    expect(proximoInstanteDeExpediente(almoco)).toBe(brt('2026-08-13T16:00:00Z')) // 13:00 BRT
+  })
+
+  it('depois do fechamento, cai nas 9h do próximo dia útil', () => {
+    // QUI_20H = quinta 20:00 BRT → sexta 09:00 BRT
+    expect(proximoInstanteDeExpediente(QUI_20H)).toBe(brt('2026-08-14T12:00:00Z'))
+  })
+
+  it('⛔ pula o fim de semana inteiro (sábado cai na segunda 9h)', () => {
+    const sabado = brt('2026-08-15T13:00:00Z') // sábado, 10:00 BRT
+    expect(proximoInstanteDeExpediente(sabado)).toBe(brt('2026-08-17T12:00:00Z')) // segunda 09:00 BRT
+  })
+})
+
+describe("fimDoExpedienteAPartir", () => {
+  it("dentro do expediente da tarde, devolve o fim do próprio bloco (17h BRT)", () => {
+    const t = Date.parse("2026-08-11T17:00:00.000Z"); // terça 11/08, 14h BRT
+    expect(new Date(fimDoExpedienteAPartir(t)).toISOString()).toBe("2026-08-11T20:00:00.000Z");
+  });
+
+  it("antes do expediente começar (mesmo dia útil), devolve o fim do EXPEDIENTE DO DIA (17h), não do 1º bloco", () => {
+    const t = Date.parse("2026-08-11T10:00:00.000Z"); // terça 11/08, 07h BRT
+    expect(new Date(fimDoExpedienteAPartir(t)).toISOString()).toBe("2026-08-11T20:00:00.000Z");
+  });
+
+  it("durante o almoço (mesmo dia útil), também devolve o fim do expediente do dia (17h)", () => {
+    const t = Date.parse("2026-08-11T15:30:00.000Z"); // terça 11/08, 12h30 BRT (almoço)
+    expect(new Date(fimDoExpedienteAPartir(t)).toISOString()).toBe("2026-08-11T20:00:00.000Z");
+  });
+
+  it("depois do expediente encerrar, devolve o fim do expediente do PRÓXIMO dia útil", () => {
+    const t = Date.parse("2026-08-11T22:00:00.000Z"); // terça 11/08, 19h BRT
+    expect(new Date(fimDoExpedienteAPartir(t)).toISOString()).toBe("2026-08-12T20:00:00.000Z");
+  });
+
+  it("num fim de semana (sábado), devolve o fim do expediente da segunda-feira seguinte", () => {
+    const t = Date.parse("2026-08-15T15:00:00.000Z"); // sábado 15/08, meio-dia
+    expect(new Date(fimDoExpedienteAPartir(t)).toISOString()).toBe("2026-08-17T20:00:00.000Z"); // segunda 17/08, 17h BRT
+  });
+});
