@@ -457,7 +457,13 @@ export type AutomationTriggerType =
   | 'deal_stage_changed'
   /** Conversa parada esperando resposta humana. Avaliado pelo ciclo de
    *  tempo, nao por um evento: quem dispara e a passagem do prazo. */
-  | 'awaiting_reply';
+  | 'awaiting_reply'
+  /** Reserva criada/reagendada/cancelada no Cal.com — disparado pela
+   *  rota /api/flows/calcom-booking quando NENHUM Fluxo é dono do
+   *  contato (se um Fluxo já cuida, este gatilho nem é disparado). */
+  | 'calcom_booking_created'
+  | 'calcom_booking_rescheduled'
+  | 'calcom_booking_cancelled';
 
 export type AutomationStepType =
   | 'send_message'

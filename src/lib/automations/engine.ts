@@ -1113,6 +1113,18 @@ export function triggerMatches(automation: Automation, ctx: AutomationContext | 
     return ctx?.tag_id === cfg.tag_id
   }
 
+  // Evento do Cal.com: quem filtra e a rota /api/flows/calcom-booking
+  // (ela so dispara quando NENHUM Fluxo e dono do contato). Aqui,
+  // qualquer automacao ativa deste tipo bate — deliberadamente, nao
+  // por acidente do fallback generico abaixo.
+  if (
+    automation.trigger_type === 'calcom_booking_created' ||
+    automation.trigger_type === 'calcom_booking_rescheduled' ||
+    automation.trigger_type === 'calcom_booking_cancelled'
+  ) {
+    return true
+  }
+
   // Gatilhos sem filtro por contexto (first_inbound_message) ou que nunca
   // chegam aqui (time_based/awaiting_reply passam por `executeAutomation`
   // direto, escolhidos pelo dispatcher em tempo.ts — ver seu comentário).

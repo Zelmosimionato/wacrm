@@ -558,6 +558,26 @@ describe("start_flow", () => {
 // Quem decide se a IA cala. Precisa ser PRECISO: calar demais deixa o lead
 // sem resposta nenhuma (foi o defeito de 10/08/2026), calar de menos manda
 // duas mensagens dizendo a mesma coisa.
+describe("triggerMatches — calcom_booking_*", () => {
+  function automation(trigger_type: string): Automation {
+    return {
+      id: "a1", account_id: ACCOUNT, user_id: "u1", name: "reserva cal.com",
+      trigger_type: trigger_type as Automation["trigger_type"],
+      trigger_config: {}, is_active: true, execution_count: 0, created_at: "", updated_at: "",
+    };
+  }
+
+  it("calcom_booking_created bate sempre que a automacao estiver ativa (sem config pra casar)", () => {
+    expect(triggerMatches(automation("calcom_booking_created"), {})).toBe(true);
+  });
+  it("calcom_booking_rescheduled bate sempre", () => {
+    expect(triggerMatches(automation("calcom_booking_rescheduled"), {})).toBe(true);
+  });
+  it("calcom_booking_cancelled bate sempre", () => {
+    expect(triggerMatches(automation("calcom_booking_cancelled"), {})).toBe(true);
+  });
+});
+
 describe("automacaoVaiResponder", () => {
   const auto = (extra: Record<string, unknown> = {}) => ({
     id: "a1",

@@ -114,6 +114,12 @@ const STEP_META: Record<AutomationStepType, StepMeta> = {
   send_webhook: { label: "send_webhook", icon: Webhook, border: "border-l-primary" },
   close_conversation: { label: "close_conversation", icon: CircleSlash, border: "border-l-primary" },
   notify: { label: "notify", icon: Bell, border: "border-l-red-500" },
+  // Acorda um Fluxo. Fora de ADDABLE_STEPS de proposito: hoje quem cria
+  // esses passos e o seed (scripts/wire-automacoes-fluxo-agendamento.js),
+  // com o flow_id ja resolvido — a tela ainda nao tem seletor de Fluxo.
+  // Precisa existir aqui porque STEP_META e Record<AutomationStepType,...>,
+  // exaustivo por tipo.
+  start_flow: { label: "start_flow", icon: Zap, border: "border-l-primary" },
 }
 
 const ADDABLE_STEPS: AutomationStepType[] = [
@@ -864,15 +870,38 @@ function TriggerCard({
               <InteractiveReplyConfig config={config} onChange={onConfigChange} t={t} />
             )}
             {type === "tag_added" && (
-              <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                  Tag
+              <div className="space-y-3">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                    Tag
+                  </label>
+                  <TagSelect
+                    value={(config.tag_id as string) ?? ""}
+                    onChange={(v) => onConfigChange({ ...config, tag_id: v })}
+                    t={t}
+                  />
+                </div>
+
+                <label className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={config.somente_horario_comercial !== false}
+                    onChange={(e) =>
+                      onConfigChange({
+                        ...config,
+                        somente_horario_comercial: e.target.checked,
+                      })
+                    }
+                    className="mt-0.5"
+                  />
+                  <span>
+                    Só enviar dentro do horário comercial (seg a sex, 9h-12h e
+                    13h-17h). A tag pode ser aplicada a qualquer minuto (ex.:
+                    formulário preenchido de madrugada); sem isso, o primeiro
+                    toque sai na hora errada — com isso, ele espera e sai no
+                    início do próximo horário comercial.
+                  </span>
                 </label>
-                <TagSelect
-                  value={(config.tag_id as string) ?? ""}
-                  onChange={(v) => onConfigChange({ ...config, tag_id: v })}
-                  t={t}
-                />
               </div>
             )}
             {type === "deal_stage_changed" && (

@@ -47,6 +47,20 @@ export const TRIGGER_META: Record<AutomationTriggerType, TriggerMeta> = {
     label: 'Card Entered Stage',
     pillClass: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
   },
+  // Eventos do Cal.com, disparados pela rota /api/flows/calcom-booking
+  // (so quando NENHUM Fluxo e dono do contato).
+  calcom_booking_created: {
+    label: 'Cal.com — Reserva Criada',
+    pillClass: 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300',
+  },
+  calcom_booking_rescheduled: {
+    label: 'Cal.com — Reserva Reagendada',
+    pillClass: 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300',
+  },
+  calcom_booking_cancelled: {
+    label: 'Cal.com — Reserva Cancelada',
+    pillClass: 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300',
+  },
 }
 
 export function triggerMeta(t: AutomationTriggerType | string): TriggerMeta {
