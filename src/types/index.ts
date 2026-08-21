@@ -476,7 +476,13 @@ export type AutomationStepType =
   | 'close_conversation'
   /** Avisa a equipe pela tabela `notifications`. ⛔ Nao fala com o
    *  cliente: e o unico passo do motor que nao sai do escritorio. */
-  | 'notify';
+  | 'notify'
+  /** Acorda um Fluxo (motor de Fluxos) para o contato do evento. */
+  | 'start_flow';
+
+export interface StartFlowStepConfig {
+  flow_id: string;
+}
 
 export type AutomationLogStatus = 'success' | 'partial' | 'failed';
 
@@ -661,6 +667,7 @@ export type AutomationStepConfig =
   | ConditionStepConfig
   | SendWebhookStepConfig
   | NotifyStepConfig
+  | StartFlowStepConfig
   | Record<string, never>
   | Record<string, unknown>;
 

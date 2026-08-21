@@ -20,8 +20,10 @@ import type {
   MoveDealStepConfig,
   AssignConversationStepConfig,
   NotifyStepConfig,
+  StartFlowStepConfig,
 } from '@/types'
 import { supabaseAdmin } from './admin-client'
+import { startManualFlowRun } from '@/lib/flows/engine'
 import { engineSendText, engineSendTemplate, engineSendInteractive } from './meta-send'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
@@ -990,6 +992,19 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       )
       if (error) throw new Error(`notify failed: ${error.message}`)
       return `notificados ${destinatarios.length}`
+    }
+
+    case 'start_flow': {
+      const cfg = step.step_config as StartFlowStepConfig
+      if (!cfg.flow_id) throw new Error('start_flow needs flow_id')
+      if (!args.contactId) throw new Error('start_flow needs a contact')
+      const conversationId = await resolveConversationId(args)
+      const result = await startManualFlowRun(db, cfg.flow_id, {
+        accountId: args.automation.account_id,
+        contactId: args.contactId,
+        conversationId,
+      })
+      return `start_flow: ${result.outcome ?? 'sem outcome'}`
     }
 
     default:

@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
     upsertCalls: [] as { table: string; payload: unknown }[],
     notificationsInserted: [] as Record<string, unknown>[],
   },
+  startManualFlowRun: vi.fn(),
 }));
 
 vi.mock("./admin-client", () => {
@@ -100,6 +101,8 @@ vi.mock("./admin-client", () => {
   };
 });
 
+vi.mock("@/lib/flows/engine", () => ({ startManualFlowRun: h.startManualFlowRun }));
+
 vi.mock("./meta-send", () => ({
   engineSendText: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
   engineSendTemplate: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
@@ -120,6 +123,7 @@ beforeEach(() => {
   h.state.updateCalls = [];
   h.state.upsertCalls = [];
   h.state.notificationsInserted = [];
+  h.startManualFlowRun.mockReset();
 });
 
 describe("runAutomationsForTrigger — tenant isolation", () => {
@@ -469,6 +473,85 @@ describe("notify — tipo configuravel", () => {
     });
 
     expect(h.state.notificationsInserted[0]).toMatchObject({ type: "awaiting_reply" });
+  });
+});
+
+describe("start_flow", () => {
+  it("chama startManualFlowRun com o flow_id configurado e a tenancy do contato", async () => {
+    h.state.owned = { id: "contact-1" };
+    h.state.automations = [
+      {
+        id: "a1",
+        account_id: ACCOUNT,
+        user_id: "u1",
+        trigger_type: "deal_stage_changed",
+        trigger_config: { stage_id: "stage-1" },
+        is_active: true,
+      },
+    ];
+    h.state.steps = [
+      {
+        id: "s1",
+        automation_id: "a1",
+        step_type: "start_flow",
+        position: 0,
+        parent_step_id: null,
+        step_config: { flow_id: "flow-noshow-1" },
+      },
+    ];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "deal_stage_changed",
+      contactId: "contact-1",
+      context: { stage_id: "stage-1", conversation_id: "conv-1" },
+    });
+
+    expect(h.startManualFlowRun).toHaveBeenCalledTimes(1);
+    expect(h.startManualFlowRun).toHaveBeenCalledWith(expect.anything(), "flow-noshow-1", {
+      accountId: ACCOUNT,
+      contactId: "contact-1",
+      conversationId: "conv-1",
+    });
+  });
+
+  it("start_flow sem contactId nunca chama startManualFlowRun (guard 'needs a contact')", async () => {
+    // Sem contactId, runAutomationsForTrigger PULA o guard de tenancy
+    // (ele só roda `if (input.contactId)`) e chega a executar o passo —
+    // é o próprio case 'start_flow' que recusa (`if (!args.contactId)
+    // throw`). Por isso o trigger_config PRECISA bater (stage_id no
+    // context) para o teste genuinamente alcançar esse guard, e não
+    // ficar vazio por falta de match — achado #8 da auditoria: um teste
+    // "not called" com automação que nunca roda passa por motivo errado.
+    h.state.automations = [
+      {
+        id: "a1",
+        account_id: ACCOUNT,
+        user_id: "u1",
+        trigger_type: "deal_stage_changed",
+        trigger_config: { stage_id: "stage-1" },
+        is_active: true,
+      },
+    ];
+    h.state.steps = [
+      {
+        id: "s1",
+        automation_id: "a1",
+        step_type: "start_flow",
+        position: 0,
+        parent_step_id: null,
+        step_config: { flow_id: "flow-noshow-1" },
+      },
+    ];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "deal_stage_changed",
+      contactId: null,
+      context: { stage_id: "stage-1" },
+    });
+
+    expect(h.startManualFlowRun).not.toHaveBeenCalled();
   });
 });
 
