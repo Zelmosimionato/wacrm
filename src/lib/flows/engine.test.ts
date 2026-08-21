@@ -42,6 +42,14 @@ const h = vi.hoisted(() => ({
     cancelCalcomBookingReturn: true as boolean,
     // Todo insert em flow_run_events (= toda chamada a logEvent).
     flowRunEvents: [] as { event_type: string; node_key: unknown; payload: unknown }[],
+    // startManualFlowRun / insertAndStartRun — o INSERT em flow_runs
+    // que cria a run. Cada row inserida fica aqui; quando o flag de
+    // duplicidade está ligado, o INSERT simula o 23505 do índice
+    // parcial `idx_one_active_run_per_contact` (mesma simulação usada
+    // pelos testes de startNewRun/dispatchInboundToFlows via essa
+    // constraint).
+    insertedFlowRuns: [] as Record<string, unknown>[],
+    forceFlowRunsInsertDuplicateKeyError: false as boolean,
   },
 }));
 
@@ -56,6 +64,24 @@ vi.mock("./admin-client", () => {
   }) {
     const { table, type, payload, filters } = ops;
     if (table === "flow_runs") {
+      if (type === "insert") {
+        if (state.forceFlowRunsInsertDuplicateKeyError) {
+          return {
+            data: null,
+            error: {
+              message:
+                'duplicate key value violates unique constraint "idx_one_active_run_per_contact" (23505)',
+            },
+          };
+        }
+        const row = {
+          id: "manual-run-1",
+          vars: {},
+          ...(payload as Record<string, unknown>),
+        };
+        state.insertedFlowRuns.push(row);
+        return { data: row, error: null };
+      }
       if (type === "update") {
         state.flowRunUpdates.push(payload as Record<string, unknown>);
         const p = payload as { vars?: Record<string, unknown> } | undefined;
@@ -182,6 +208,7 @@ import { engineSendInteractiveList } from "./meta-send";
 import { horariosLivres } from "@/lib/appointments/calcom-slots";
 import { criarReserva } from "@/lib/appointments/calcom-book";
 import { cancelCalcomBooking } from "@/lib/appointments/calcom-cancel";
+import { supabaseAdmin } from "./admin-client";
 import {
   matchReplyId,
   matchesKeywordTrigger,
@@ -192,6 +219,7 @@ import {
   waitMs,
   rotuloCurto,
   dispatchInboundToFlows,
+  startManualFlowRun,
 } from "./engine";
 
 describe("matchReplyId", () => {
@@ -622,6 +650,8 @@ beforeEach(() => {
   h.state.forceOfferSlotsReplyVarsPersistError = false;
   h.state.cancelCalcomBookingReturn = true;
   h.state.flowRunEvents = [];
+  h.state.insertedFlowRuns = [];
+  h.state.forceFlowRunsInsertDuplicateKeyError = false;
   vi.unstubAllEnvs();
   vi.mocked(engineSendInteractiveList).mockClear();
   vi.mocked(horariosLivres).mockClear();
@@ -1558,5 +1588,134 @@ describe("dispatchInboundToFlows — cancel_meeting node", () => {
         (e.payload as { motivo?: string } | undefined)?.motivo !== undefined,
     );
     expect((entered?.payload as { motivo?: string }).motivo).toBe("sem_booking_uid_ou_api_key");
+  });
+});
+
+// ============================================================
+// startManualFlowRun — inicia um Fluxo sem mensagem inbound real
+// (Task 2). Reaproveita insertAndStartRun, o mesmo helper que
+// startNewRun usa por baixo dos panos — os testes aqui provam o
+// contrato próprio da função exportada; a suíte inteira acima
+// (dispatchInboundToFlows / os node executors) prova que a extração
+// do Step 2 não mudou nada do comportamento pré-existente.
+// ============================================================
+
+const MANUAL_FLOW_NODES = [
+  node({
+    node_key: "manual_entry",
+    node_type: "collect_input",
+    config: {
+      prompt_text: "Qual seu nome?",
+      var_key: "nome",
+      next_node_key: "manual_end",
+    },
+  }),
+  node({ node_key: "manual_end", node_type: "end", config: {} }),
+];
+
+function manualFlow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "flow-manual-1",
+    account_id: "acct-1",
+    user_id: "user-1",
+    name: "Agendamento manual",
+    trigger_type: "manual",
+    entry_node_id: "manual_entry",
+    ...overrides,
+  };
+}
+
+describe("startManualFlowRun", () => {
+  it("flow existe, tem entry_node_id, sem run ativo — cria a run, avança pro nó de entrada, retorna started", async () => {
+    h.state.flow = manualFlow();
+    h.state.nodeRows = MANUAL_FLOW_NODES;
+
+    const db = supabaseAdmin();
+    const result = await startManualFlowRun(db, "flow-manual-1", {
+      accountId: "acct-1",
+      contactId: "contact-9",
+      conversationId: "conv-9",
+    });
+
+    expect(result.consumed).toBe(true);
+    expect(result.flow_run_id).toBeDefined();
+    // Mesma forma que startNewRun devolve em sucesso: advanceFromNodeKey
+    // suspendeu em collect_input ("advanced") → mapeado pra "started".
+    expect(result.outcome).toBe("started");
+
+    // A run foi criada com os args passados, não com um input.message —
+    // meta_message_id do evento "started" é null (não há mensagem
+    // inbound real por trás desta run).
+    expect(h.state.insertedFlowRuns).toHaveLength(1);
+    expect(h.state.insertedFlowRuns[0]).toMatchObject({
+      flow_id: "flow-manual-1",
+      account_id: "acct-1",
+      contact_id: "contact-9",
+      conversation_id: "conv-9",
+      current_node_key: "manual_entry",
+    });
+    const startedEvent = h.state.flowRunEvents.find((e) => e.event_type === "started");
+    expect(startedEvent).toBeDefined();
+    expect((startedEvent?.payload as { meta_message_id: unknown }).meta_message_id).toBeNull();
+  });
+
+  it("flow não encontrado (id errado) — consumed:false, outcome no_match, sem lançar", async () => {
+    h.state.flow = null;
+    h.state.nodeRows = MANUAL_FLOW_NODES;
+
+    const db = supabaseAdmin();
+    const result = await startManualFlowRun(db, "flow-inexistente", {
+      accountId: "acct-1",
+      contactId: "contact-9",
+      conversationId: "conv-9",
+    });
+
+    expect(result).toEqual({ consumed: false, outcome: "no_match" });
+    expect(h.state.insertedFlowRuns).toHaveLength(0);
+  });
+
+  it("flow encontrado mas de OUTRA conta (account_id não bate) — outcome no_match, sem lançar (tenancy)", async () => {
+    h.state.flow = manualFlow({ account_id: "acct-OUTRA" });
+    h.state.nodeRows = MANUAL_FLOW_NODES;
+
+    const db = supabaseAdmin();
+    const result = await startManualFlowRun(db, "flow-manual-1", {
+      accountId: "acct-1",
+      contactId: "contact-9",
+      conversationId: "conv-9",
+    });
+
+    expect(result).toEqual({ consumed: false, outcome: "no_match" });
+    expect(h.state.insertedFlowRuns).toHaveLength(0);
+  });
+
+  it("flow encontrado mas sem entry_node_id configurado — outcome no_match", async () => {
+    h.state.flow = manualFlow({ entry_node_id: null });
+    h.state.nodeRows = MANUAL_FLOW_NODES;
+
+    const db = supabaseAdmin();
+    const result = await startManualFlowRun(db, "flow-manual-1", {
+      accountId: "acct-1",
+      contactId: "contact-9",
+      conversationId: "conv-9",
+    });
+
+    expect(result).toEqual({ consumed: false, outcome: "no_match" });
+    expect(h.state.insertedFlowRuns).toHaveLength(0);
+  });
+
+  it("índice único violado (23505, corrida com outra run ativa) — consumed:true, outcome duplicate_inbound_ignored", async () => {
+    h.state.flow = manualFlow();
+    h.state.nodeRows = MANUAL_FLOW_NODES;
+    h.state.forceFlowRunsInsertDuplicateKeyError = true;
+
+    const db = supabaseAdmin();
+    const result = await startManualFlowRun(db, "flow-manual-1", {
+      accountId: "acct-1",
+      contactId: "contact-9",
+      conversationId: "conv-9",
+    });
+
+    expect(result).toEqual({ consumed: true, outcome: "duplicate_inbound_ignored" });
   });
 });

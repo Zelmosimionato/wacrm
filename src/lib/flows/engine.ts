@@ -1454,11 +1454,19 @@ async function handleReplyForActiveRun(
   return { consumed: true, flow_run_id: run.id, outcome: "completed" };
 }
 
-async function startNewRun(
+/**
+ * Shared insert-and-advance core behind `startNewRun` and
+ * `startManualFlowRun` — the only code that knows how to create a
+ * flow_run row and kick off the advance loop from the entry node.
+ * `metaMessageId` is null for manually-started runs (there is no
+ * inbound WhatsApp message to attribute the "started" event to).
+ */
+async function insertAndStartRun(
   db: AdminClient,
   flow: FlowRow,
-  input: DispatchInboundInput,
+  args: { contactId: string; conversationId: string },
   nodes: Map<string, FlowNodeRow>,
+  metaMessageId: string | null,
 ): Promise<DispatchInboundResult> {
   // INSERT — partial unique index `idx_one_active_run_per_contact`
   // catches concurrent inserts with 23505. We catch and return as
@@ -1475,8 +1483,8 @@ async function startNewRun(
       // Audit: preserves the flow's author on the run row for log
       // attribution.
       user_id: flow.user_id,
-      contact_id: input.contactId,
-      conversation_id: input.conversationId,
+      contact_id: args.contactId,
+      conversation_id: args.conversationId,
       status: "active",
       current_node_key: flow.entry_node_id,
     })
@@ -1488,14 +1496,14 @@ async function startNewRun(
     if (msg.includes("23505") || msg.includes("duplicate key")) {
       return { consumed: true, outcome: "duplicate_inbound_ignored" };
     }
-    console.error("[flows] startNewRun insert error:", insErr.message);
+    console.error("[flows] insertAndStartRun insert error:", insErr.message);
     return { consumed: false, outcome: "no_match" };
   }
   const run = inserted as FlowRunRow;
   await logEvent(db, run.id, "started", flow.entry_node_id, {
     flow_id: flow.id,
     trigger_type: flow.trigger_type,
-    meta_message_id: input.message.meta_message_id,
+    meta_message_id: metaMessageId,
   });
   // Bump the flow's execution counter — used by the builder UI to
   // surface "X runs since activation" on the flow card.
@@ -1520,4 +1528,59 @@ async function startNewRun(
     flow_run_id: run.id,
     outcome: outcome.outcome === "advanced" ? "started" : outcome.outcome,
   };
+}
+
+async function startNewRun(
+  db: AdminClient,
+  flow: FlowRow,
+  input: DispatchInboundInput,
+  nodes: Map<string, FlowNodeRow>,
+): Promise<DispatchInboundResult> {
+  return insertAndStartRun(
+    db,
+    flow,
+    { contactId: input.contactId, conversationId: input.conversationId },
+    nodes,
+    input.message.meta_message_id,
+  );
+}
+
+/**
+ * Inicia um Fluxo sem mensagem inbound real — usado quando outro
+ * sistema (a IA detectando `[[AGENDAR]]`, ou um webhook externo)
+ * decide que é hora de entregar o bastão pro Fluxo, em vez de o
+ * Fluxo ter sido disparado por uma mensagem batendo um trigger.
+ * Carrega o flow pelo id (precisa ter `entry_node_id` configurado,
+ * e pertencer ao `accountId` informado — tenancy check, já que o
+ * chamador aqui não vem de um webhook autenticado por conta como o
+ * dispatch normal) e reaproveita a MESMA inserção/avanço que
+ * `startNewRun` usa via `insertAndStartRun` — único código que sabe
+ * criar uma run.
+ */
+export async function startManualFlowRun(
+  db: AdminClient,
+  flowId: string,
+  args: { accountId: string; contactId: string; conversationId: string },
+): Promise<DispatchInboundResult> {
+  const flow = await loadFlow(db, flowId);
+  if (!flow || flow.account_id !== args.accountId) {
+    console.error(
+      "[flows] startManualFlowRun: flow not found",
+      flowId,
+      flow ? "account_id mismatch" : "no row",
+    );
+    return { consumed: false, outcome: "no_match" };
+  }
+  if (!flow.entry_node_id) {
+    console.error("[flows] startManualFlowRun: flow has no entry_node_id", flowId);
+    return { consumed: false, outcome: "no_match" };
+  }
+  const nodes = await loadAllNodes(db, flow.id);
+  return insertAndStartRun(
+    db,
+    flow,
+    { contactId: args.contactId, conversationId: args.conversationId },
+    nodes,
+    null,
+  );
 }
