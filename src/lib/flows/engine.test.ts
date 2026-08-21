@@ -209,7 +209,7 @@ vi.mock("@/lib/appointments/calcom-cancel", () => {
   };
 });
 
-import { engineSendInteractiveList } from "./meta-send";
+import { engineSendInteractiveList, engineSendInteractiveButtons } from "./meta-send";
 import { horariosLivres } from "@/lib/appointments/calcom-slots";
 import { criarReserva } from "@/lib/appointments/calcom-book";
 import { cancelCalcomBooking } from "@/lib/appointments/calcom-cancel";
@@ -662,6 +662,7 @@ beforeEach(() => {
   h.state.insertedPendingResumes = [];
   vi.unstubAllEnvs();
   vi.mocked(engineSendInteractiveList).mockClear();
+  vi.mocked(engineSendInteractiveButtons).mockClear();
   vi.mocked(horariosLivres).mockClear();
   vi.mocked(criarReserva).mockClear();
   vi.mocked(cancelCalcomBooking).mockClear();
@@ -1884,5 +1885,47 @@ describe("computeWaitRunAt — sooner_of_hours_or_var", () => {
     // daqui a 1 hora" DEPOIS da reunião já ter acontecido.
     expect(runAt).toBeGreaterThanOrEqual(Date.now() - 1_000);
     expect(runAt).toBeLessThanOrEqual(Date.now() + 5_000);
+  });
+});
+
+describe("dispatchInboundToFlows — send_buttons interpola {{vars.X}}", () => {
+  it("bodyText/headerText/footerText são interpolados antes de mandar pro WhatsApp", async () => {
+    h.state.activeRun = waitRun({
+      current_node_key: "collect1",
+      vars: { booking_rotulo: "12/09 14:00" },
+    });
+    h.state.nodeRows = [
+      node({
+        node_key: "collect1",
+        node_type: "collect_input",
+        config: { prompt_text: "x", var_key: "nome", next_node_key: "confirmar" },
+      }),
+      node({
+        node_key: "confirmar",
+        node_type: "send_buttons",
+        config: {
+          text: "Reunião marcada para {{vars.booking_rotulo}}.",
+          header_text: "Aviso — {{vars.booking_rotulo}}",
+          buttons: [{ reply_id: "sim", title: "Sim", next_node_key: "fim" }],
+        },
+      }),
+      node({ node_key: "fim", node_type: "end", config: {} }),
+    ];
+
+    await dispatchInboundToFlows({
+      accountId: "acct-1",
+      userId: "user-1",
+      contactId: "contact-1",
+      conversationId: "conv-1",
+      message: { kind: "text", text: "oi", meta_message_id: "m5" },
+      isFirstInboundMessage: false,
+    });
+
+    expect(engineSendInteractiveButtons).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bodyText: "Reunião marcada para 12/09 14:00.",
+        headerText: "Aviso — 12/09 14:00",
+      }),
+    );
   });
 });
