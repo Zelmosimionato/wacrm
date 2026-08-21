@@ -1467,6 +1467,7 @@ async function insertAndStartRun(
   args: { contactId: string; conversationId: string },
   nodes: Map<string, FlowNodeRow>,
   metaMessageId: string | null,
+  logPrefix: string,
 ): Promise<DispatchInboundResult> {
   // INSERT — partial unique index `idx_one_active_run_per_contact`
   // catches concurrent inserts with 23505. We catch and return as
@@ -1496,7 +1497,7 @@ async function insertAndStartRun(
     if (msg.includes("23505") || msg.includes("duplicate key")) {
       return { consumed: true, outcome: "duplicate_inbound_ignored" };
     }
-    console.error("[flows] insertAndStartRun insert error:", insErr.message);
+    console.error(`[flows] ${logPrefix} insert error:`, insErr.message);
     return { consumed: false, outcome: "no_match" };
   }
   const run = inserted as FlowRunRow;
@@ -1542,6 +1543,7 @@ async function startNewRun(
     { contactId: input.contactId, conversationId: input.conversationId },
     nodes,
     input.message.meta_message_id,
+    "startNewRun",
   );
 }
 
@@ -1582,5 +1584,6 @@ export async function startManualFlowRun(
     { contactId: args.contactId, conversationId: args.conversationId },
     nodes,
     null,
+    "startManualFlowRun",
   );
 }
