@@ -256,7 +256,10 @@ export type ConditionOperator =
   | "contains"
   | "present"
   | "absent"
-  | "keyword_match";
+  | "keyword_match"
+  /** subject e um ISO de data/hora: verdadeiro quando faltam MENOS
+   *  horas que `value` ate esse instante (reuniao de prazo curto). */
+  | "hours_until_lt";
 
 export type ConditionSubject = "var" | "tag" | "contact_field";
 

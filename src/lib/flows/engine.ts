@@ -237,6 +237,13 @@ export function evaluateConditionPredicate(args: {
     case "keyword_match":
       if (args.subjectValue === undefined) return false;
       return matchesKeywordTrigger(args.subjectValue, args.keywords ?? { keywords: [] });
+    case "hours_until_lt": {
+      if (args.subjectValue === undefined) return false;
+      const targetTs = Date.parse(args.subjectValue);
+      if (Number.isNaN(targetTs)) return false;
+      const hoursUntil = (targetTs - Date.now()) / 3_600_000;
+      return hoursUntil < Number(args.configValue ?? "0");
+    }
   }
 }
 

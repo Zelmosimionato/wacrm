@@ -2184,3 +2184,37 @@ describe("dispatchInboundToFlows — collect_input com timeout", () => {
     ).toBe(true);
   });
 });
+
+describe("evaluateConditionPredicate — hours_until_lt", () => {
+  it("true quando o alvo está a menos horas de distância que o valor configurado", () => {
+    const daqui10h = new Date(Date.now() + 10 * 3_600_000).toISOString();
+    expect(
+      evaluateConditionPredicate({
+        operator: "hours_until_lt",
+        subjectValue: daqui10h,
+        configValue: "20",
+      }),
+    ).toBe(true);
+  });
+
+  it("false quando o alvo está a mais horas de distância que o valor configurado", () => {
+    const daqui30h = new Date(Date.now() + 30 * 3_600_000).toISOString();
+    expect(
+      evaluateConditionPredicate({
+        operator: "hours_until_lt",
+        subjectValue: daqui30h,
+        configValue: "20",
+      }),
+    ).toBe(false);
+  });
+
+  it("false quando o subject está ausente", () => {
+    expect(
+      evaluateConditionPredicate({
+        operator: "hours_until_lt",
+        subjectValue: undefined,
+        configValue: "20",
+      }),
+    ).toBe(false);
+  });
+});
