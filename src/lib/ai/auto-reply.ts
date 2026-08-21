@@ -18,16 +18,13 @@ import { cancelCalcomBooking } from '@/lib/appointments/calcom-cancel'
 import { iaAgendaAtiva } from './defaults'
 
 /**
- * O Fluxo de Agendamento (grafo com o nó `book_meeting`) ainda não existe —
- * é criado por um plano futuro separado (montagem do grafo). Até lá, esta
- * constante fica vazia de propósito: `[[AGENDAR]]` continua sendo detectado
- * e o gate de qualificado/PF roda normalmente, mas `startManualFlowRun`
- * devolve `outcome: 'no_match'` (fluxo não encontrado) — sem efeito nenhum,
- * o que é esperado e seguro nesta fase.
- * TODO: preencher com o id real depois que o plano de montagem do grafo
- * rodar (ver docs/superpowers/specs/2026-08-20-agendamento-fluxos-design.md).
+ * O Fluxo de Agendamento (grafo com o nó `book_meeting`), montado em
+ * 21/08/2026 pelo `scripts/seed-fluxo-agendamento.js` — 30 nós, conta
+ * 2569c0e9-5f2e-4d04-957c-e2f158e7a87e. `[[AGENDAR]]` entrega o bastão
+ * pra ELE via `startManualFlowRun`: a Márcia nunca reserva sozinha.
+ * Exportado pra o teste apontar pro mesmo id, sem repetir o literal.
  */
-const FLUXO_AGENDAMENTO_ID = ''
+export const FLUXO_AGENDAMENTO_ID = 'fe558f85-3060-4cc4-9023-40ad92ea3d3e'
 
 /** Horários livres do escritório (rótulo para a frase + ISO para reservar).
  *  Silencioso por desenho: sem chave, sem tipo de evento ou com a API fora,

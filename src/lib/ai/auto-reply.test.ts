@@ -5,6 +5,7 @@ import {
   PESSOA_AFIRMA_REUNIAO,
   emailNaConversa,
   AI_STAGE_PERDIDO,
+  FLUXO_AGENDAMENTO_ID,
 } from './auto-reply'
 
 describe('emailNaConversa', () => {
@@ -482,7 +483,7 @@ describe('dispatchInboundToAiReply — [[AGENDAR]] entrega o bastão pro Fluxo',
     await dispatchInboundToAiReply(ARGS)
 
     expect(h.startManualFlowRun).toHaveBeenCalledTimes(1)
-    expect(h.startManualFlowRun).toHaveBeenCalledWith(expect.anything(), '', {
+    expect(h.startManualFlowRun).toHaveBeenCalledWith(expect.anything(), FLUXO_AGENDAMENTO_ID, {
       accountId: 'acct-1',
       contactId: 'contact-1',
       conversationId: 'conv-1',
@@ -530,11 +531,10 @@ describe('dispatchInboundToAiReply — [[AGENDAR]] entrega o bastão pro Fluxo',
     log.mockRestore()
   })
 
-  // FLUXO_AGENDAMENTO_ID está vazio até o plano de montagem do grafo rodar —
-  // nesta fase `startManualFlowRun` sempre devolve `no_match`. Sem este
-  // fallback, o cliente ficaria com a frase de transição da IA e nada vindo
-  // a seguir.
-  it('Fluxo não encontrado (id ainda não existe) → troca a resposta pelo fallback, não deixa a transição solta', async () => {
+  // Fluxo não encontrado (id errado, fluxo desativado, run duplicado):
+  // `startManualFlowRun` devolve `no_match`. Sem este fallback, o cliente
+  // ficaria com a frase de transição da IA e nada vindo a seguir.
+  it('Fluxo não encontrado → troca a resposta pelo fallback, não deixa a transição solta', async () => {
     h.startManualFlowRun.mockResolvedValue({ consumed: false, outcome: 'no_match' })
     h.generateReply.mockResolvedValue({
       text: 'Perfeito, já vou te mostrar os horários disponíveis!',
@@ -555,8 +555,7 @@ describe('dispatchInboundToAiReply — [[AGENDAR]] entrega o bastão pro Fluxo',
 })
 
 // Achados C1/C3/C4/C5/I1 da revisão independente de 20/08/2026 sobre o
-// commit 599f358 — a troca do [[AGENDAR:N]] pelo [[AGENDAR]] reabriu, de
-// forma mascarada (só oculta porque FLUXO_AGENDAMENTO_ID está vazio hoje),
+// commit 599f358 — a troca do [[AGENDAR:N]] pelo [[AGENDAR]] reabriu
 // exatamente a classe de bug que motivou a troca: a IA (ou o código)
 // afirmando ou agindo como se uma reunião existisse sem o lead ter escolhido
 // horário.
