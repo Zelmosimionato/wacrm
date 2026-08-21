@@ -1465,7 +1465,14 @@ describe("dispatchInboundToFlows — cancel_meeting node", () => {
 
     // cancel_end é nó "end" → advanceFromNodeKey encerra a run.
     expect(result.outcome).toBe("completed");
-    expect(cancelCalcomBooking).toHaveBeenCalledWith("uid-abc", "sk_test");
+    // 3o argumento: o motivo carrega o marcador [ia-whatsapp], que o
+    // intake.js ja reconhece pra NAO reagir ao proprio cancelamento do
+    // Fluxo (Task 12 do plano do grafo).
+    expect(cancelCalcomBooking).toHaveBeenCalledWith(
+      "uid-abc",
+      "sk_test",
+      "[ia-whatsapp] Fluxo de Agendamento cancelou para remarcar",
+    );
 
     // O loop do runner já loga um node_entered genérico {node_type} pra
     // TODO nó ao entrar nele (advanceFromNodeKey, antes do handler
@@ -1529,7 +1536,14 @@ describe("dispatchInboundToFlows — cancel_meeting node", () => {
     const result = await sendCancelMeetingReply({ booking_uid: "uid-abc" });
 
     expect(result.outcome).toBe("completed");
-    expect(cancelCalcomBooking).toHaveBeenCalledWith("uid-abc", "sk_test");
+    // 3o argumento: o motivo carrega o marcador [ia-whatsapp], que o
+    // intake.js ja reconhece pra NAO reagir ao proprio cancelamento do
+    // Fluxo (Task 12 do plano do grafo).
+    expect(cancelCalcomBooking).toHaveBeenCalledWith(
+      "uid-abc",
+      "sk_test",
+      "[ia-whatsapp] Fluxo de Agendamento cancelou para remarcar",
+    );
 
     const entered = h.state.flowRunEvents.find(
       (e) =>

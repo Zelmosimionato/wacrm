@@ -1022,7 +1022,14 @@ async function advanceFromNodeKey(
       const apiKey = process.env.CALCOM_API_KEY;
       if (uid && apiKey) {
         try {
-          const ok = await cancelCalcomBooking(uid, apiKey);
+          // O marcador [ia-whatsapp] no motivo reaproveita o silenciamento que
+          // o intake.js JA tem pra cancelamento feito pela IA — defesa em
+          // profundidade, alem da checagem de Fluxo ativo da rota nova.
+          const ok = await cancelCalcomBooking(
+            uid,
+            apiKey,
+            '[ia-whatsapp] Fluxo de Agendamento cancelou para remarcar',
+          );
           await logEvent(db, run.id, "node_entered", node.node_key, {
             node_type: "cancel_meeting",
             cancelado: ok,
