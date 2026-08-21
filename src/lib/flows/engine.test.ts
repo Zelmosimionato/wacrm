@@ -1186,6 +1186,25 @@ describe("dispatchInboundToFlows — book_meeting node", () => {
     });
   });
 
+  it("telefone do contato SEM '+' (formato real de contacts.phone em produção) é normalizado pra E.164 antes de ir pro Cal.com", async () => {
+    // Achado ao vivo, 21/08/2026: contacts.phone é gravado só em dígitos
+    // (mesma convenção do soDigitos usado em todo o resto do sistema) —
+    // NENHUM contato real tem "+" salvo. O teste "reserva com sucesso"
+    // acima usa um fixture já com "+", o que mascarava esse bug: o Cal.com
+    // recusava com "responses - {phone}invalid_number" pra qualquer
+    // contato de verdade.
+    vi.stubEnv("CALCOM_API_KEY", "sk_test");
+    vi.stubEnv("CALCOM_EVENT_TYPE_ID", "42");
+    h.state.contactRow = { name: "Zelmo Simionato", phone: "5511996004560", email: "zelmo@example.com" };
+    h.state.criarReservaReturn = { ok: true, uid: "uid-real", inicio: "2026-08-12T18:00:00.000Z" };
+
+    await sendBookMeetingReply({ horario_escolhido: "2026-08-12T18:00:00.000Z" });
+
+    expect(criarReserva).toHaveBeenCalledWith(
+      expect.objectContaining({ telefone: "+5511996004560" }),
+    );
+  });
+
   it("I-2: rótulo legível de offer_slots (vars[`${slot_var_key}_rotulo`]) sobrevive como booking_rotulo quando presente", async () => {
     vi.stubEnv("CALCOM_API_KEY", "sk_test");
     vi.stubEnv("CALCOM_EVENT_TYPE_ID", "42");

@@ -943,7 +943,13 @@ async function advanceFromNodeKey(
             iso: iso!,
             nome: contact?.name ?? "Cliente",
             email: email!,
-            telefone: contact?.phone ?? "",
+            // criarReserva documenta e EXIGE E.164 com "+" — contacts.phone
+            // é guardado só em dígitos (mesma convenção do soDigitos usado
+            // em todo o resto do sistema). Sem o "+", o Cal.com recusa com
+            // "responses - {phone}invalid_number" (bug real, achado ao
+            // vivo 21/08/2026 no primeiro teste ponta a ponta) e o run cai
+            // em handoff_recusado mesmo com um horário válido escolhido.
+            telefone: contact?.phone ? `+${contact.phone.replace(/\D/g, "")}` : "",
           });
         } catch (err) {
           // Same safety net the condition node already has just below: criarReserva
