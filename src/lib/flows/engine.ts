@@ -1092,6 +1092,7 @@ async function advanceFromNodeKey(
       continue;
     }
     if (node.node_type === "send_buttons") {
+      const cfg = node.config as unknown as SendButtonsNodeConfig;
       await sendButtonsAndSuspend(db, run, node);
       // Persist the new current_node_key via optimistic UPDATE.
       const advanced = await advanceCurrentNodeKey(
@@ -1103,6 +1104,21 @@ async function advanceFromNodeKey(
       if (!advanced) {
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "lost_race_during_advance",
+        });
+      }
+      if (cfg.timeout) {
+        const runAt = new Date(
+          computeWaitRunAt(
+            { unit: cfg.timeout.unit ?? "hours", amount: cfg.timeout.amount ?? 0, until: cfg.timeout.until },
+            run.vars,
+          ),
+        );
+        await db.from("flow_pending_resumes").insert({
+          flow_run_id: run.id,
+          account_id: run.account_id,
+          node_key: node.node_key,
+          run_at: runAt.toISOString(),
+          status: "pending",
         });
       }
       return { outcome: "advanced" };
@@ -1262,9 +1278,33 @@ export async function resumeWaitingFlow(
   }
   const nodes = await loadAllNodes(db, runRow.flow_id);
   const node = nodes.get(pending.node_key);
-  if (!node || node.node_type !== "wait") return;
-  const cfg = node.config as unknown as WaitNodeConfig;
-  await advanceFromNodeKey(db, runRow, cfg.next_node_key, nodes);
+  if (!node) return;
+  if (node.node_type === "wait") {
+    const cfg = node.config as unknown as WaitNodeConfig;
+    await advanceFromNodeKey(db, runRow, cfg.next_node_key, nodes);
+    return;
+  }
+  if (node.node_type === "send_buttons") {
+    const cfg = node.config as unknown as SendButtonsNodeConfig;
+    if (cfg.timeout) {
+      await logEvent(db, runRow.id, "node_entered", node.node_key, {
+        reason: "suspend_timeout_fired",
+      });
+      await advanceFromNodeKey(db, runRow, cfg.timeout.next_node_key, nodes);
+    }
+    return;
+  }
+  if (node.node_type === "collect_input") {
+    // Mesmo padrao do send_buttons acima — so passa a ser exercitado
+    // de verdade quando CollectInputNodeConfig.timeout existir (Task 5).
+    const cfg = node.config as unknown as CollectInputNodeConfig;
+    if (cfg.timeout) {
+      await logEvent(db, runRow.id, "node_entered", node.node_key, {
+        reason: "suspend_timeout_fired",
+      });
+      await advanceFromNodeKey(db, runRow, cfg.timeout.next_node_key, nodes);
+    }
+  }
 }
 
 async function handleReplyForActiveRun(
@@ -1412,6 +1452,21 @@ async function handleReplyForActiveRun(
         .update({ reprompt_count: 0 })
         .eq("id", run.id);
       if (!error) run.reprompt_count = 0;
+    }
+    // Achado R1 (3ª auditoria) + Blocker 2 (4ª/5ª auditoria): cancela
+    // qualquer timeout pendente deste nó — sem isto, um loop no grafo
+    // (reagendar volta pro mesmo nó) pode deixar uma retomada calculada
+    // com dado velho disparar por cima de uma run que já avançou de
+    // verdade. O ramo `wait` acima JÁ cancela a sua própria retomada
+    // antes de setar `matched`, e um nó sem `timeout` configurado não
+    // tem nada pra cancelar — por isso o guard olha os dois.
+    if (currentNode.node_type !== "wait" && (currentNode.config as { timeout?: unknown } | undefined)?.timeout) {
+      await db
+        .from("flow_pending_resumes")
+        .update({ status: "cancelled" })
+        .eq("flow_run_id", run.id)
+        .eq("node_key", run.current_node_key)
+        .eq("status", "pending");
     }
     const outcome = await advanceFromNodeKey(db, run, matched, nodes);
     return {

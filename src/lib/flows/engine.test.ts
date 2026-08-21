@@ -110,6 +110,12 @@ vi.mock("./admin-client", () => {
         }
         return { data: null, error: null };
       }
+      // resumeWaitingFlow lê a run por id com .maybeSingle() — precisa do
+      // objeto singular, não do array que os outros leitores esperam.
+      const idFilter = filters.find(([op, k]) => op === "eq" && k === "id");
+      if (idFilter && state.activeRun && idFilter[2] === state.activeRun.id) {
+        return { data: state.activeRun, error: null };
+      }
       // Both loadActiveRunForContact and isDuplicateInbound read from
       // flow_runs — the fixture run satisfies both (id is all
       // isDuplicateInbound needs from the row).
@@ -1927,5 +1933,192 @@ describe("dispatchInboundToFlows — send_buttons interpola {{vars.X}}", () => {
         headerText: "Aviso — 12/09 14:00",
       }),
     );
+  });
+});
+
+describe("dispatchInboundToFlows — send_buttons com timeout", () => {
+  it("ao suspender com timeout.until, agenda um flow_pending_resumes pro prazo calculado", async () => {
+    h.state.activeRun = waitRun({ current_node_key: "collect1" });
+    h.state.nodeRows = [
+      node({
+        node_key: "collect1",
+        node_type: "collect_input",
+        config: { prompt_text: "x", var_key: "nome", next_node_key: "confirmar" },
+      }),
+      node({
+        node_key: "confirmar",
+        node_type: "send_buttons",
+        config: {
+          text: "Confirma?",
+          buttons: [{ reply_id: "sim", title: "Sim", next_node_key: "fim_sim" }],
+          timeout: { until: { mode: "end_of_business_day" }, next_node_key: "fim_timeout" },
+        },
+      }),
+      node({ node_key: "fim_sim", node_type: "end", config: {} }),
+      node({ node_key: "fim_timeout", node_type: "end", config: {} }),
+    ];
+
+    await dispatchInboundToFlows({
+      accountId: "acct-1",
+      userId: "user-1",
+      contactId: "contact-1",
+      conversationId: "conv-1",
+      message: { kind: "text", text: "oi", meta_message_id: "m6" },
+      isFirstInboundMessage: false,
+    });
+
+    expect(h.state.insertedPendingResumes).toHaveLength(1);
+    expect(h.state.insertedPendingResumes[0].node_key).toBe("confirmar");
+  });
+
+  it("ao suspender com timeout.unit/amount fixos (sem until), agenda a duração simples", async () => {
+    h.state.activeRun = waitRun({ current_node_key: "collect1" });
+    h.state.nodeRows = [
+      node({
+        node_key: "collect1",
+        node_type: "collect_input",
+        config: { prompt_text: "x", var_key: "nome", next_node_key: "toque1" },
+      }),
+      node({
+        node_key: "toque1",
+        node_type: "send_buttons",
+        config: {
+          text: "Quer remarcar?",
+          buttons: [{ reply_id: "sim", title: "Sim", next_node_key: "fim" }],
+          timeout: { unit: "days", amount: 2, next_node_key: "toque2" },
+        },
+      }),
+      node({ node_key: "fim", node_type: "end", config: {} }),
+      node({ node_key: "toque2", node_type: "end", config: {} }),
+    ];
+
+    const before = Date.now();
+    await dispatchInboundToFlows({
+      accountId: "acct-1",
+      userId: "user-1",
+      contactId: "contact-1",
+      conversationId: "conv-1",
+      message: { kind: "text", text: "oi", meta_message_id: "m7" },
+      isFirstInboundMessage: false,
+    });
+
+    const runAt = new Date(h.state.insertedPendingResumes.at(-1)!.run_at as string).getTime();
+    expect(runAt).toBeGreaterThanOrEqual(before + 2 * 86_400_000 - 1_000);
+    expect(runAt).toBeLessThanOrEqual(before + 2 * 86_400_000 + 5_000);
+  });
+});
+
+describe("resumeWaitingFlow — send_buttons com timeout vencido", () => {
+  it("avança pro next_node_key do timeout quando ninguém respondeu", async () => {
+    h.state.activeRun = waitRun({ id: "run-1", current_node_key: "confirmar" });
+    h.state.nodeRows = [
+      node({
+        node_key: "confirmar",
+        node_type: "send_buttons",
+        config: {
+          text: "Confirma?",
+          buttons: [{ reply_id: "sim", title: "Sim", next_node_key: "fim_sim" }],
+          timeout: { until: { mode: "end_of_business_day" }, next_node_key: "fim_timeout" },
+        },
+      }),
+      node({ node_key: "fim_sim", node_type: "end", config: {} }),
+      node({ node_key: "fim_timeout", node_type: "end", config: {} }),
+    ];
+
+    const db = supabaseAdmin();
+    await resumeWaitingFlow(db, { id: "pend-1", flow_run_id: "run-1", node_key: "confirmar" });
+
+    expect(
+      h.state.flowRunEvents.some((e) => e.node_key === "fim_timeout" && e.event_type === "completed"),
+    ).toBe(true);
+  });
+
+  it("não faz nada se current_node_key já mudou (cliente respondeu antes do timeout)", async () => {
+    h.state.activeRun = waitRun({ id: "run-1", current_node_key: "fim_sim" }); // já avançou
+    h.state.nodeRows = [
+      node({
+        node_key: "confirmar",
+        node_type: "send_buttons",
+        config: {
+          text: "Confirma?",
+          buttons: [{ reply_id: "sim", title: "Sim", next_node_key: "fim_sim" }],
+          timeout: { until: { mode: "end_of_business_day" }, next_node_key: "fim_timeout" },
+        },
+      }),
+      node({ node_key: "fim_sim", node_type: "end", config: {} }),
+    ];
+
+    const db = supabaseAdmin();
+    await resumeWaitingFlow(db, { id: "pend-1", flow_run_id: "run-1", node_key: "confirmar" });
+
+    expect(h.state.flowRunEvents.some((e) => e.node_key === "fim_timeout")).toBe(false);
+  });
+});
+
+describe("dispatchInboundToFlows — send_buttons com timeout cancela a retomada ao receber resposta", () => {
+  it("resposta certa cancela o flow_pending_resumes agendado por este nó", async () => {
+    h.state.activeRun = waitRun({ current_node_key: "confirmar" });
+    h.state.nodeRows = [
+      node({
+        node_key: "confirmar",
+        node_type: "send_buttons",
+        config: {
+          text: "Confirma?",
+          buttons: [{ reply_id: "sim", title: "Sim", next_node_key: "fim" }],
+          timeout: { unit: "hours", amount: 24, next_node_key: "fim_timeout" },
+        },
+      }),
+      node({ node_key: "fim", node_type: "end", config: {} }),
+      node({ node_key: "fim_timeout", node_type: "end", config: {} }),
+    ];
+
+    await dispatchInboundToFlows({
+      accountId: "acct-1",
+      userId: "user-1",
+      contactId: "contact-1",
+      conversationId: "conv-1",
+      message: { kind: "interactive_reply", reply_id: "sim", reply_title: "Sim", meta_message_id: "m9" },
+      isFirstInboundMessage: false,
+    });
+
+    expect(h.state.pendingResumeUpdates).toHaveLength(1);
+    expect(h.state.pendingResumeUpdates[0].payload).toEqual({ status: "cancelled" });
+    expect(h.state.pendingResumeUpdates[0].filters).toEqual([
+      ["eq", "flow_run_id", "run-1"],
+      ["eq", "node_key", "confirmar"],
+      ["eq", "status", "pending"],
+    ]);
+  });
+});
+
+describe("dispatchInboundToFlows — wait não duplica a cancelação de timeout no if(matched)", () => {
+  it("nó wait com keyword_branches: pendingResumeUpdates tem exatamente 1 entrada, não 2", async () => {
+    h.state.activeRun = waitRun({ current_node_key: "espera1" });
+    h.state.nodeRows = [
+      node({
+        node_key: "espera1",
+        node_type: "wait",
+        config: {
+          unit: "hours",
+          amount: 24,
+          until: { mode: "end_of_business_day" },
+          next_node_key: "fim_timeout",
+          keyword_branches: [{ trigger: { keywords: ["sim"] }, next_node_key: "fim_sim" }],
+        },
+      }),
+      node({ node_key: "fim_sim", node_type: "end", config: {} }),
+      node({ node_key: "fim_timeout", node_type: "end", config: {} }),
+    ];
+
+    await dispatchInboundToFlows({
+      accountId: "acct-1",
+      userId: "user-1",
+      contactId: "contact-1",
+      conversationId: "conv-1",
+      message: { kind: "text", text: "sim", meta_message_id: "m10" },
+      isFirstInboundMessage: false,
+    });
+
+    expect(h.state.pendingResumeUpdates).toHaveLength(1);
   });
 });

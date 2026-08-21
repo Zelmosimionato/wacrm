@@ -48,6 +48,15 @@ export interface SendButtonsNodeConfig {
     /** node_key the runner advances to when this button is tapped. */
     next_node_key: string;
   }>;
+  /** Se ninguem tocar num botao ate o prazo, o run avanca sozinho pra
+   *  `next_node_key` do timeout. Aceita duracao fixa (`unit`/`amount`)
+   *  OU alvo dinamico (`until`), mesma forma do no `wait`. */
+  timeout?: {
+    unit?: "minutes" | "hours" | "days";
+    amount?: number;
+    until?: WaitUntilConfig;
+    next_node_key: string;
+  };
 }
 
 export interface SendListNodeConfig {
