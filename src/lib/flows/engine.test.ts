@@ -1688,6 +1688,38 @@ describe("startManualFlowRun", () => {
     expect((startedEvent?.payload as { meta_message_id: unknown }).meta_message_id).toBeNull();
   });
 
+  it("com entryNodeKey, entra nesse nó em vez do entry_node_id padrão do Fluxo", async () => {
+    h.state.flow = manualFlow(); // entry_node_id: "manual_entry"
+    h.state.nodeRows = [
+      ...MANUAL_FLOW_NODES,
+      node({ node_key: "outro_ponto", node_type: "end", config: {} }),
+    ];
+
+    const db = supabaseAdmin();
+    const result = await startManualFlowRun(db, "flow-manual-1", {
+      accountId: "acct-1",
+      contactId: "contact-9",
+      conversationId: "conv-9",
+    }, { entryNodeKey: "outro_ponto" });
+
+    expect(result.outcome).toBe("completed"); // "outro_ponto" é end, não collect_input
+    expect(h.state.insertedFlowRuns[0]).toMatchObject({ current_node_key: "outro_ponto" });
+  });
+
+  it("com initialVars, grava as vars na criação do run", async () => {
+    h.state.flow = manualFlow();
+    h.state.nodeRows = MANUAL_FLOW_NODES;
+
+    const db = supabaseAdmin();
+    await startManualFlowRun(db, "flow-manual-1", {
+      accountId: "acct-1",
+      contactId: "contact-9",
+      conversationId: "conv-9",
+    }, { initialVars: { booking_uid: "uid-123" } });
+
+    expect(h.state.insertedFlowRuns[0]).toMatchObject({ vars: { booking_uid: "uid-123" } });
+  });
+
   it("flow não encontrado (id errado) — consumed:false, outcome no_match, sem lançar", async () => {
     h.state.flow = null;
     h.state.nodeRows = MANUAL_FLOW_NODES;

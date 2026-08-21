@@ -1584,7 +1584,13 @@ async function insertAndStartRun(
   nodes: Map<string, FlowNodeRow>,
   metaMessageId: string | null,
   logPrefix: string,
+  opts?: { entryNodeKey?: string; initialVars?: Record<string, unknown> },
 ): Promise<DispatchInboundResult> {
+  // `entryNodeKey` deixa a run comecar num no QUALQUER do grafo (migracao
+  // de reuniao ja agendada, Canal B) em vez do entry_node_id do Fluxo.
+  // Sem `opts`, entryKey === flow.entry_node_id e vars === {} — identico
+  // ao comportamento anterior a este parametro.
+  const entryKey = opts?.entryNodeKey ?? flow.entry_node_id;
   // INSERT — partial unique index `idx_one_active_run_per_contact`
   // catches concurrent inserts with 23505. We catch and return as
   // consumed:true (the parallel webhook handles it).
@@ -1603,7 +1609,8 @@ async function insertAndStartRun(
       contact_id: args.contactId,
       conversation_id: args.conversationId,
       status: "active",
-      current_node_key: flow.entry_node_id,
+      current_node_key: entryKey,
+      vars: opts?.initialVars ?? {},
     })
     .select("*")
     .maybeSingle();
@@ -1617,7 +1624,7 @@ async function insertAndStartRun(
     return { consumed: false, outcome: "no_match" };
   }
   const run = inserted as FlowRunRow;
-  await logEvent(db, run.id, "started", flow.entry_node_id, {
+  await logEvent(db, run.id, "started", entryKey, {
     flow_id: flow.id,
     trigger_type: flow.trigger_type,
     meta_message_id: metaMessageId,
@@ -1639,7 +1646,7 @@ async function insertAndStartRun(
   }
 
   // Run the advance loop starting from the entry node.
-  const outcome = await advanceFromNodeKey(db, run, flow.entry_node_id!, nodes);
+  const outcome = await advanceFromNodeKey(db, run, entryKey!, nodes);
   return {
     consumed: true,
     flow_run_id: run.id,
@@ -1679,6 +1686,7 @@ export async function startManualFlowRun(
   db: AdminClient,
   flowId: string,
   args: { accountId: string; contactId: string; conversationId: string },
+  opts?: { entryNodeKey?: string; initialVars?: Record<string, unknown> },
 ): Promise<DispatchInboundResult> {
   const flow = await loadFlow(db, flowId);
   if (!flow || flow.account_id !== args.accountId) {
@@ -1689,7 +1697,7 @@ export async function startManualFlowRun(
     );
     return { consumed: false, outcome: "no_match" };
   }
-  if (!flow.entry_node_id) {
+  if (!opts?.entryNodeKey && !flow.entry_node_id) {
     console.error("[flows] startManualFlowRun: flow has no entry_node_id", flowId);
     return { consumed: false, outcome: "no_match" };
   }
@@ -1701,5 +1709,6 @@ export async function startManualFlowRun(
     nodes,
     null,
     "startManualFlowRun",
+    opts,
   );
 }
