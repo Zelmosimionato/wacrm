@@ -144,6 +144,28 @@ export type WaitUntilConfig =
     }
   | {
       mode: "end_of_business_day";
+    }
+  | {
+      /** O MENOR dos dois: `hours` a partir de agora, OU o timestamp da
+       *  var MENOS `margin_minutes` — o que vier primeiro. Existe pra
+       *  timeouts que precisam de um teto (não esperar pra sempre numa
+       *  reunião distante) MAS também não podem ultrapassar um evento
+       *  que pode estar bem mais perto que o teto (reunião marcada pra
+       *  daqui a poucas horas).
+       *
+       *  ⚠️ REAL-BUG-7 (4ª auditoria): a margem é OBRIGATÓRIA, não
+       *  cosmética. Sem ela, pra uma reunião próxima o resultado é o
+       *  horário EXATO da reunião — e nós que encadeiam outro `wait`
+       *  relativo à MESMA var (ex.: `esperar_1h` com `before_var
+       *  hours_before:1`) acabam calculando um alvo já no passado,
+       *  clampam em "agora" e mandam "sua reunião é daqui a 1 hora"
+       *  DEPOIS da reunião já ter acontecido. `margin_minutes` garante
+       *  que este nó sempre resolve ANTES da reunião, com folga
+       *  suficiente pra cadeia downstream ainda fazer sentido. */
+      mode: "sooner_of_hours_or_var";
+      hours: number;
+      var_key: string;
+      margin_minutes: number;
     };
 
 export interface WaitNodeConfig {

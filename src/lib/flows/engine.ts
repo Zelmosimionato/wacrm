@@ -140,6 +140,14 @@ export function computeWaitRunAt(
   if (cfg.until.mode === "end_of_business_day") {
     return fimDoExpedienteAPartir(Date.now());
   }
+  if (cfg.until.mode === "sooner_of_hours_or_var") {
+    const byHours = Date.now() + cfg.until.hours * 3_600_000;
+    const raw = vars[cfg.until.var_key];
+    const varTs = typeof raw === "string" ? Date.parse(raw) : NaN;
+    const marginMs = cfg.until.margin_minutes * 60_000;
+    const byVar = Number.isNaN(varTs) ? byHours : varTs - marginMs;
+    return Math.max(Math.min(byHours, byVar), Date.now());
+  }
   const raw = vars[cfg.until.var_key];
   const varTs = typeof raw === "string" ? Date.parse(raw) : NaN;
   if (Number.isNaN(varTs)) return Date.now();

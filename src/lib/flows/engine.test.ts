@@ -225,6 +225,8 @@ import {
   rotuloCurto,
   dispatchInboundToFlows,
   startManualFlowRun,
+  computeWaitRunAt,
+  resumeWaitingFlow,
 } from "./engine";
 
 describe("matchReplyId", () => {
@@ -1836,5 +1838,51 @@ describe("dispatchInboundToFlows — wait node com until (alvo dinâmico)", () =
     const runAt = new Date(h.state.insertedPendingResumes[0].run_at as string).getTime();
     expect(runAt).toBeGreaterThanOrEqual(before + 7_200_000 - 1_000);
     expect(runAt).toBeLessThanOrEqual(before + 7_200_000 + 5_000);
+  });
+});
+
+describe("computeWaitRunAt — sooner_of_hours_or_var", () => {
+  it("reunião distante: usa o limite de horas (não espera até a reunião)", () => {
+    const daqui30dias = new Date(Date.now() + 30 * 86_400_000).toISOString();
+    const runAt = computeWaitRunAt(
+      { unit: "hours", amount: 0, until: { mode: "sooner_of_hours_or_var", hours: 24, var_key: "booking_inicio_iso", margin_minutes: 60 } },
+      { booking_inicio_iso: daqui30dias },
+    );
+    expect(runAt).toBeLessThanOrEqual(Date.now() + 24 * 3_600_000 + 1_000);
+    expect(runAt).toBeGreaterThanOrEqual(Date.now() + 24 * 3_600_000 - 1_000);
+  });
+
+  it("reunião próxima (menos de 24h): usa o horário da reunião MENOS a margem, não o horário exato dela", () => {
+    const daqui3h = new Date(Date.now() + 3 * 3_600_000).toISOString();
+    const runAt = computeWaitRunAt(
+      { unit: "hours", amount: 0, until: { mode: "sooner_of_hours_or_var", hours: 24, var_key: "booking_inicio_iso", margin_minutes: 60 } },
+      { booking_inicio_iso: daqui3h },
+    );
+    const alvo = Date.parse(daqui3h) - 60 * 60_000;
+    expect(runAt).toBeLessThanOrEqual(alvo + 1_000);
+    expect(runAt).toBeGreaterThanOrEqual(alvo - 1_000);
+  });
+
+  it("var ausente: cai pro limite de horas", () => {
+    const runAt = computeWaitRunAt(
+      { unit: "hours", amount: 0, until: { mode: "sooner_of_hours_or_var", hours: 24, var_key: "booking_inicio_iso", margin_minutes: 60 } },
+      {},
+    );
+    expect(runAt).toBeLessThanOrEqual(Date.now() + 24 * 3_600_000 + 1_000);
+  });
+
+  it("reunião MUITO próxima (menos que a margem): nunca devolve horário no passado — trava em 'agora'", () => {
+    const daqui10min = new Date(Date.now() + 10 * 60_000).toISOString();
+    const runAt = computeWaitRunAt(
+      { unit: "hours", amount: 0, until: { mode: "sooner_of_hours_or_var", hours: 24, var_key: "booking_inicio_iso", margin_minutes: 60 } },
+      { booking_inicio_iso: daqui10min },
+    );
+    // reunião - 60min já passou (reunião é daqui a só 10min) — clampa em agora,
+    // nunca no passado. Achado real R2/REAL-BUG-7 (3ª/4ª auditoria): sem essa
+    // margem, o timeout resolvia EXATAMENTE no horário da reunião, e a cadeia
+    // downstream (checar_prazo_curto → esperar_1h) mandava "sua reunião é
+    // daqui a 1 hora" DEPOIS da reunião já ter acontecido.
+    expect(runAt).toBeGreaterThanOrEqual(Date.now() - 1_000);
+    expect(runAt).toBeLessThanOrEqual(Date.now() + 5_000);
   });
 });
