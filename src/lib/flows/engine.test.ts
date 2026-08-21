@@ -52,6 +52,11 @@ const h = vi.hoisted(() => ({
     forceFlowRunsInsertDuplicateKeyError: false as boolean,
     // Todo INSERT em flow_pending_resumes (wait/timeout agendando retomada).
     insertedPendingResumes: [] as Record<string, unknown>[],
+    // executeHandoff (achado ao vivo 21/08/2026) — profiles.user_id pra
+    // avisar "todos da conta" quando o nó handoff não tem assign_to, e
+    // captura de todo INSERT em notifications.
+    profilesReturn: [] as { user_id: string }[],
+    notificationsInserted: [] as Record<string, unknown>[],
   },
 }));
 
@@ -148,6 +153,16 @@ vi.mock("./admin-client", () => {
     }
     if (table === "contacts") {
       return { data: state.contactRow, error: null };
+    }
+    if (table === "profiles") {
+      return { data: state.profilesReturn, error: null };
+    }
+    if (table === "notifications") {
+      if (type === "insert") {
+        const rows = Array.isArray(payload) ? payload : [payload];
+        state.notificationsInserted.push(...(rows as Record<string, unknown>[]));
+      }
+      return { data: null, error: null };
     }
     return { data: null, error: null };
   }
@@ -666,6 +681,8 @@ beforeEach(() => {
   h.state.insertedFlowRuns = [];
   h.state.forceFlowRunsInsertDuplicateKeyError = false;
   h.state.insertedPendingResumes = [];
+  h.state.profilesReturn = [];
+  h.state.notificationsInserted = [];
   vi.unstubAllEnvs();
   vi.mocked(engineSendInteractiveList).mockClear();
   vi.mocked(engineSendInteractiveButtons).mockClear();
@@ -1474,6 +1491,72 @@ function sendCancelMeetingReply(
     isFirstInboundMessage: false,
   });
 }
+
+const HANDOFF_NODES = [
+  node({
+    node_key: "collect1",
+    node_type: "collect_input",
+    config: { prompt_text: "Qual seu nome?", var_key: "nome", next_node_key: "handoff1" },
+  }),
+  node({
+    node_key: "handoff1",
+    node_type: "handoff",
+    config: { note: "Cal.com recusou a reserva" },
+  }),
+];
+
+describe("dispatchInboundToFlows — executeHandoff notifica", () => {
+  it("sem assign_to — notifica TODOS os profiles da conta (achado ao vivo 21/08/2026: handoff não avisava ninguém)", async () => {
+    h.state.activeRun = waitRun({ current_node_key: "collect1" });
+    h.state.nodeRows = HANDOFF_NODES;
+    h.state.profilesReturn = [{ user_id: "user-1" }, { user_id: "user-2" }];
+
+    await dispatchInboundToFlows({
+      accountId: "acct-1",
+      userId: "user-1",
+      contactId: "contact-1",
+      conversationId: "conv-1",
+      message: { kind: "text", text: "Zelmo", meta_message_id: "m-ho-1" },
+      isFirstInboundMessage: false,
+    });
+
+    expect(h.state.notificationsInserted).toHaveLength(2);
+    expect(h.state.notificationsInserted[0]).toMatchObject({
+      account_id: "acct-1",
+      user_id: "user-1",
+      type: "awaiting_reply",
+      conversation_id: "conv-1",
+      contact_id: "contact-1",
+      body: "Cal.com recusou a reserva",
+    });
+    expect(h.state.notificationsInserted[1]).toMatchObject({ user_id: "user-2" });
+  });
+
+  it("com assign_to — notifica SÓ a pessoa designada", async () => {
+    h.state.activeRun = waitRun({ current_node_key: "collect1" });
+    h.state.nodeRows = [
+      HANDOFF_NODES[0],
+      node({
+        node_key: "handoff1",
+        node_type: "handoff",
+        config: { assign_to: "user-especifico" },
+      }),
+    ];
+    h.state.profilesReturn = [{ user_id: "user-1" }, { user_id: "user-2" }];
+
+    await dispatchInboundToFlows({
+      accountId: "acct-1",
+      userId: "user-1",
+      contactId: "contact-1",
+      conversationId: "conv-1",
+      message: { kind: "text", text: "Zelmo", meta_message_id: "m-ho-2" },
+      isFirstInboundMessage: false,
+    });
+
+    expect(h.state.notificationsInserted).toHaveLength(1);
+    expect(h.state.notificationsInserted[0]).toMatchObject({ user_id: "user-especifico" });
+  });
+});
 
 describe("dispatchInboundToFlows — cancel_meeting node", () => {
   it("booking_uid + CALCOM_API_KEY presentes — chama cancelCalcomBooking, loga cancelado:true e avança pro next_node_key", async () => {

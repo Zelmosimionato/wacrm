@@ -530,6 +530,41 @@ async function executeHandoff(
       .update(convUpdate)
       .eq("id", run.conversation_id);
   }
+  // Achado ao vivo, 21/08/2026 (primeiro teste ponta a ponta real): o
+  // handoff só marcava a conversa como "pending" no banco — nenhum
+  // aviso de verdade chegava a quem tinha que atender. `notifications`
+  // é a mesma tabela que o passo `notify` das Automações já usa
+  // (automations/engine.ts) — mesmo padrão: se `assign_to` for
+  // configurado, avisa só essa pessoa; sem isso, avisa todo mundo da
+  // conta (conversa órfã esperando resposta é o pior caso pra silenciar).
+  const destinatarios = cfg.assign_to
+    ? [cfg.assign_to]
+    : ((
+        await db
+          .from("profiles")
+          .select("user_id")
+          .eq("account_id", run.account_id)
+      ).data ?? []
+      ).map((p) => (p as { user_id: string }).user_id);
+  if (destinatarios.length > 0) {
+    const { error: notifyErr } = await db.from("notifications").insert(
+      destinatarios.map((uid) => ({
+        account_id: run.account_id,
+        user_id: uid,
+        type: "awaiting_reply",
+        conversation_id: run.conversation_id,
+        contact_id: run.contact_id,
+        title: "Atendimento humano necessário — Fluxo de Agendamento",
+        body: cfg.note ?? "O Fluxo passou a conversa pra um atendente. Confira o que já foi conversado antes de responder.",
+      })),
+    );
+    if (notifyErr) {
+      await logEvent(db, run.id, "error", node.node_key, {
+        reason: "handoff_notify_failed",
+        detail: notifyErr.message,
+      });
+    }
+  }
   await logEvent(db, run.id, "handoff", node.node_key, {
     note: cfg.note ?? null,
     assigned_to: cfg.assign_to ?? null,
