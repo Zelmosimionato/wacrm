@@ -93,29 +93,22 @@ async function main() {
     { node_key: 'handoff_recusado', node_type: 'handoff', config: { note: 'Fluxo de Agendamento: Cal.com recusou a reserva.' } },
     { node_key: 'handoff_generico', node_type: 'handoff', config: { note: 'Fluxo de Agendamento: falha genérica ao reservar (Cal.com fora do ar / config ausente).' } },
     {
-      // timeout de 24h fixas — sem isto, silêncio aqui prendia o run
-      // até o sweep de 50 dias, sem nunca chegar na pergunta de
-      // urgência nem no ciclo de véspera (achado real #11).
-      node_key: 'confirmar', node_type: 'send_buttons',
+      // Achado ao vivo, 21/08/2026 (primeiro teste ponta a ponta real):
+      // era `send_buttons` perguntando "Confirmar presença" segundos
+      // depois de a pessoa ter acabado de ESCOLHER o horário — pedir
+      // confirmação de novo, na hora, não fazia sentido nenhum (a escolha
+      // do slot JÁ É a confirmação). A confirmação de verdade — a que
+      // importa, porque libera o horário pra outro cliente se não vier —
+      // já existe mais adiante, 18h antes da reunião (`lembrete_vespera`).
+      // Este nó virou só um recibo informativo, sem pergunta nenhuma; o
+      // botão "Preciso reagendar" que existia aqui saiu (rota órfã depois
+      // dessa mudança — `aviso_reagendar`/`cancelar_para_reagendar` já
+      // seguem cobertos pelo ciclo de véspera, via `aviso_reagendar_vespera`).
+      node_key: 'confirmar', node_type: 'send_message',
       config: {
-        text: 'Prontinho! Sua reunião ficou marcada para {{vars.booking_rotulo}}.\n\nPreciso que você confirme sua presença — é só tocar no botão abaixo.',
-        buttons: [
-          { reply_id: 'confirmar_presenca', title: 'Confirmar presença', next_node_key: 'perguntar_urgencia' },
-          { reply_id: 'preciso_reagendar', title: 'Preciso reagendar', next_node_key: 'aviso_reagendar' },
-        ],
-        // sooner_of_hours_or_var (achado real R2, 3ª auditoria — ver
-        // Task 3, Steps 10-13): 24h fixas sozinhas disparariam DEPOIS
-        // da reunião pra quem marca com pouca antecedência.
-        // margin_minutes: 60 (REAL-BUG-7, 4ª auditoria) — sem essa
-        // folga, o timeout podia resolver EXATAMENTE no horário da
-        // reunião, e a cadeia de véspera (que também olha
-        // booking_inicio_iso) mandava aviso depois do fato consumado.
-        timeout: { until: { mode: 'sooner_of_hours_or_var', hours: 24, var_key: 'booking_inicio_iso', margin_minutes: 60 }, next_node_key: 'perguntar_urgencia' },
+        text: 'Prontinho! Sua reunião ficou marcada para {{vars.booking_rotulo}}. Você vai receber um lembrete próximo da data.',
+        next_node_key: 'perguntar_urgencia',
       },
-    },
-    {
-      node_key: 'aviso_reagendar', node_type: 'send_message',
-      config: { text: 'Sem problema! Vou liberar esse horário e já te mostro outras opções.', next_node_key: 'cancelar_para_reagendar' },
     },
     { node_key: 'cancelar_para_reagendar', node_type: 'cancel_meeting', config: { next_node_key: 'offer_slots' } },
     {
@@ -131,7 +124,9 @@ async function main() {
       // mesmo motivo do nó `confirmar` acima (achado R2).
       node_key: 'perguntar_urgencia', node_type: 'collect_input',
       config: {
-        prompt_text: 'Show, já ficou confirmado! Só mais uma coisa antes de eu deixar você à vontade: existe alguma urgência no seu caso — conta bloqueada, processo já em andamento, prazo correndo?\n\nSe tiver, me conta aqui que já vou avisar o Dr. Zelmo e a Dra. Maria pra chegarem preparados. Se não, pode só me dizer "não" que sigo por aqui.',
+        // Achado ao vivo, 21/08/2026: não explicitar nome de advogado
+        // específico aqui — "a equipe", não "o Dr. Zelmo e a Dra. Maria".
+        prompt_text: 'Show, já ficou confirmado! Só mais uma coisa antes de eu deixar você à vontade: existe alguma urgência no seu caso — conta bloqueada, processo já em andamento, prazo correndo?\n\nSe tiver, me conta aqui que já vou avisar a equipe pra chegar preparada. Se não, pode só me dizer "não" que sigo por aqui.',
         var_key: 'urgencia_texto', next_node_key: 'checar_urgencia',
         // margin_minutes: 60 (REAL-BUG-7, 4ª auditoria) — mesmo motivo do nó `confirmar` acima.
         timeout: { until: { mode: 'sooner_of_hours_or_var', hours: 24, var_key: 'booking_inicio_iso', margin_minutes: 60 }, next_node_key: 'limpar_agendou' },
@@ -150,7 +145,18 @@ async function main() {
     // via webhook. Sem isto, um lead que passa pelo Fluxo 2 vezes fica
     // em silêncio na 2ª (achado real #9).
     { node_key: 'limpar_urgente', node_type: 'set_tag', config: { mode: 'remove', tag_id: TAG_URGENTE, next_node_key: 'marcar_urgente' } },
-    { node_key: 'marcar_urgente', node_type: 'set_tag', config: { mode: 'add', tag_id: TAG_URGENTE, next_node_key: 'limpar_agendou' } },
+    { node_key: 'marcar_urgente', node_type: 'set_tag', config: { mode: 'add', tag_id: TAG_URGENTE, next_node_key: 'avisar_urgencia' } },
+    {
+      // Achado ao vivo, 21/08/2026: a tag Urgente acende a notificação
+      // interna (equipe avisada) mas ninguém dizia nada de volta pro
+      // lead — ele ficava sem saber se foi ouvido. Este nó fecha esse
+      // vazio antes de seguir pro resto da cadeia de tags.
+      node_key: 'avisar_urgencia', node_type: 'send_message',
+      config: {
+        text: 'Já avisei a equipe sobre a urgência do seu caso — pode aguardar que vamos te chamar em breve.',
+        next_node_key: 'limpar_agendou',
+      },
+    },
     { node_key: 'limpar_agendou', node_type: 'set_tag', config: { mode: 'remove', tag_id: TAG_AGENDOU, next_node_key: 'marcar_agendou' } },
     { node_key: 'marcar_agendou', node_type: 'set_tag', config: { mode: 'add', tag_id: TAG_AGENDOU, next_node_key: 'checar_prazo_curto' } },
     {

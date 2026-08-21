@@ -852,9 +852,14 @@ async function advanceFromNodeKey(
       const apiKey = process.env.CALCOM_API_KEY;
       const eventTypeId = process.env.CALCOM_EVENT_TYPE_ID;
       let slots: SlotLivre[];
+      // Achado ao vivo, 21/08/2026: era 10 — a lista chegava grande demais
+      // (o pedido é oferecer no máximo os 3 horários mais próximos).
+      const MAX_SLOTS_OFERECIDOS = 3;
       try {
         slots =
-          apiKey && eventTypeId ? await horariosLivres(eventTypeId, apiKey, 45, 10) : [];
+          apiKey && eventTypeId
+            ? await horariosLivres(eventTypeId, apiKey, 45, MAX_SLOTS_OFERECIDOS)
+            : [];
       } catch (err) {
         // Uma rejeição aqui (timeout, DNS, 5xx do Cal.com) não pode subir
         // por advanceFromNodeKey inteiro — trata como "sem horário
@@ -869,10 +874,10 @@ async function advanceFromNodeKey(
         currentKey = cfg.no_slots_next_node_key;
         continue;
       }
-      // Defesa em profundidade: horariosLivres já limita a 10 no parâmetro
-      // e button_label já deveria ter ≤ 20 chars (exigência da Meta), mas
+      // Defesa em profundidade: horariosLivres já limita no parâmetro e
+      // button_label já deveria ter ≤ 20 chars (exigência da Meta), mas
       // nada garante isso estruturalmente se o parâmetro ou a config mudar.
-      const cappedSlots = slots.slice(0, 10);
+      const cappedSlots = slots.slice(0, MAX_SLOTS_OFERECIDOS);
       const offered = cappedSlots.map((s, i) => ({
         id: `slot_${i}`,
         iso: s.iso,

@@ -871,7 +871,9 @@ describe("dispatchInboundToFlows — offer_slots node", () => {
     // offer_slots suspende aguardando o tap na lista (Task 3 casa a
     // resposta) — não é terminal.
     expect(result.outcome).toBe("advanced");
-    expect(horariosLivres).toHaveBeenCalledWith("42", "sk_test", 45, 10);
+    // Achado ao vivo, 21/08/2026: era 10, virou 3 (no máximo os 3
+    // horários mais próximos, não uma lista grande).
+    expect(horariosLivres).toHaveBeenCalledWith("42", "sk_test", 45, 3);
     expect(engineSendInteractiveList).toHaveBeenCalledTimes(1);
 
     const args = vi.mocked(engineSendInteractiveList).mock.calls[0][0] as {
