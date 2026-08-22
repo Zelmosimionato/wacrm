@@ -1,5 +1,7 @@
 import type { ChatMessage } from './types'
 import { supabaseAdmin } from './admin-client'
+import { sendTypingIndicator } from '@/lib/whatsapp/meta-api'
+import { decrypt } from '@/lib/whatsapp/encryption'
 import { loadAiConfig } from './config'
 import { buildConversationContext } from './context'
 import { retrieveKnowledge } from './knowledge'
@@ -89,6 +91,8 @@ const JA_TEM_REUNIAO =
  * criada; qualquer outro desfecho vira um texto honesto.
  */
 async function reservarHorario(args: {
+  db: ReturnType<typeof supabaseAdmin>
+  contactId: string
   indice: number
   slots: SlotLivre[]
   nome: string | null
@@ -97,7 +101,7 @@ async function reservarHorario(args: {
   hasMeeting: boolean
   textoDaIa: string
 }): Promise<{ texto: string; ok: boolean; reagendar: boolean }> {
-  const { indice, slots, nome, email, telefone, hasMeeting, textoDaIa } = args
+  const { db, contactId, indice, slots, nome, email, telefone, hasMeeting, textoDaIa } = args
 
   // Quem já tem reunião não agenda outra: é remarcação, e o sistema tem
   // caminho próprio (card em Reagendar + template com o botão). Quando a
@@ -128,8 +132,21 @@ async function reservarHorario(args: {
     telefone: telefone.startsWith('+') ? telefone : `+${telefone.replace(/\D/g, '')}`,
   })
   if (r.ok) {
-    // O card, a tag "Agendou", a data e os lembretes vêm do webhook
-    // BOOKING_CREATED que o intake já trata — nada a fazer aqui.
+    // O card, a data e os lembretes vêm do webhook BOOKING_CREATED que o
+    // intake já trata. A tag "Agendou" TAMBÉM — mas achado ao vivo,
+    // 22/08/2026: entre a reserva sair aqui e o webhook do Cal.com chegar
+    // no /calcom (rede + fila), existe uma janela real onde `temReuniaoAgora`
+    // (que só olha essa tag) ainda vê "sem reunião". Lead escolhendo outra
+    // data dentro dessa janela reservava DE NOVO — duas reservas ativas pro
+    // mesmo contato, a antiga nunca cancelada. Aplicar a tag aqui, na hora,
+    // fecha a janela; o webhook aplica de novo depois (idempotente, mesmo
+    // UNIQUE(contact_id, tag_id) do schema — onConflict vira no-op).
+    const { error: tagErr } = await db
+      .from('contact_tags')
+      .upsert({ contact_id: contactId, tag_id: TAG_AGENDOU }, { onConflict: 'contact_id,tag_id', ignoreDuplicates: true })
+    if (tagErr) {
+      console.warn(`[ia-agenda] nao consegui marcar Agendou na hora (webhook cobre depois): ${tagErr.message}`)
+    }
     console.log(`[ia-agenda] reservado ${slot.rotulo} (uid ${r.uid}) para ${email}`)
     return { texto: textoDaIa, ok: true, reagendar: false }
   }
@@ -442,6 +459,59 @@ async function ultimaEntrada(
     .order('created_at', { ascending: false })
     .limit(1)
   return (data as { id: string }[] | null)?.[0]?.id ?? null
+}
+
+/**
+ * Wamid (id do WhatsApp) de uma mensagem, dado o id interno — usado só
+ * pra ligar o indicador de "digitando" na mensagem certa. Consulta
+ * separada da de `ultimaEntrada` de propósito: não mexe no que a
+ * guarda de rajada já usa pra decidir se descarta a resposta.
+ */
+async function wamidDaMensagem(
+  db: ReturnType<typeof supabaseAdmin>,
+  messageId: string,
+): Promise<string | null> {
+  const { data } = await db
+    .from('messages')
+    .select('message_id')
+    .eq('id', messageId)
+    .maybeSingle()
+  return (data as { message_id: string | null } | null)?.message_id ?? null
+}
+
+/**
+ * Liga "digitando..." no WhatsApp do contato antes da espera de
+ * rajada — sem isso, os `AI_ESPERA_RAJADA_MS` (10s hoje) e o tempo de
+ * geração da IA passam em silêncio total, sensação de bot mudo em vez
+ * de alguém respondendo. Fire-and-forget de propósito: falha aqui
+ * (conta sem WhatsApp configurado, wamid não encontrado, rejeição da
+ * Meta) nunca pode impedir a resposta real de sair.
+ */
+async function ligarDigitando(
+  db: ReturnType<typeof supabaseAdmin>,
+  accountId: string,
+  gatilhoMessageId: string | null,
+): Promise<void> {
+  if (!gatilhoMessageId) return
+  try {
+    const wamid = await wamidDaMensagem(db, gatilhoMessageId)
+    if (!wamid) return
+    const { data: config } = await db
+      .from('whatsapp_config')
+      .select('phone_number_id, access_token')
+      .eq('account_id', accountId)
+      .maybeSingle()
+    if (!config?.phone_number_id || !config.access_token) return
+    await sendTypingIndicator({
+      phoneNumberId: config.phone_number_id,
+      accessToken: decrypt(config.access_token),
+      messageId: wamid,
+    })
+  } catch (err) {
+    console.warn(
+      `[ai auto-reply] indicador de digitando falhou (seguindo sem ele): ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
 }
 
 /**
@@ -901,6 +971,7 @@ export async function dispatchInboundToAiReply(
     // segundos, esta resposta é descartada e quem responde é o disparo da
     // última — com a conversa inteira em contexto.
     const gatilho = await ultimaEntrada(db, conversationId)
+    void ligarDigitando(db, accountId, gatilho)
     await sleep(esperaRajadaMs())
     if ((await ultimaEntrada(db, conversationId)) !== gatilho) return
 
@@ -1162,6 +1233,8 @@ export async function dispatchInboundToAiReply(
           ? (contactRow?.name?.trim() ?? null)
           : null
         const r = await reservarHorario({
+          db,
+          contactId,
           indice: agendar,
           slots,
           nome: nomeCompleto,
