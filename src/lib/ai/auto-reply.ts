@@ -1,5 +1,6 @@
 import type { ChatMessage } from './types'
 import { supabaseAdmin } from './admin-client'
+import { sendTextMessage } from '@/lib/whatsapp/meta-api'
 import { sendTypingIndicator } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import { loadAiConfig } from './config'
@@ -524,6 +525,8 @@ async function ligarDigitando(
  */
 async function passarParaHumano(
   db: ReturnType<typeof supabaseAdmin>,
+  accountId: string,
+  contactId: string,
   conversationId: string,
   resumo: string,
   handoffAgentId: string | null,
@@ -535,6 +538,74 @@ async function passarParaHumano(
   }
   if (handoffAgentId && !jaTemDono) update.assigned_agent_id = handoffAgentId
   await db.from('conversations').update(update).eq('id', conversationId)
+
+  // Achado ao vivo, 22/08/2026: desligar a IA sem avisar ninguém deixa a
+  // conversa muda até alguém tropeçar nela por acaso — foi quase 1h sem
+  // resposta pra um lead real, e "ninguém do escritório olha isso em fim
+  // de semana" (o painel de notifications não basta). Dois avisos agora,
+  // de propósito redundantes: grava em `notifications` (fica no CRM,
+  // rastreável) E manda WhatsApp de verdade pro titular (canal que ele
+  // realmente olha fora do horário comercial).
+  const destinatarios = handoffAgentId
+    ? [handoffAgentId]
+    : (
+        (await db.from('profiles').select('user_id').eq('account_id', accountId)).data ?? []
+      ).map((p) => (p as { user_id: string }).user_id)
+  if (destinatarios.length > 0) {
+    const { error: notifyErr } = await db.from('notifications').insert(
+      destinatarios.map((uid) => ({
+        account_id: accountId,
+        user_id: uid,
+        type: 'awaiting_reply',
+        conversation_id: conversationId,
+        contact_id: contactId,
+        title: 'IA parou e passou pra você',
+        body: resumo,
+      })),
+    )
+    if (notifyErr) {
+      console.error(
+        `[ai auto-reply] notificação de handoff falhou (conversa ${conversationId}): ${notifyErr.message}`,
+      )
+    }
+  }
+  await alertarPorWhatsapp(db, accountId, resumo)
+}
+
+/**
+ * Manda o resumo do handoff pro WhatsApp do titular — texto livre, então
+ * só chega se a janela de 24h com ele estiver aberta (ele conversa com o
+ * número do escritório com frequência, então normalmente está). Sem
+ * template aprovado ainda pra garantir entrega fora da janela — falha
+ * aqui não pode derrubar o handoff, por isso é best-effort e nunca lança.
+ */
+async function alertarPorWhatsapp(
+  db: ReturnType<typeof supabaseAdmin>,
+  accountId: string,
+  resumo: string,
+): Promise<void> {
+  const telefone = process.env.AI_ALERTA_HANDOFF_TELEFONE
+  const contactId = process.env.AI_ALERTA_HANDOFF_CONTACT_ID
+  if (!telefone || !contactId) return
+  try {
+    const { data: config } = await db
+      .from('whatsapp_config')
+      .select('phone_number_id, access_token')
+      .eq('account_id', accountId)
+      .maybeSingle()
+    if (!config?.phone_number_id || !config.access_token) return
+    await sendTextMessage({
+      phoneNumberId: config.phone_number_id,
+      accessToken: decrypt(config.access_token),
+      to: telefone,
+      contactId,
+      text: `⛔ IA travou e passou pra humano.\n\n${resumo}`,
+    })
+  } catch (err) {
+    console.error(
+      `[ai auto-reply] alerta de handoff por WhatsApp falhou: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
 }
 
 /**
@@ -959,6 +1030,8 @@ export async function dispatchInboundToAiReply(
       )
       await passarParaHumano(
         db,
+        accountId,
+        contactId,
         conversationId,
         `A IA atingiu o limite de ${config.autoReplyMaxPerConversation} respostas automáticas nesta conversa e parou. O lead segue esperando resposta — assuma daqui.`,
         config.handoffAgentId,
@@ -1131,6 +1204,8 @@ export async function dispatchInboundToAiReply(
       )
       await passarParaHumano(
         db,
+        accountId,
+        contactId,
         conversationId,
         `${MARCA_ATENCAO} Ele afirma ter reuniao marcada e o sistema NAO tem registro dela. ⛔ Isso nao prova que nao existe: ha reservas que chegam por canais que o CRM nao capta. Confira na agenda antes de responder — a IA foi impedida de contradize-lo.`,
         config.handoffAgentId,
@@ -1297,6 +1372,8 @@ export async function dispatchInboundToAiReply(
       )
       await passarParaHumano(
         db,
+        accountId,
+        contactId,
         conversationId,
         'A IA ficou repetindo a mesma resposta e foi interrompida. Veja a conversa: provavelmente ela pediu um dado que a pessoa JÁ mandou. Assuma daqui.',
         config.handoffAgentId,
@@ -1377,6 +1454,8 @@ export async function dispatchInboundToAiReply(
       )
       await passarParaHumano(
         db,
+        accountId,
+        contactId,
         conversationId,
         `${MARCA_ATENCAO} Lead escreveu estando em "${etapa.nome}". A IA apenas acolheu e parou — etapa de negociação/contrato é conversa de gente. Assuma daqui.`,
         config.handoffAgentId,
