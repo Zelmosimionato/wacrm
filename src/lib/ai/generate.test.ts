@@ -44,10 +44,9 @@ describe('parseGeneration', () => {
       text: 'Hello there',
       handoff: false,
       move: null,
-      agendar: false,
+      agendar: null,
       desmarcar: false,
       portaAberta: false,
-      urgente: false,
       usage: null,
     })
   })
@@ -57,20 +56,18 @@ describe('parseGeneration', () => {
       text: '',
       handoff: true,
       move: null,
-      agendar: false,
+      agendar: null,
       desmarcar: false,
       portaAberta: false,
-      urgente: false,
       usage: null,
     })
     expect(parseGeneration('Let me get a human [[HANDOFF]]')).toEqual({
       text: 'Let me get a human',
       handoff: true,
       move: null,
-      agendar: false,
+      agendar: null,
       desmarcar: false,
       portaAberta: false,
-      urgente: false,
       usage: null,
     })
   })
@@ -81,56 +78,51 @@ describe('parseGeneration', () => {
       text: 'Hi',
       handoff: false,
       move: null,
-      agendar: false,
+      agendar: null,
       desmarcar: false,
       portaAberta: false,
-      urgente: false,
       usage,
     })
   })
 
-  // O marcador de agendamento agora é booleano, sem número — a IA só sinaliza
-  // "hora de agendar" e entrega o bastão pro Fluxo, que mostra a lista real e
-  // reserva. Se o marcador escapasse pro texto, o cliente leria "[[AGENDAR]]"
-  // no WhatsApp; se não fosse lido, o handoff pro Fluxo nunca aconteceria.
-  it('lê o marcador de agendar e remove do texto', () => {
-    const r = parseGeneration('Perfeito, já vou te mostrar os horários disponíveis! [[AGENDAR]]')
-    expect(r.agendar).toBe(true)
-    expect(r.text).toBe('Perfeito, já vou te mostrar os horários disponíveis!')
+  // O marcador de agendamento carrega o NÚMERO do horário escolhido. Se o
+  // número escapasse para o texto, o cliente leria "[[AGENDAR:2]]" no
+  // WhatsApp; se não fosse lido, a IA confirmaria uma reunião que ninguém
+  // marcou. As duas metades importam.
+  it('lê o horário escolhido e remove o marcador do texto', () => {
+    const r = parseGeneration('Prontinho, agendei para segunda às 14h! [[AGENDAR:2]]')
+    expect(r.agendar).toBe(2)
+    expect(r.text).toBe('Prontinho, agendei para segunda às 14h!')
   })
 
   it('sem marcador, não agenda nada', () => {
-    expect(parseGeneration('Qual horário fica melhor?').agendar).toBe(false)
+    expect(parseGeneration('Qual horário fica melhor?').agendar).toBeNull()
   })
 
   it('aceita o marcador junto de um movimento de card', () => {
-    const r = parseGeneration('Combinado! [[AGENDAR]][[QUALIFICADO]]')
-    expect(r).toMatchObject({ agendar: true, move: 'qualified', text: 'Combinado!' })
+    const r = parseGeneration('Agendado! [[AGENDAR:1]][[QUALIFICADO]]')
+    expect(r).toMatchObject({ agendar: 1, move: 'qualified', text: 'Agendado!' })
   })
 
   // Desmarcar e remarcar acontecem na MESMA resposta: a pessoa avisa que não
-  // vem e já quer outro horário. Se o parser lesse só um dos dois, ou
-  // sobraria reunião fantasma na agenda ou não haveria sinal de remarcação.
+  // vem e já escolhe outro horário. Se o parser lesse só um dos dois, ou
+  // sobraria reunião fantasma na agenda ou não haveria reunião nova.
   it('lê desmarcar e agendar juntos', () => {
-    const r = parseGeneration('Combinado, já te mostro os horários! [[DESMARCAR]][[AGENDAR]]')
-    expect(r).toMatchObject({
-      desmarcar: true,
-      agendar: true,
-      text: 'Combinado, já te mostro os horários!',
-    })
+    const r = parseGeneration('Remarquei para quinta! [[DESMARCAR]][[AGENDAR:3]]')
+    expect(r).toMatchObject({ desmarcar: true, agendar: 3, text: 'Remarquei para quinta!' })
   })
 
   it('desmarcar sozinho não move card nem agenda', () => {
     const r = parseGeneration('Tudo bem, cancelei aqui. [[DESMARCAR]]')
-    expect(r).toMatchObject({ desmarcar: true, agendar: false, move: null })
+    expect(r).toMatchObject({ desmarcar: true, agendar: null, move: null })
     expect(r.text).toBe('Tudo bem, cancelei aqui.')
   })
 
-  // A trava do auto-reply só é acionada quando NÃO houve marcador; ela depende
+  // A trava do auto-reply só é acionada quando NÃO houve reserva; ela depende
   // de o parser separar direito "tem marcador" de "só fala em agendar".
   it('texto que fala em agendar, sem marcador, não vira agendamento', () => {
     const r = parseGeneration('Prontinho, agendei para quarta às 16:15!')
-    expect(r.agendar).toBe(false)
+    expect(r.agendar).toBeNull()
     expect(r.text).toBe('Prontinho, agendei para quarta às 16:15!')
   })
 
@@ -157,24 +149,6 @@ describe('parseGeneration', () => {
   })
 })
 
-describe('parseGeneration — [[URGENTE]]', () => {
-  it('reconhece o marcador de urgência e some do texto', () => {
-    const r = parseGeneration('Entendi, vou verificar os horários mais próximos. [[URGENTE]]')
-    expect(r.urgente).toBe(true)
-    expect(r.text).not.toContain('[[URGENTE]]')
-  })
-
-  it('sem o marcador, urgente é false', () => {
-    expect(parseGeneration('Qual horário fica melhor?').urgente).toBe(false)
-  })
-
-  it('convive com outro marcador na mesma resposta (ex.: SUPER + URGENTE)', () => {
-    const r = parseGeneration('Combinado! [[SUPER]][[URGENTE]]')
-    expect(r.move).toBe('super')
-    expect(r.urgente).toBe(true)
-  })
-})
-
 describe('generateReply — OpenAI', () => {
   it('calls the chat completions endpoint and returns the reply', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
@@ -195,10 +169,9 @@ describe('generateReply — OpenAI', () => {
       text: 'Sure — happy to help!',
       handoff: false,
       move: null,
-      agendar: false,
+      agendar: null,
       desmarcar: false,
       portaAberta: false,
-      urgente: false,
       usage: { promptTokens: 42, completionTokens: 8, totalTokens: 50 },
     })
     const [url, opts] = fetchMock.mock.calls[0]
@@ -259,10 +232,9 @@ describe('generateReply — Anthropic', () => {
       text: 'Hi there!',
       handoff: false,
       move: null,
-      agendar: false,
+      agendar: null,
       desmarcar: false,
       portaAberta: false,
-      urgente: false,
       usage: { promptTokens: 30, completionTokens: 6, totalTokens: 36 },
     })
     const [url, opts] = fetchMock.mock.calls[0]

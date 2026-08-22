@@ -26,48 +26,19 @@ export const SUPER_SENTINEL = '[[SUPER]]'
 export const REAGENDAR_SENTINEL = '[[REAGENDAR]]'
 
 /**
- * Marcador de URGÊNCIA: a pessoa mencionou algo com prazo correndo — prazo
- * processual, execução em andamento, já foi citada, protesto já saiu. Não
- * move o card sozinho (convive com QUALIFICADO/SUPER na mesma resposta) —
- * só marca o contato como prioridade pra oferta de horário. Julgamento da
- * IA sobre o conteúdo, não lista fechada de palavras.
+ * Marcador de AGENDAMENTO: `[[AGENDAR:2]]` = reserve o horário nº 2 da agenda que
+ * foi dada nesta resposta. É por NÚMERO, nunca por data escrita — o modelo escolhe
+ * um item de uma lista que o sistema acabou de ler do Cal.com, e assim não há como
+ * inventar um horário que não existe. O sistema marca ANTES de enviar a resposta:
+ * se a reserva falhar, a confirmação não sai.
  */
-export const URGENTE_SENTINEL = '[[URGENTE]]'
-
-/**
- * Marcador de AGENDAMENTO: `[[AGENDAR]]` — a IA decidiu que é hora de mostrar
- * horário pro lead, que já está qualificado. NÃO reserva nada sozinha: entrega
- * o bastão pro Fluxo de Agendamento, que mostra os horários de verdade (lista
- * interativa do WhatsApp) e reserva de forma determinística. Sem número — o
- * Fluxo escolhe/mostra os horários, a IA só sinaliza "hora de agendar".
- *
- * Trocou o mecanismo antigo (`[[AGENDAR:N]]`, a IA escolhia o índice e
- * reservava ela mesma via Cal.com) depois de um incidente ao vivo em
- * 20/08/2026: a IA confirmou reunião sem o lead ter escolhido horário. O novo
- * mecanismo tira da IA qualquer poder de reservar ou de afirmar reserva feita.
- *
- * ⚠️ Rollout faseado: nesta fase só dispara o Fluxo para pessoa física (PF) —
- * ver a restrição no bloco de prompt logo abaixo e o gate por segmento em
- * `auto-reply.ts`. Ver docs/superpowers/specs/2026-08-20-agendamento-fluxos-design.md.
- * Remover a restrição quando PJ for estendido.
- */
-export const AGENDAR_SENTINEL = '[[AGENDAR]]'
-
-/**
- * Padrão do marcador ANTIGO (`[[AGENDAR:N]]`, aposentado nesta mesma troca —
- * ver o comentário de `AGENDAR_SENTINEL` acima). Ele não é mais lido nem
- * dispara ação nenhuma: isto é limpeza DEFENSIVA apenas, para o texto nunca
- * vazar literalmente pro WhatsApp do cliente se a IA, por inércia de
- * fine-tuning/exemplos antigos, escrever o padrão velho (achado I2 da
- * revisão de 20/08/2026).
- */
-export const AGENDAR_SENTINEL_ANTIGO = /\[\[AGENDAR:\s*\d{1,2}\s*\]\]/gi
+export const AGENDAR_SENTINEL_RE = /\[\[AGENDAR:\s*(\d{1,2})\s*\]\]/i
 
 /**
  * Marcador de DESMARCAR: a pessoa não vem no horário que está reservado. Cancela
  * no Cal.com, libera o horário e — o que ninguém via — DESLIGA os lembretes de
  * véspera e de 1h antes, que hoje continuariam perseguindo quem já cancelou.
- * Vem sozinho ou colado a um `[[AGENDAR]]` (desmarcar e já sinalizar remarcação).
+ * Vem sozinho ou colado a um `[[AGENDAR:N]]` (desmarcar e já remarcar).
  */
 export const DESMARCAR_SENTINEL = '[[DESMARCAR]]'
 
@@ -150,13 +121,10 @@ export function buildSystemPrompt(args: {
     parts.push(
       `Card moves (internal control markers - the customer NEVER sees these; the system removes them and moves the deal card in the CRM). Put the marker at the very END of your reply, only when it truly applies, at most ONE per reply:
 - ${QUALIFIED_SENTINEL}: you just concluded the lead QUALIFIES (reached the minimum debt value for their area). Moves the card to Lead Qualificado.
-- ${SUPER_SENTINEL}: use INSTEAD of ${QUALIFIED_SENTINEL} ONLY when BOTH are true — the lead is a pessoa jurídica (company/business, not an individual) AND the debt is R$ 500.000 or more. A pessoa física (individual) with a large debt is still ${QUALIFIED_SENTINEL}, never ${SUPER_SENTINEL} — this exact rule already runs on the Meta form intake (PJ AND >= R$500k), so keep both paths agreeing. If the conversation hasn't made PF/PJ clear yet, ask before deciding between the two.
+- ${SUPER_SENTINEL}: use INSTEAD of ${QUALIFIED_SENTINEL} when the debt is R$ 500.000 or more. Also tags the lead and alerts the team.
 - ${REAGENDAR_SENTINEL}: the lead wants to change the meeting — remarcar, adiar, ANTECIPAR, or asking whether another day/time is available. Moves the card to Reagendar reuniao; the system then sends the reschedule template with the button, so do NOT paste a scheduling link yourself in that case.
   ⚠️ "Tem horário no dia X?" from someone who ALREADY has a meeting is this case — the lead is trying to move it, and wanting it EARLIER is a buying signal, never a reason to close the subject. If you were given the agenda above, offer real times first and mark ${REAGENDAR_SENTINEL} at the end.
 Never mention or explain these markers to the customer.`,
-    )
-    parts.push(
-      `${URGENTE_SENTINEL}: another internal control marker (the customer NEVER sees it) — the lead mentioned something with a real deadline running — an active legal enforcement (execução), already being sued/served (citação), a protest that already happened, a court deadline. Don't just wait for this to come up on its own: as a natural part of qualifying — alongside área and valor, not as a separate interrogation — ask whether there's any urgency in her case (conta bloqueada, processo já em andamento, prazo correndo, já foi citada), folded naturally into the conversation, never as a standalone checklist question. This is independent from the card-move markers above and does NOT count toward the "at most ONE" limit — use it TOGETHER with ${QUALIFIED_SENTINEL}/${SUPER_SENTINEL}/${REAGENDAR_SENTINEL} in the same reply when it applies, never alone. Put it at the very end of your reply, alongside any card-move marker. Judge from content, not a fixed keyword list. Never mention or explain this marker to the customer.`,
     )
     // Quem desmarca por mensagem — 99% dos casos, segundo o titular. Sem isto a
     // reserva continua viva: horário preso e lembrete de véspera perseguindo
@@ -165,7 +133,7 @@ Never mention or explain these markers to the customer.`,
       parts.push(
         `Quando quem JÁ TEM REUNIÃO MARCADA diz que não vai poder ("preciso cancelar", "vou ter que remarcar", "não consigo nesse horário", "dá para antecipar?"):
 1. Termine a resposta com ${DESMARCAR_SENTINEL}. Isso desfaz a reserva e para os lembretes. ⛔ Sem esse marcador a reunião continua de pé e a pessoa recebe lembrete de uma reunião que ela cancelou.
-2. Na MESMA resposta, ofereça remarcar, numa frase leve ("sem problema — quer que eu já veja outro horário pra você?"), e feche com ${AGENDAR_SENTINEL} pra sinalizar a nova reunião pro Fluxo agendar — não diga um horário específico nem prometa remarcar você mesma, o Fluxo mostra as opções reais.
+2. Na MESMA resposta, ofereça remarcar: dois ou três horários da agenda acima, em uma frase leve ("sem problema — quer que eu já remarque para quinta às 14h?"). Se ela escolher na hora, você marca; se ela escolher só na resposta seguinte, marque ali.
 3. Se ela disser que vê depois / retorna outro dia, aceite na hora e feche com ${REAGENDAR_SENTINEL}.
 4. Se ela disser que NÃO PRECISA MAIS (resolveu, desistiu, fechou com outro), agradeça com cordialidade, coloque-se à disposição para o futuro e feche com ${PERDIDO_SENTINEL}. ⛔ NÃO insista, não ofereça horário, não pergunte o motivo mais de uma vez: quem já resolveu não quer ser convencido.
 ⛔ Ofereça remarcar UMA vez. Se a pessoa não quiser, aceite — insistir com quem acabou de cancelar queima o que restou de boa vontade.
@@ -194,59 +162,43 @@ Never mention or explain these markers to the customer.`,
         'respondido, não agendado: responda o que a pessoa disse e descubra o que ela ' +
         'precisa. Oferecer horário a quem ainda não pediu reunião soa como robô ' +
         'empurrando agenda — e é o oposto de acolher.\n' +
-        (mode === 'auto_reply' && agendaAtiva
-          ? 'Quando for a hora, NÃO liste estes horários você mesma nem os numere para o ' +
-            `cliente — siga a instrução do marcador ${AGENDAR_SENTINEL} logo abaixo: uma ` +
-            'frase de transição curta, e quem mostra a lista de verdade (e reserva) é o ' +
-            'sistema. Esta lista aqui é só para VOCÊ saber que existe agenda livre — contexto ' +
-            'interno, nunca para copiar ou recitar. ⛔ Não invente outros horários, não afirme ' +
-            'que a agenda está fechada, não prometa avisar quando abrir vaga.\n'
-          : 'Quando for a hora, ofereça no máximo três DESTES, deixando escolher. ⛔ Não ' +
-            'invente outros, não afirme que a agenda está fechada, não prometa avisar ' +
-            'quando abrir vaga.\n') +
+        'Quando for a hora, ofereça no máximo três DESTES, deixando escolher. ⛔ Não ' +
+        'invente outros, não afirme que a agenda está fechada, não prometa avisar ' +
+        'quando abrir vaga.\n' +
         '⛔ Esta lista é uma AMOSTRA dos horários mais próximos, não a agenda inteira ' +
         'do escritório. Se a pessoa pedir uma data mais distante que não esteja aqui, ' +
         'NÃO diga que só existe agenda para as próximas semanas — diga que verifica a ' +
         'disponibilidade daquele período e encaminhe para um humano confirmar.\n' +
         horarios.map((h, i) => `[${i + 1}] ${h}`).join('\n'),
     )
-    // A mão que faltava: com a agenda em número, ela sabe quando é a hora —
-    // mas quem reserva de verdade agora é o Fluxo de Agendamento, não ela.
+    // A mão que faltava: com a agenda em número, ela reserva de verdade.
     if (mode === 'auto_reply' && agendaAtiva) {
       parts.push(
-        'VOCÊ NÃO RESERVA NADA SOZINHA (isto SOBREPÕE qualquer instrução abaixo que diga ' +
-          'que você marca a reunião ou reserva um horário). Quando decidir que chegou a ' +
-          'hora de mostrar horário pro lead — depois de EXPLICAR O PORQUÊ, como o item 1 ' +
-          'abaixo já manda —, escreva uma frase de transição curta ("perfeito, já vou te ' +
-          `mostrar os horários disponíveis") e termine a resposta com o marcador ${AGENDAR_SENTINEL}, ` +
-          'sozinho, sem número. O sistema mostra os horários de verdade logo em seguida, ' +
-          'como lista interativa do WhatsApp, e reserva quando o lead escolher. O cliente ' +
-          'NUNCA vê o marcador.\n' +
-          '⛔ POR QUÊ isto é rígido: se você disser que agendou sem o sistema ter reservado ' +
-          'de verdade, a pessoa aparece para uma sala vazia — e pior, na mensagem seguinte ' +
-          'você pode ler a SUA PRÓPRIA frase no histórico da conversa e concluir que já ' +
-          'marcou, repetindo o erro sozinha. Por isso só o sistema anuncia reunião marcada, ' +
-          'nunca você — mesmo que pareça óbvio que "vai dar certo".\n' +
-          '- ⛔⛔ NUNCA diga que agendou, que está confirmado, que o convite foi enviado, ' +
-          `ou liste horários numerados você mesma — isso agora é sempre o sistema que faz, ` +
-          `depois do seu ${AGENDAR_SENTINEL}. Sua única frase é a transição. Não deu para ` +
-          'marcar agora (ainda faltando qualificar, por exemplo)? Diga o que FALTA, nunca ' +
-          'que está feito.\n' +
-          `- ⛔ ${AGENDAR_SENTINEL} só vale pra pessoa FÍSICA (PF) nesta fase do rollout — ` +
-          'se o lead for pessoa jurídica (PJ), NÃO use este marcador ainda: continue a ' +
-          'conversa normalmente, sem prometer confirmação nem horário específico, e diga ' +
-          'que a equipe do escritório entra em contato para agendar. (Restrição temporária ' +
-          'do rollout faseado — a mecânica de agendamento direto por você para PJ segue em ' +
-          'aberto até essa restrição ser levantada numa fase futura.)\n' +
+        'VOCÊ MARCA A REUNIÃO (isto SOBREPÕE qualquer instrução abaixo que diga que você ' +
+          'não tem acesso à agenda ou que nunca marca nada). Quando o lead escolher um dos ' +
+          'horários acima, você mesma reserva: escreva a confirmação e termine a resposta ' +
+          `com o marcador ${'[[AGENDAR:N]]'}, onde N é o NÚMERO do horário entre colchetes ` +
+          '(ex.: [[AGENDAR:2]] para o segundo da lista). O cliente NUNCA vê o marcador.\n' +
+          '- ⛔⛔ NUNCA diga que agendou, que está confirmado ou que o convite foi ' +
+          'enviado se você NÃO colocou o marcador NESTA MESMA resposta. Sem o marcador ' +
+          'nada foi marcado: a pessoa apareceria para uma sala vazia. E é pior do que ' +
+          'parece — na mensagem seguinte você lê a sua própria frase no histórico, acha ' +
+          'que já marcou e nunca marca. Não deu para marcar agora? Diga o que FALTA ' +
+          '("me passa seu e-mail que eu já confirmo"), nunca que está feito.\n' +
+          '- ⛔ PRECISA DO E-MAIL: sem e-mail o sistema de agenda recusa a reserva. Se você ' +
+          'ainda não tem o e-mail, ofereça os horários e peça o e-mail NA MESMA mensagem ' +
+          '("qual desses fica melhor pra você? e me passa seu e-mail que eu já confirmo") — ' +
+          'aí você marca na resposta seguinte. ⛔ Não peça o e-mail do nada, antes de a ' +
+          'pessoa saber que vai marcar reunião: ela estranha e pergunta para quê.\n' +
           '- COMO CONVIDAR (chegada a hora — ver a regra dos dois momentos, acima):\n' +
           '  1. EXPLIQUE POR QUE a reunião é necessária, antes de falar em horário. A frase ' +
           'do escritório é esta: "ok, neste caso o ideal é agendar uma videochamada, 100% ' +
           'gratuita, com o Dr. Zelmo; nessa reunião ele avalia o seu caso e passa todas as ' +
           'informações". Adapte ao caso da pessoa — ninguém aceita reunião sem saber para quê.\n' +
-          '  2. Na sequência, OFEREÇA a reunião. ⛔ Não pergunte "quer agendar uma ' +
+          '  2. Na sequência, OFEREÇA os horários. ⛔ Não pergunte "quer agendar uma ' +
           'reunião?" nem "quer que eu ofereça alguns horários?": pedir licença convida ao ' +
-          '"não". A reunião é o caminho natural — trate como tal, com a frase de transição ' +
-          `curta descrita acima, e feche com ${AGENDAR_SENTINEL}.\n` +
+          '"não". A reunião é o caminho natural — trate como tal e ofereça: "consigo dia 13, ' +
+          'quarta-feira, às 13:15, ou dia 18, segunda-feira, às 14h. Qual fica melhor?".\n' +
           '  3. Se a pessoa hesitar ou empurrar para depois, INSISTA UMA VEZ — e é SÓ AQUI ' +
           'que entra a urgência. O motivo mais forte é o mais simples: a conversa é gratuita ' +
           'e é ela que mostra o que dá para fazer; adiar não economiza nada. Se couber, UMA ' +
@@ -273,12 +225,18 @@ Never mention or explain these markers to the customer.`,
           'consequências, nada de urgência fora do momento de insistir. Uma frase, dita como ' +
           'quem quer ajudar — e nunca uma consequência que você não sabe que existe no caso ' +
           'dela: você não conhece o processo, o prazo nem a situação real.\n' +
+          '- Se ela disser um horário que não está na lista mas é claramente um deles ' +
+          '(ex.: "16:16" para 16:15), entenda que é aquele e confirme. ⛔ Não invente que ' +
+          'um horário está ocupado — você não sabe: só sabe o que está na lista.\n' +
           '- ⛔ Só ofereça horário depois de ter QUALIFICADO (área do problema e valor). Se ' +
           'a pessoa pedir para agendar antes disso, faça primeiro a pergunta que falta — ' +
           'uma reunião marcada com quem está abaixo do critério ocupa a agenda do escritório.\n' +
           '- A reunião de quem JÁ tem horário marcado se desfaz com ' +
           `${DESMARCAR_SENTINEL} (abaixo) — pode vir junto: desmarca a antiga e ` +
-          'sinaliza a nova (com o marcador) na mesma resposta.',
+          'marca a nova na mesma resposta.\n' +
+          '- A reserva acontece ANTES da sua mensagem sair, e o convite com o link da ' +
+          'videochamada chega por e-mail e aqui. Então PODE confirmar com naturalidade ' +
+          '("prontinho, agendei para...") — e não mande o link de agendamento junto.',
       )
     }
   } else {

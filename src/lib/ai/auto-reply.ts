@@ -1,7 +1,5 @@
 import type { ChatMessage } from './types'
 import { supabaseAdmin } from './admin-client'
-import { sendTypingIndicator } from '@/lib/whatsapp/meta-api'
-import { decrypt } from '@/lib/whatsapp/encryption'
 import { loadAiConfig } from './config'
 import { buildConversationContext } from './context'
 import { retrieveKnowledge } from './knowledge'
@@ -11,22 +9,12 @@ import { buildHandoffSummary } from './handoff'
 import { logAiUsage } from './usage'
 import { latestUserMessage } from './query'
 import { engineSendText, engineSendCtaUrl } from '@/lib/flows/meta-send'
-import { startManualFlowRun } from '@/lib/flows/engine'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { horariosLivres, type SlotLivre } from '@/lib/appointments/calcom-slots'
 import { criarReserva } from '@/lib/appointments/calcom-book'
 import { cancelCalcomBooking } from '@/lib/appointments/calcom-cancel'
 import { iaAgendaAtiva } from './defaults'
-
-/**
- * O Fluxo de Agendamento (grafo com o nó `book_meeting`), montado em
- * 21/08/2026 pelo `scripts/seed-fluxo-agendamento.js` — 30 nós, conta
- * 2569c0e9-5f2e-4d04-957c-e2f158e7a87e. `[[AGENDAR]]` entrega o bastão
- * pra ELE via `startManualFlowRun`: a Márcia nunca reserva sozinha.
- * Exportado pra o teste apontar pro mesmo id, sem repetir o literal.
- */
-export const FLUXO_AGENDAMENTO_ID = 'fe558f85-3060-4cc4-9023-40ad92ea3d3e'
 
 /** Horários livres do escritório (rótulo para a frase + ISO para reservar).
  *  Silencioso por desenho: sem chave, sem tipo de evento ou com a API fora,
@@ -61,52 +49,6 @@ const FALHA_AGENDA =
   'Não consegui concluir a reserva por aqui agora.\n\nPara você não ficar esperando, é só reservar o melhor horário neste link: ' +
   AGENDA_LINK
 /**
- * Texto honesto para quando o [[AGENDAR]] é bloqueado por o contato ser PJ
- * (fora do rollout faseado do Fluxo de Agendamento, que só atende PF nesta
- * fase). NÃO promete data/horário — só promete o contato humano, e só
- * porque `notificarPjAgendamentoBloqueado` de fato aciona esse contato
- * (achado C4 da revisão de 20/08/2026: antes disto o texto prometia algo que
- * nada no código acionava).
- */
-const PJ_AGENDAMENTO_MANUAL =
-  'Entendido! Vou repassar para a equipe do escritório entrar em contato com você em breve para agendar.'
-/**
- * Texto honesto para quando o [[AGENDAR]] chega e o lead AINDA não está
- * qualificado (achado N1 da 2ª revisão de 20/08/2026 sobre o commit
- * a34a8c8): antes disto o código reaproveitava FALHA_AGENDA aqui — mas
- * FALHA_AGENDA TRAZ o link público do Cal.com, então um lead não qualificado
- * ganhava acesso direto à agenda do escritório, sem passar pela
- * qualificação (e pior: como este `if` roda antes do filtro de PJ, um PJ
- * ainda não qualificado também caía aqui, sem notificação nenhuma). Este
- * texto NÃO tem link e NÃO promete nada — só continua a conversa pedindo o
- * que falta para qualificar, no mesmo espírito do prompt ("diga o que
- * FALTA, nunca que está feito").
- */
-const AGENDAR_SEM_QUALIFICACAO =
-  'Me conta um pouco mais sobre o seu caso — qual é a situação e o valor envolvido? Assim consigo te orientar direito.'
-/**
- * Fallback seguro para quando a trava anti-mentira (AFIRMA_QUE_AGENDOU)
- * dispara (achado N2 da 2ª revisão de 20/08/2026): antes disto o código
- * escolhia entre NAO_CONFIRMADO e FALTA_EMAIL — os dois são texto do
- * mecanismo aposentado, de quando a própria IA reservava o horário (por
- * isso fazia sentido ela pedir e-mail ou o horário preferido). Hoje quem
- * pede e-mail e mostra a lista de horários é o Fluxo de Agendamento
- * (`book_meeting`), que pode já estar rodando em paralelo — pedir de novo
- * por aqui confunde o lead. Este texto não pede nada e não promete reunião
- * confirmada.
- *
- * ⚠️ 3ª revisão de 20/08/2026 (achado N2): a 1ª e a 2ª rodada de correção
- * cada uma trocou este texto por uma frase nova que "parecia" segura mas
- * continuava prometendo um aviso que nada no sistema garantia — a IA aqui
- * é reativa (só responde de novo se o lead escrever), então ninguém
- * avisava ninguém. A frase só é verdade agora porque o disparo da trava
- * (mais abaixo) passa a acionar `passarParaHumano` NO MESMO INSTANTE: um
- * humano de fato é avisado, então "já te retorno" deixou de ser promessa
- * vazia.
- */
-const AGENDAMENTO_EM_ANDAMENTO =
-  'Deixa eu confirmar os detalhes com a nossa equipe antes de seguir — já te retorno.'
-/**
  * Frases com que ela anuncia reunião feita. Serve à trava abaixo — por isso é
  * deliberadamente estreita: pega afirmação ("agendei", "está confirmado",
  * "convite enviado") e não pega promessa ("assim que você confirmar").
@@ -136,6 +78,8 @@ export const PESSOA_AFIRMA_REUNIAO =
 export const AFIRMA_QUE_AGENDOU =
   /\b(agendei|remarquei|reservei|marquei)\b|\b(est[áa]|ficou|fica|segue|continua|permanece)\s+(tudo\s+)?(confirmad|agendad|remarcad|reservad|marcad)|\breuni[ãa]o\b[^.!?\n]{0,30}\b(confirmad|agendad|remarcad|reservad|marcad)|\bconvite\b[^.!?\n]{0,40}\benviad/i
 
+const NAO_CONFIRMADO =
+  'Só para eu não errar: me confirma qual horário você prefere que eu já deixo reservado?'
 const JA_TEM_REUNIAO =
   'Você já tem uma reunião marcada com a gente — vou cuidar da alteração do horário e te confirmo por aqui, tudo bem?'
 
@@ -200,7 +144,6 @@ export const AI_VENDAS_PIPELINE = '8e89e154-763c-4cf8-b73b-42f7368c59c3'
 export const AI_STAGE_NOVO = 'f6c4e8c1-f13a-442a-9668-414cadb81c01'
 export const AI_STAGE_QUALIFICADO = '57bed09e-bc01-4691-8272-dcd8c3c078df'
 const AI_STAGE_REAGENDAR = 'f2b7e7f6-c7d6-4d2b-ac6d-ad7842ab7045'
-const AI_STAGE_REUNIAO_AGENDADA = 'fd70e3b2-52e2-4f2c-b6e8-15450fe6c9d4'
 export const AI_STAGE_PERDIDO = '0d0382a5-f15d-4e43-88aa-0c70337d94d4'
 const AI_STAGE_FUP = '8bd228cf-fba4-4b28-b704-068bdcfa7c8d'
 
@@ -225,23 +168,7 @@ const AI_STAGE_FUP = '8bd228cf-fba4-4b28-b704-068bdcfa7c8d'
  */
 const AI_STAGE_NOSHOW = '8c39cc10-4568-432f-b4dd-9a4ba228add6'
 export const AI_ETAPAS_QUE_AVANCAM = new Set([AI_STAGE_NOVO, AI_STAGE_FUP, AI_STAGE_NOSHOW])
-/**
- * Etapas em que o card SÓ chega tendo sido qualificado antes — lista
- * POSITIVA, não negação (I1 da revisão de 20/08/2026: `!AI_ETAPAS_QUE_AVANCAM`
- * deixava passar qualquer etapa terminal ou não modelada, ex. "Perdido",
- * como se fosse qualificada). "Reunião Agendada" e "Reagendar reunião" só se
- * alcançam depois de "Lead Qualificado" — por isso entram aqui. Etapas
- * sensíveis (Proposta, Aguardando Decisão, Contrato PJ/PF) e "Perdido"
- * ficam de fora de propósito: nelas a IA não deve iniciar agendamento.
- */
-export const AI_ETAPAS_QUALIFICADAS = new Set([
-  AI_STAGE_QUALIFICADO,
-  AI_STAGE_REUNIAO_AGENDADA,
-  AI_STAGE_REAGENDAR,
-])
 const AI_TAG_SUPER = 'b9298582-dcc7-46a3-ae34-f54b3c6fece1'
-/** Criada em 20/08/2026 — ver Step 1 deste plano para o id real. */
-const AI_TAG_URGENTE = '9db3b56e-eecf-4b29-bace-2cc034b38f72'
 
 // Campos e tag que descrevem a reunião marcada. São os mesmos que o intake
 // grava ao receber o webhook do Cal.com — desfazer é apagar exatamente estes.
@@ -417,92 +344,6 @@ async function applyAiCardMove(
   })
 }
 
-/**
- * Marca o contato como urgente quando a IA identificou prazo real na
- * conversa. Independente de `applyAiCardMove` — não move etapa, só marca —
- * e dispara um handoff IMEDIATO para todo mundo da conta em `notifications`
- * (mesma tabela/forma de insert do passo `notify` das Automações, em
- * `src/lib/automations/engine.ts`), porque urgência real não pode esperar
- * o titular abrir o card.
- *
- * ⛔ O handoff dispara toda vez que a tag é (re)aplicada, não só na
- * primeira: o titular pode já ter lido a notificação antiga, e o lead
- * voltou a mencionar urgência numa conversa diferente depois. Só o insert
- * da TAG é idempotente; o da notificação, não.
- */
-async function applyAiUrgente(
-  db: ReturnType<typeof supabaseAdmin>,
-  args: { accountId: string; contactId: string; conversationId: string; motivo: string },
-): Promise<void> {
-  const { accountId, contactId, conversationId, motivo } = args
-  const { count } = await db
-    .from('contact_tags')
-    .select('id', { count: 'exact', head: true })
-    .eq('contact_id', contactId)
-    .eq('tag_id', AI_TAG_URGENTE)
-  if (!count) {
-    await db.from('contact_tags').insert({ contact_id: contactId, tag_id: AI_TAG_URGENTE })
-  }
-
-  const { data: membros } = await db
-    .from('profiles')
-    .select('user_id')
-    .eq('account_id', accountId)
-  const destinatarios = ((membros as { user_id: string }[] | null) ?? []).map((m) => m.user_id)
-  if (destinatarios.length === 0) return
-
-  const { error } = await db.from('notifications').insert(
-    destinatarios.map((uid) => ({
-      account_id: accountId,
-      user_id: uid,
-      type: 'urgent_lead',
-      conversation_id: conversationId,
-      contact_id: contactId,
-      title: 'Lead sinalizou urgência',
-      body: motivo,
-    })),
-  )
-  if (error) {
-    console.error('[ai auto-reply] notificar urgente falhou:', error.message)
-  }
-}
-
-/**
- * Avisa a equipe quando o [[AGENDAR]] foi bloqueado por o contato ser PJ —
- * fora do rollout faseado do Fluxo de Agendamento (só PF nesta fase, ver
- * Step 3 do plano de agendamento). Mesma tabela/forma de insert de
- * `applyAiUrgente` acima (o padrão que a Task 3 já criou) — sem isto, o
- * texto `PJ_AGENDAMENTO_MANUAL` prometeria um contato humano que nada no
- * código de fato aciona (achado C4/I4 da revisão de 20/08/2026).
- */
-async function notificarPjAgendamentoBloqueado(
-  db: ReturnType<typeof supabaseAdmin>,
-  args: { accountId: string; contactId: string; conversationId: string },
-): Promise<void> {
-  const { accountId, contactId, conversationId } = args
-  const { data: membros } = await db
-    .from('profiles')
-    .select('user_id')
-    .eq('account_id', accountId)
-  const destinatarios = ((membros as { user_id: string }[] | null) ?? []).map((m) => m.user_id)
-  if (destinatarios.length === 0) return
-
-  const { error } = await db.from('notifications').insert(
-    destinatarios.map((uid) => ({
-      account_id: accountId,
-      user_id: uid,
-      type: 'pj_agendamento_bloqueado',
-      conversation_id: conversationId,
-      contact_id: contactId,
-      title: 'Lead PJ pediu agendamento — fora do rollout automático',
-      body: 'A IA identificou pedido de agendamento, mas o contato é PJ e o Fluxo de Agendamento automático só atende PF nesta fase. Entre em contato para agendar manualmente.',
-    })),
-  )
-  if (error) {
-    console.error('[ai auto-reply] notificar PJ sem agendamento falhou:', error.message)
-  }
-}
-
 interface DispatchArgs {
   /** Tenancy key — drives config, contact, and whatsapp_config lookups. */
   accountId: string
@@ -601,59 +442,6 @@ async function ultimaEntrada(
     .order('created_at', { ascending: false })
     .limit(1)
   return (data as { id: string }[] | null)?.[0]?.id ?? null
-}
-
-/**
- * Wamid (id do WhatsApp) de uma mensagem, dado o id interno — usado so
- * pra ligar o indicador de "digitando" na mensagem certa. Consulta
- * separada da de `ultimaEntrada` de proposito: nao mexe no que a
- * guarda de rajada ja usa pra decidir se descarta a resposta.
- */
-async function wamidDaMensagem(
-  db: ReturnType<typeof supabaseAdmin>,
-  messageId: string,
-): Promise<string | null> {
-  const { data } = await db
-    .from('messages')
-    .select('message_id')
-    .eq('id', messageId)
-    .maybeSingle()
-  return (data as { message_id: string | null } | null)?.message_id ?? null
-}
-
-/**
- * Liga "digitando..." no WhatsApp do contato antes da espera de
- * rajada — sem isso, os `AI_ESPERA_RAJADA_MS` (6s por padrao) e o
- * tempo de geracao da IA passam em silencio total, sensacao de bot
- * mudo em vez de alguem respondendo. Fire-and-forget de proposito:
- * falha aqui (conta sem WhatsApp configurado, wamid nao encontrado,
- * rejeicao da Meta) nunca pode impedir a resposta real de sair.
- */
-async function ligarDigitando(
-  db: ReturnType<typeof supabaseAdmin>,
-  accountId: string,
-  gatilhoMessageId: string | null,
-): Promise<void> {
-  if (!gatilhoMessageId) return
-  try {
-    const wamid = await wamidDaMensagem(db, gatilhoMessageId)
-    if (!wamid) return
-    const { data: config } = await db
-      .from('whatsapp_config')
-      .select('phone_number_id, access_token')
-      .eq('account_id', accountId)
-      .maybeSingle()
-    if (!config?.phone_number_id || !config.access_token) return
-    await sendTypingIndicator({
-      phoneNumberId: config.phone_number_id,
-      accessToken: decrypt(config.access_token),
-      messageId: wamid,
-    })
-  } catch (err) {
-    console.warn(
-      `[ai auto-reply] indicador de digitando falhou (seguindo sem ele): ${err instanceof Error ? err.message : String(err)}`,
-    )
-  }
 }
 
 /**
@@ -1113,7 +901,6 @@ export async function dispatchInboundToAiReply(
     // segundos, esta resposta é descartada e quem responde é o disparo da
     // última — com a conversa inteira em contexto.
     const gatilho = await ultimaEntrada(db, conversationId)
-    void ligarDigitando(db, accountId, gatilho)
     await sleep(esperaRajadaMs())
     if ((await ultimaEntrada(db, conversationId)) !== gatilho) return
 
@@ -1152,13 +939,6 @@ export async function dispatchInboundToAiReply(
     let isClient = false
     let hasMeeting = false
     let qualTags: string[] = []
-    // PJ pelo mesmo sinal que o Typebot grava e o SUPER_SENTINEL já lê ('PJ' /
-    // 'Superqualificado' em QUAL_TAGS, acima): gate de rollout faseado do
-    // [[AGENDAR]] — ver Step 3 do plano de agendamento. Sem tag nenhuma
-    // (contato que não veio do intake), o padrão é NÃO-PJ: mais seguro tratar
-    // como PF (marcador novo e determinístico) do que arriscar o mecanismo
-    // antigo por falta de dado.
-    let segmentoPJ = false
     {
       const { data: tagRows } = await db
         .from('contact_tags')
@@ -1173,7 +953,6 @@ export async function dispatchInboundToAiReply(
       isClient = names.has('Cliente')
       hasMeeting = names.has('Agendou')
       qualTags = QUAL_TAGS.filter((t) => names.has(t))
-      segmentoPJ = names.has('PJ') || names.has('Superqualificado')
     }
 
     // Contact's WhatsApp name + e-mail (used to greet by name and skip the
@@ -1289,7 +1068,7 @@ export async function dispatchInboundToAiReply(
       return
     }
 
-    const { text, handoff, move, agendar, desmarcar, portaAberta, urgente, usage } = await generateReply({
+    const { text, handoff, move, agendar, desmarcar, portaAberta, usage } = await generateReply({
       config,
       systemPrompt,
       messages,
@@ -1377,80 +1156,38 @@ export async function dispatchInboundToAiReply(
         await desfazerReuniao(db, contactId)
       }
 
-      // 2) MOSTRAR HORÁRIO — entrega o bastão pro Fluxo de Agendamento, que
-      //    mostra a lista real (WhatsApp) e reserva de forma determinística.
-      //    A IA NUNCA reserva nem confirma nada sozinha mais (trocado depois
-      //    do incidente de 20/08/2026 — ver `AGENDAR_SENTINEL`).
-      if (agendar) {
-        // Releitura na hora, mesmo motivo de sempre: pega a reserva que
-        // acabou de entrar pelo webhook e evita iniciar um agendamento NOVO
-        // para quem já tem um. Quem já tem reunião é remarcação — caminho de
-        // sempre (REAGENDAR_SENTINEL/DESMARCAR_SENTINEL), não agendamento novo.
-        const hasMeetingAgora = desmarcar ? false : await temReuniaoAgora(db, contactId)
-        if (hasMeetingAgora) {
-          textoFinal = JA_TEM_REUNIAO
-          moveFinal = 'reagendar'
-        } else {
-          // Freio de segurança: "proibir no prompt não basta" é o tema deste
-          // arquivo inteiro. O card já avançado (ou o próprio movimento desta
-          // resposta) decide se está QUALIFICADO — não só a instrução.
-          const jaQualificado =
-            moveFinal === 'qualified' ||
-            moveFinal === 'super' ||
-            (!!etapa && AI_ETAPAS_QUALIFICADAS.has(etapa.id))
-          if (!jaQualificado) {
-            // C4 da revisão de 20/08/2026: sem isto o cliente ficava com a
-            // frase de transição da IA ("já vou te mostrar os horários...")
-            // e nada vindo a seguir — o mesmo buraco que o resto deste
-            // arquivo existe para fechar, só que aberto de novo aqui.
-            console.warn(
-              `[ai auto-reply] [[AGENDAR]] ignorado: contato ${contactId} ainda não está qualificado`,
-            )
-            textoFinal = AGENDAR_SEM_QUALIFICACAO
-          } else if (segmentoPJ || moveFinal === 'super') {
-            // Rollout faseado — só PF nesta fase. Ver Step 3 do plano de
-            // agendamento (docs/superpowers/specs/2026-08-20-agendamento-fluxos-design.md).
-            // `moveFinal === 'super'` entra aqui também (C5 da revisão de
-            // 20/08/2026): por definição só é 'super' quem a IA classificou
-            // como PJ com dívida >= R$ 500 mil NESTA MESMA resposta — a tag
-            // salva ainda não existe, mas o julgamento da IA já é PJ.
-            console.log(
-              `[ai auto-reply] [[AGENDAR]] ignorado: contato ${contactId} é PJ, fora do rollout faseado (só PF nesta fase)`,
-            )
-            textoFinal = PJ_AGENDAMENTO_MANUAL
-            await notificarPjAgendamentoBloqueado(db, { accountId, contactId, conversationId })
-          } else {
-            const r = await startManualFlowRun(db, FLUXO_AGENDAMENTO_ID, {
-              accountId,
-              contactId,
-              conversationId,
-            })
-            reservaFeita = r.outcome === 'started'
-            if (!reservaFeita) {
-              // Hoje sempre cai aqui: `FLUXO_AGENDAMENTO_ID` ainda não existe
-              // (ver TODO no topo do arquivo) — o Fluxo real só nasce num
-              // plano futuro separado. Sem isto o cliente ficaria com a frase
-              // de transição da IA ("vou te mostrar os horários") e nada vindo
-              // a seguir — o mesmo tipo de buraco que este arquivo inteiro
-              // existe para fechar.
-              console.warn(
-                `[ai auto-reply] [[AGENDAR]] não iniciou o Fluxo de Agendamento (contato ${contactId}): ${r.outcome ?? 'sem outcome'}`,
-              )
-              textoFinal = FALHA_AGENDA
-            }
-          }
-        }
-        // ⛔ Desmarcar NÃO move o card sozinho. Mover para "Reagendar reunião"
-        // acorda a automação de etapa, que dispara o template "vi que você
-        // precisou cancelar o horário" — e ele chegou, em 08/08/2026, um segundo
-        // depois de a IA já ter oferecido horários novos na conversa. Dois
-        // atendimentos falando com a mesma pessoa ao mesmo tempo.
-        // O card só se move quando a PESSOA adia ([[REAGENDAR]], que o modelo
-        // marca) ou quando o Fluxo não assumiu o agendamento (tratado acima).
-        // Restrito ao [[AGENDAR]] de propósito (C3 da revisão de 20/08/2026):
-        // fora deste bloco, desmarcar sozinho NÃO pode mexer no card.
-        if (desmarcar && !reservaFeita && !moveFinal) moveFinal = 'reagendar'
+      // 2) REMARCAR (ou marcar pela primeira vez).
+      if (agendar !== null) {
+        const nomeCompleto = legibleFirstName(contactRow?.name, contactRow?.phone)
+          ? (contactRow?.name?.trim() ?? null)
+          : null
+        const r = await reservarHorario({
+          indice: agendar,
+          slots,
+          nome: nomeCompleto,
+          email,
+          telefone: contactRow?.phone ?? null,
+          // Releitura na hora: pega a reserva que acabou de entrar pelo webhook
+          // e evita marcar duas. Desfeita agora, a antiga não bloqueia a nova.
+          hasMeeting: desmarcar ? false : await temReuniaoAgora(db, contactId),
+          textoDaIa: text,
+        })
+        textoFinal = r.texto
+        reservaFeita = r.ok
+        if (r.reagendar) moveFinal = 'reagendar'
+        // Desmarcou e a remarcação não saiu: o card não pode ficar parado em
+        // "Reunião Agendada" sem reunião nenhuma. Vai para Reagendar, e o
+        // fluxo de nutrição volta a puxar essa pessoa.
+        if (desmarcar && !r.ok && !moveFinal) moveFinal = 'reagendar'
       }
+      // ⛔ Desmarcar NÃO move o card sozinho. Mover para "Reagendar reunião"
+      // acorda a automação de etapa, que dispara o template "vi que você
+      // precisou cancelar o horário" — e ele chegou, em 08/08/2026, um segundo
+      // depois de a IA já ter oferecido horários novos na conversa. Dois
+      // atendimentos falando com a mesma pessoa ao mesmo tempo.
+      // O card só se move quando a PESSOA adia ([[REAGENDAR]], que o modelo
+      // marca) ou quando a remarcação falhou (tratado acima).
+
       // ⛔ TRAVA: ela não anuncia o que não fez.
       //
       // 08/08/2026, primeira conversa real: sem ter o e-mail, ela corretamente
@@ -1462,36 +1199,11 @@ export async function dispatchInboundToAiReply(
       //
       // Proibir no prompt não basta: o modelo escorrega, e escorregou. Aqui a
       // frase simplesmente não sai.
-      if ((!reservaFeita || agendar) && !hasMeeting && AFIRMA_QUE_AGENDOU.test(textoFinal)) {
+      if (!reservaFeita && !hasMeeting && AFIRMA_QUE_AGENDOU.test(textoFinal)) {
         console.error(
           `[ia-agenda] ⛔ resposta afirmava reunião marcada sem reserva nenhuma — substituída. Original: ${textoFinal.slice(0, 200)}`,
         )
-        textoFinal = AGENDAMENTO_EM_ANDAMENTO
-        // 3ª revisão de 20/08/2026 (achado N2): a frase acima só é verdade
-        // se um humano de fato for avisado — as duas rodadas anteriores só
-        // trocaram o texto por outro que "parecia" seguro e continuava sem
-        // nenhum mecanismo real por trás. A IA acabou de provar, NESTA
-        // MESMA resposta, que não é confiável para seguir sozinha neste
-        // atendimento — então aciona o MESMO handoff (`passarParaHumano`)
-        // que o resto do arquivo usa (teto de respostas, frase repetida,
-        // divergência de reunião), no mesmo instante.
-        await passarParaHumano(
-          db,
-          conversationId,
-          `${MARCA_ATENCAO} A IA tentou confirmar um agendamento sem reserva real (trava anti-mentira disparou) — handoff automático de segurança. Confira a conversa antes de responder.`,
-          config.handoffAgentId,
-          !!conv.assigned_agent_id,
-        )
-      } else if (reservaFeita && textoFinal === text) {
-        // Achado ao vivo, 21/08/2026 (retomado à noite): `startManualFlowRun`
-        // já manda o card de horários do Fluxo por dentro, ANTES deste ponto
-        // do código — a frase de transição do modelo só sairia DEPOIS, no
-        // loop de bolhas lá embaixo. Resultado: card primeiro, "vou te
-        // mostrar os horários..." depois, parecendo a IA comentando o que
-        // acabou de fazer. `textoFinal === text` garante que só suprime
-        // quando NADA mexeu nela ainda (nem FALHA_AGENDA, nem PJ, nem a
-        // trava anti-mentira acima — essas PRECISAM sair, nunca suprimir).
-        textoFinal = ''
+        textoFinal = email ? NAO_CONFIRMADO : FALTA_EMAIL
       }
     }
 
@@ -1502,34 +1214,11 @@ export async function dispatchInboundToAiReply(
     // é sistema preso — e quem está do outro lado vê um robô quebrado. Nenhuma
     // instrução conserta isso, porque a frase repetida vinha do meu código.
     // Repetiu, a conversa é de humano.
-    // Achado ao vivo, 21/08/2026 (retomado à noite): estes textos são
-    // fallbacks FIXOS — repetem de propósito sempre que o mesmo portão
-    // continua fechado entre um turno e outro (ex.: lead ainda não deu
-    // informação suficiente pra qualificar). Isso não é a IA "confusa"
-    // gerando a mesma frase à toa — é o sistema respondendo certo duas
-    // vezes seguidas. Contar isso como loop derrubava a conversa
-    // inteira (autoreply desligado) mesmo com o sistema funcionando
-    // como devia.
-    const TEXTOS_FIXOS_DO_SISTEMA = new Set([
-      FALTA_EMAIL,
-      FALTA_NOME,
-      EMAIL_NAO_RECEBE,
-      HORARIO_TOMADO,
-      FALHA_AGENDA,
-      PJ_AGENDAMENTO_MANUAL,
-      AGENDAR_SEM_QUALIFICACAO,
-      AGENDAMENTO_EM_ANDAMENTO,
-      JA_TEM_REUNIAO,
-    ])
     const ultimaDaIa = [...messages]
       .reverse()
       .find((m) => m.role === 'assistant')
       ?.content.trim()
-    if (
-      ultimaDaIa &&
-      !TEXTOS_FIXOS_DO_SISTEMA.has(textoFinal) &&
-      splitBubbles(textoFinal).some((b) => b.trim() === ultimaDaIa)
-    ) {
+    if (ultimaDaIa && splitBubbles(textoFinal).some((b) => b.trim() === ultimaDaIa)) {
       console.error(
         `[ai auto-reply] ⛔ repetiria a mesma frase na conversa ${conversationId} — passando para humano. Frase: ${ultimaDaIa.slice(0, 120)}`,
       )
@@ -1548,7 +1237,7 @@ export async function dispatchInboundToAiReply(
     // ONE logical reply — the per-conversation slot was claimed once
     // above, so extra bubbles do NOT each consume a slot. A short gap
     // between sends preserves order and feels human.
-    const bubbles = textoFinal.trim() ? splitBubbles(textoFinal) : []
+    const bubbles = splitBubbles(textoFinal)
     for (let i = 0; i < bubbles.length; i++) {
       await engineSendText({
         accountId,
@@ -1601,21 +1290,6 @@ export async function dispatchInboundToAiReply(
         })
       } catch (err) {
         console.error('[ai auto-reply] card move failed:', err)
-      }
-    }
-
-    // Fase 3b: sinal de urgência — independente do move, pode vir em
-    // qualquer resposta que também qualificou/superqualificou (ou nenhuma).
-    if (urgente && !isClient) {
-      try {
-        await applyAiUrgente(db, {
-          accountId,
-          contactId,
-          conversationId,
-          motivo: String(ultimaDoLead || '').slice(0, 500),
-        })
-      } catch (err) {
-        console.error('[ai auto-reply] marcar urgente falhou:', err)
       }
     }
 

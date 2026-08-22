@@ -10,9 +10,7 @@ import {
   QUALIFIED_SENTINEL,
   SUPER_SENTINEL,
   REAGENDAR_SENTINEL,
-  URGENTE_SENTINEL,
-  AGENDAR_SENTINEL,
-  AGENDAR_SENTINEL_ANTIGO,
+  AGENDAR_SENTINEL_RE,
   DESMARCAR_SENTINEL,
   PERDIDO_SENTINEL,
   PORTA_ABERTA_SENTINEL,
@@ -91,13 +89,11 @@ export function parseGeneration(
   const desmarcar = raw.includes(DESMARCAR_SENTINEL)
   // Recusou marcar agora: a despedida sai com o botão "Agendar agora" atrás.
   const portaAberta = raw.includes(PORTA_ABERTA_SENTINEL)
-  // Prazo/urgência real na conversa: independente do destino do card, pode
-  // vir junto com SUPER/QUALIFICADO na mesma resposta.
-  const urgente = raw.includes(URGENTE_SENTINEL)
-  // `[[AGENDAR]]` → a IA decidiu que é hora de mostrar horário pro lead. Não
-  // reserva nada sozinha: quem marca (auto-reply) entrega o bastão pro Fluxo
-  // de Agendamento, que mostra a lista real (WhatsApp) e reserva.
-  const agendar = raw.includes(AGENDAR_SENTINEL)
+  // `[[AGENDAR:2]]` → reservar o 2º horário da agenda desta resposta. Guardamos só o
+  // número: quem marca (auto-reply) casa com a lista que ELE leu, e um número fora da
+  // lista morre ali — o modelo nunca escreve a data.
+  const mAgendar = raw.match(AGENDAR_SENTINEL_RE)
+  const agendar = mAgendar ? Number(mAgendar[1]) : null
   const text = [
     HANDOFF_SENTINEL,
     SUPER_SENTINEL,
@@ -106,15 +102,9 @@ export function parseGeneration(
     DESMARCAR_SENTINEL,
     PERDIDO_SENTINEL,
     PORTA_ABERTA_SENTINEL,
-    URGENTE_SENTINEL,
-    AGENDAR_SENTINEL,
   ]
     .reduce((acc, s) => acc.split(s).join(''), raw)
-    // Limpeza DEFENSIVA do marcador ANTIGO (I2 da revisão de 20/08/2026): ele
-    // não dispara mais ação nenhuma, mas se a IA ainda o escrever por inércia
-    // de fine-tuning/exemplos antigos, isto evita que vaze literalmente pro
-    // WhatsApp do cliente.
-    .replace(AGENDAR_SENTINEL_ANTIGO, '')
+    .replace(new RegExp(AGENDAR_SENTINEL_RE.source, 'gi'), '')
     .trim()
-  return { text, handoff, move, agendar, desmarcar, portaAberta, urgente, usage }
+  return { text, handoff, move, agendar, desmarcar, portaAberta, usage }
 }

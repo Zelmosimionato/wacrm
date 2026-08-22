@@ -1,12 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { AiConfig } from './types'
-import {
-  AFIRMA_QUE_AGENDOU,
-  PESSOA_AFIRMA_REUNIAO,
-  emailNaConversa,
-  AI_STAGE_PERDIDO,
-  FLUXO_AGENDAMENTO_ID,
-} from './auto-reply'
+import { AFIRMA_QUE_AGENDOU, PESSOA_AFIRMA_REUNIAO, emailNaConversa } from './auto-reply'
 
 describe('emailNaConversa', () => {
   // O e-mail chega colado em outra coisa, com maiúscula, ou sozinho. Ler do
@@ -118,7 +112,6 @@ const h = vi.hoisted(() => ({
   retrieveKnowledge: vi.fn(),
   generateReply: vi.fn(),
   engineSendText: vi.fn(),
-  startManualFlowRun: vi.fn(),
   state: {
     conv: null as Record<string, unknown> | null,
     autoResponders: [] as { id: string }[],
@@ -130,8 +123,6 @@ const h = vi.hoisted(() => ({
     ultimaEntrada: [] as { id: string }[],
     /** Linhas por tabela, para consultas sem campo dedicado. */
     porTabela: {} as Record<string, unknown[]>,
-    /** Todo `.insert()` feito em qualquer tabela, na ordem em que ocorreram. */
-    inserts: [] as { table: string; rows: Record<string, unknown>[] }[],
   },
 }))
 
@@ -140,7 +131,6 @@ vi.mock('./context', () => ({ buildConversationContext: h.buildConversationConte
 vi.mock('./knowledge', () => ({ retrieveKnowledge: h.retrieveKnowledge }))
 vi.mock('./generate', () => ({ generateReply: h.generateReply }))
 vi.mock('@/lib/flows/meta-send', () => ({ engineSendText: h.engineSendText }))
-vi.mock('@/lib/flows/engine', () => ({ startManualFlowRun: h.startManualFlowRun }))
 vi.mock('./admin-client', () => ({
   supabaseAdmin: () => ({
     // Encadeador GENERICO. Antes havia um ramo por tabela, e qualquer consulta
@@ -165,21 +155,12 @@ vi.mock('./admin-client', () => ({
           error: null,
         })
       chain.single = chain.maybeSingle
-      // await direto na consulta, sem .limit()/.maybeSingle(). `count` sai
-      // do tamanho das linhas da tabela — cobre o padrao
-      // `.select('id', {count:'exact',head:true})` usado nos checks de tag
-      // (temReuniaoAgora, applyAiCardMove, applyAiUrgente).
+      // await direto na consulta, sem .limit()/.maybeSingle()
       chain.then = (ok: (v: unknown) => unknown, erro?: (e: unknown) => unknown) =>
-        Promise.resolve({ data: linhas(), error: null, count: linhas().length }).then(ok, erro)
+        Promise.resolve({ data: linhas(), error: null }).then(ok, erro)
       chain.update = (payload: Record<string, unknown>) => {
         h.state.updatePayload = payload
         return { eq: () => Promise.resolve({ error: null }) }
-      }
-      // Registra o insert e devolve sucesso — o teste confere pelo que foi
-      // gravado em h.state.inserts, nao pelo retorno.
-      chain.insert = (rows: Record<string, unknown> | Record<string, unknown>[]) => {
-        h.state.inserts.push({ table, rows: Array.isArray(rows) ? rows : [rows] })
-        return Promise.resolve({ error: null })
       }
       return chain
     },
@@ -228,17 +209,11 @@ beforeEach(() => {
   h.state.rpcCalls = []
   h.state.ultimaEntrada = [{ id: 'msg-entrada-1' }]
   h.state.porTabela = {}
-  h.state.inserts = []
   h.loadAiConfig.mockResolvedValue(aiConfig())
   h.buildConversationContext.mockResolvedValue([{ role: 'user', content: 'hi' }])
   h.retrieveKnowledge.mockResolvedValue([])
   h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false })
   h.engineSendText.mockResolvedValue({ whatsapp_message_id: 'm1' })
-  h.startManualFlowRun.mockResolvedValue({
-    consumed: true,
-    outcome: 'started',
-    flow_run_id: 'run-1',
-  })
 })
 
 describe('dispatchInboundToAiReply — eligibility gates', () => {
@@ -358,411 +333,5 @@ describe('dispatchInboundToAiReply — handoff', () => {
       ai_autoreply_disabled: true,
       assigned_agent_id: 'agent-7',
     })
-  })
-})
-
-// Fase 3b: quando a IA sinaliza [[URGENTE]], além da tag "Urgente" (já
-// coberto por `applyAiCardMove`/tags), agora dispara um handoff IMEDIATO em
-// `notifications` — o titular não pode depender de abrir o card para saber
-// que um lead falou de prazo real.
-describe('dispatchInboundToAiReply — sinal de urgência ([[URGENTE]])', () => {
-  it('insere em notifications com type urgent_lead e body com o texto do lead', async () => {
-    h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false, urgente: true })
-    h.buildConversationContext.mockResolvedValue([
-      { role: 'user', content: 'preciso resolver isso até amanhã, é urgente' },
-    ])
-    h.state.porTabela.profiles = [{ user_id: 'user-a' }]
-
-    await dispatchInboundToAiReply(ARGS)
-
-    const notifInsert = h.state.inserts.find((i) => i.table === 'notifications')
-    expect(notifInsert?.rows).toHaveLength(1)
-    expect(notifInsert?.rows[0]).toMatchObject({
-      account_id: 'acct-1',
-      user_id: 'user-a',
-      type: 'urgent_lead',
-      conversation_id: 'conv-1',
-      contact_id: 'contact-1',
-      title: 'Lead sinalizou urgência',
-    })
-    expect(notifInsert?.rows[0].body).toContain('urgente')
-  })
-
-  it('todos os membros da conta recebem uma linha — não só um "atribuído"', async () => {
-    h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false, urgente: true })
-    h.state.porTabela.profiles = [
-      { user_id: 'user-a' },
-      { user_id: 'user-b' },
-      { user_id: 'user-c' },
-    ]
-
-    await dispatchInboundToAiReply(ARGS)
-
-    const notifInsert = h.state.inserts.find((i) => i.table === 'notifications')
-    expect(notifInsert?.rows.map((r) => r.user_id).sort()).toEqual(['user-a', 'user-b', 'user-c'])
-    expect(notifInsert?.rows.every((r) => r.type === 'urgent_lead')).toBe(true)
-  })
-
-  it('mesmo com a tag já aplicada antes, ainda dispara a notificação (não idempotente pro handoff)', async () => {
-    h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false, urgente: true })
-    // `contact_tags` já tem uma linha → count > 0 → applyAiUrgente NAO
-    // insere a tag de novo. A linha nao carrega `tags`, entao nao afeta o
-    // calculo de isClient/hasMeeting (mesma tabela, consulta anterior).
-    h.state.porTabela.contact_tags = [{ id: 'ja-tinha-a-tag' }]
-    h.state.porTabela.profiles = [{ user_id: 'user-a' }]
-
-    await dispatchInboundToAiReply(ARGS)
-
-    expect(h.state.inserts.find((i) => i.table === 'contact_tags')).toBeUndefined()
-    const notifInsert = h.state.inserts.find((i) => i.table === 'notifications')
-    expect(notifInsert?.rows).toHaveLength(1)
-    expect(notifInsert?.rows[0]).toMatchObject({ type: 'urgent_lead', user_id: 'user-a' })
-  })
-
-  it('sem membros na conta, nao insere notificacao nenhuma (mas nao quebra)', async () => {
-    h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false, urgente: true })
-    h.state.porTabela.profiles = []
-
-    await dispatchInboundToAiReply(ARGS)
-
-    expect(h.state.inserts.find((i) => i.table === 'notifications')).toBeUndefined()
-    expect(h.engineSendText).toHaveBeenCalled()
-  })
-
-  it('sem sinal de urgência, não grava nada em notifications', async () => {
-    h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false, urgente: false })
-    h.state.porTabela.profiles = [{ user_id: 'user-a' }]
-
-    await dispatchInboundToAiReply(ARGS)
-
-    expect(h.state.inserts.find((i) => i.table === 'notifications')).toBeUndefined()
-  })
-})
-
-// Task 4 do plano de agendamento: [[AGENDAR]] (sem número) não reserva nada
-// sozinha — entrega o bastão pro Fluxo de Agendamento via `startManualFlowRun`.
-// Trocou o [[AGENDAR:N]] antigo depois de um incidente ao vivo em 20/08/2026
-// (a IA confirmou reunião sem o lead ter escolhido horário). A IA só marca
-// o marcador; quem decide se o Fluxo roda de verdade é este bloco de código —
-// por isso os testes aqui exercitam o gate (qualificado / PF-only), não o
-// parser (já coberto em generate.test.ts).
-describe('dispatchInboundToAiReply — [[AGENDAR]] entrega o bastão pro Fluxo', () => {
-  beforeEach(() => {
-    // A IA só aprende/age sobre o marcador com a chave ligada — mesmo
-    // interruptor que já protegia o mecanismo antigo.
-    vi.stubEnv('IA_AGENDA_ATIVA', '1')
-  })
-
-  it('sem [[AGENDAR]] na resposta, não chama o Fluxo nem mexe no card', async () => {
-    h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false, agendar: false })
-    await dispatchInboundToAiReply(ARGS)
-    expect(h.startManualFlowRun).not.toHaveBeenCalled()
-  })
-
-  it('[[AGENDAR]] + contato SEM tag/etapa de qualificado → não chama o Fluxo, loga o aviso', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    // Sem `move` nesta resposta e sem card em `deals` (porTabela.deals vazio
-    // → `etapaDoCard` devolve null) — nada indica que este lead qualificou.
-    h.generateReply.mockResolvedValue({ text: 'Perfeito, já te mostro os horários!', handoff: false, agendar: true })
-
-    await dispatchInboundToAiReply(ARGS)
-
-    expect(h.startManualFlowRun).not.toHaveBeenCalled()
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ainda não está qualificado'))
-    warn.mockRestore()
-  })
-
-  it('[[AGENDAR]] + qualificado (nesta resposta) + PF → chama o Fluxo com os args certos', async () => {
-    h.generateReply.mockResolvedValue({
-      text: 'Perfeito, já te mostro os horários!',
-      handoff: false,
-      move: 'qualified',
-      agendar: true,
-    })
-
-    await dispatchInboundToAiReply(ARGS)
-
-    expect(h.startManualFlowRun).toHaveBeenCalledTimes(1)
-    expect(h.startManualFlowRun).toHaveBeenCalledWith(expect.anything(), FLUXO_AGENDAMENTO_ID, {
-      accountId: 'acct-1',
-      contactId: 'contact-1',
-      conversationId: 'conv-1',
-    })
-  })
-
-  it('[[AGENDAR]] + já qualificado (card em etapa avançada) + PF → chama o Fluxo', async () => {
-    // "Lead Qualificado" — mesmo id de AI_STAGE_QUALIFICADO — sem o `move`
-    // desta resposta apontar qualificação: o card JÁ tinha avançado antes.
-    h.state.porTabela.deals = [{ stage_id: '57bed09e-bc01-4691-8272-dcd8c3c078df' }]
-    h.generateReply.mockResolvedValue({
-      text: 'Perfeito, já te mostro os horários!',
-      handoff: false,
-      agendar: true,
-    })
-
-    await dispatchInboundToAiReply(ARGS)
-
-    expect(h.startManualFlowRun).toHaveBeenCalledTimes(1)
-  })
-
-  // ⚠️ O mock de `contact_tags` é genérico por tabela (não filtra por
-  // `.eq()`): qualquer linha ali também conta como "tem reunião marcada" para
-  // `temReuniaoAgora`. Por isso o cenário usa [[DESMARCAR]] junto — desliga
-  // essa releitura de propósito (`hasMeetingAgora = desmarcar ? false : ...`)
-  // e é uma combinação real: lead PJ que acabou de desmarcar e já tenta
-  // remarcar na mesma mensagem.
-  it('[[AGENDAR]] + qualificado + PJ → não chama o Fluxo, loga o aviso de rollout faseado', async () => {
-    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
-    h.state.porTabela.contact_tags = [{ tags: { name: 'PJ' } }]
-    h.generateReply.mockResolvedValue({
-      text: 'Perfeito, já te mostro os horários!',
-      handoff: false,
-      move: 'super',
-      agendar: true,
-      desmarcar: true,
-    })
-
-    await dispatchInboundToAiReply(ARGS)
-
-    expect(h.startManualFlowRun).not.toHaveBeenCalled()
-    expect(log).toHaveBeenCalledWith(
-      expect.stringContaining('é PJ, fora do rollout faseado'),
-    )
-    log.mockRestore()
-  })
-
-  // Fluxo não encontrado (id errado, fluxo desativado, run duplicado):
-  // `startManualFlowRun` devolve `no_match`. Sem este fallback, o cliente
-  // ficaria com a frase de transição da IA e nada vindo a seguir.
-  it('Fluxo não encontrado → troca a resposta pelo fallback, não deixa a transição solta', async () => {
-    h.startManualFlowRun.mockResolvedValue({ consumed: false, outcome: 'no_match' })
-    h.generateReply.mockResolvedValue({
-      text: 'Perfeito, já vou te mostrar os horários disponíveis!',
-      handoff: false,
-      move: 'qualified',
-      agendar: true,
-    })
-
-    await dispatchInboundToAiReply(ARGS)
-
-    expect(h.startManualFlowRun).toHaveBeenCalledTimes(1)
-    expect(h.engineSendText).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: expect.stringContaining('cal.com/simionato-advogados-n4sm0p'),
-      }),
-    )
-  })
-})
-
-// Achados C1/C3/C4/C5/I1 da revisão independente de 20/08/2026 sobre o
-// commit 599f358 — a troca do [[AGENDAR:N]] pelo [[AGENDAR]] reabriu
-// exatamente a classe de bug que motivou a troca: a IA (ou o código)
-// afirmando ou agindo como se uma reunião existisse sem o lead ter escolhido
-// horário.
-describe('dispatchInboundToAiReply — [[AGENDAR]] revisão 20/08/2026 (C1/C3/C4/C5/I1)', () => {
-  beforeEach(() => {
-    vi.stubEnv('IA_AGENDA_ATIVA', '1')
-  })
-
-  it('C1/N2/N4: Fluxo apenas INICIOU (outcome started, reunião ainda não existe) + texto afirma agendado → a trava troca por texto seguro, sem pedir e-mail nem prometer reunião confirmada', async () => {
-    h.startManualFlowRun.mockResolvedValue({
-      consumed: true,
-      outcome: 'started',
-      flow_run_id: 'run-1',
-    })
-    h.generateReply.mockResolvedValue({
-      text: 'Prontinho, agendei para quarta às 16:15!',
-      handoff: false,
-      move: 'qualified',
-      agendar: true,
-    })
-
-    await dispatchInboundToAiReply(ARGS)
-
-    expect(h.startManualFlowRun).toHaveBeenCalledTimes(1)
-    // N4 da 2ª revisão (achado MINOR): antes disto a única checagem era
-    // "não contém /agendei/i", que passaria mesmo com texto vazio/undefined
-    // — falso positivo. Agora confere que o envio de fato aconteceu.
-    expect(h.engineSendText).toHaveBeenCalledTimes(1)
-    const enviado = h.engineSendText.mock.calls[0]?.[0]?.text ?? ''
-    expect(enviado).not.toMatch(/agendei/i)
-    // N2 da 2ª revisão (achado IMPORTANT): o fallback antigo, escolhido por
-    // `email ? NAO_CONFIRMADO : FALTA_EMAIL`, ou pedia e-mail (papel do
-    // Fluxo agora, não da IA) ou prometia "já deixo reservado"/confirmação —
-    // as duas coisas que esta trava existe para evitar. O texto novo não
-    // faz nenhuma das duas.
-    expect(enviado).not.toMatch(/e-mail/i)
-    // ⚠️ Regex deliberadamente frouxa aqui (3ª revisão de 20/08/2026): o
-    // texto substituto atual ("Deixa eu confirmar os detalhes com a nossa
-    // equipe...") contém "confirmar" de propósito — a promessa de contato
-    // agora é sustentada por um handoff humano REAL (ver o teste de N2
-    // logo abaixo), então esta é a ÚNICA mensagem da suíte que tem
-    // permissão de usar essas palavras. O regex rigoroso (/confirm|reserv|
-    // agend|marc/i) vale para o caminho SEM handoff (teste C4/N1, abaixo)
-    // — aqui aplicá-lo quebraria o teste pelo motivo errado.
-    expect(enviado).not.toMatch(/reservad|confirmad|agendad|marcad/i)
-    // Asserção positiva sobre o texto substituto real (não só ausência de
-    // palavras proibidas) — a decisão tomada no N2.
-    expect(enviado).toContain(
-      'Deixa eu confirmar os detalhes com a nossa equipe antes de seguir — já te retorno.',
-    )
-  })
-
-  it('N2 (3ª revisão de 20/08/2026): a trava AFIRMA_QUE_AGENDOU aciona handoff humano REAL, não só troca o texto', async () => {
-    // Mesmo cenário do teste C1/N2/N4 acima (a trava dispara) — mas aqui a
-    // prova é sobre o EFEITO COLATERAL na conversa, não sobre o texto
-    // enviado. As duas rodadas de correção anteriores só trocaram a frase
-    // por outra que "parecia" segura; nada no sistema garantia o aviso
-    // prometido. A correção certa faz a frase virar verdade: o mesmo
-    // `passarParaHumano` que o resto do arquivo usa (teto de respostas,
-    // frase repetida, divergência de reunião) precisa disparar no MESMO
-    // instante em que a trava substitui o texto.
-    h.startManualFlowRun.mockResolvedValue({
-      consumed: true,
-      outcome: 'started',
-      flow_run_id: 'run-1',
-    })
-    h.generateReply.mockResolvedValue({
-      text: 'Prontinho, agendei para quarta às 16:15!',
-      handoff: false,
-      move: 'qualified',
-      agendar: true,
-    })
-
-    await dispatchInboundToAiReply(ARGS)
-
-    // `h.state.updatePayload` guarda o payload do ÚLTIMO `.update()` feito
-    // em qualquer tabela nesta chamada. Como o cenário não tem `deals` nem
-    // `contact_tags` cadastrados, `applyAiCardMove` não encontra card e
-    // devolve cedo sem gravar nada — então o que sobra capturado é
-    // exatamente o update de handoff que a trava deve ter disparado.
-    expect(h.state.updatePayload).toMatchObject({
-      ai_autoreply_disabled: true,
-    })
-    expect(h.state.updatePayload?.ai_handoff_summary).toMatch(/agendamento/i)
-  })
-
-  it('C3: [[DESMARCAR]] SEM [[AGENDAR]] não move o card sozinho (restaura o comportamento anterior à Task 4 — incidente de 08/08/2026)', async () => {
-    h.generateReply.mockResolvedValue({
-      text: 'Sem problema, já verifico para você.',
-      handoff: false,
-      agendar: false,
-      desmarcar: true,
-    })
-
-    await dispatchInboundToAiReply(ARGS)
-
-    expect(h.startManualFlowRun).not.toHaveBeenCalled()
-    // Nada chama `applyAiCardMove` (que move o card) neste caminho — se a
-    // linha do C3 tivesse disparado fora do bloco `if (agendar)`, moveFinal
-    // viraria 'reagendar' e isto teria gravado um update em `deals`.
-    expect(h.state.updatePayload).toBeNull()
-  })
-
-  it('C4/N1: [[AGENDAR]] + não qualificado → não deixa a transição solta, troca por fallback SEM link de agendamento e SEM prometer nada', async () => {
-    // N1 da 2ª revisão de 20/08/2026 (achado CRITICAL): este teste antes
-    // provava o comportamento ERRADO — que o fallback continha o link
-    // público do Cal.com (FALHA_AGENDA). Isso deixava um lead NÃO
-    // qualificado com acesso direto à agenda do escritório, driblando a
-    // qualificação — pior que a versão anterior à correção C4. O gate
-    // agora responde sem link e sem promessa, só pedindo o que falta para
-    // qualificar.
-    h.generateReply.mockResolvedValue({
-      text: 'Perfeito, já vou te mostrar os horários disponíveis!',
-      handoff: false,
-      agendar: true,
-    })
-
-    await dispatchInboundToAiReply(ARGS)
-
-    expect(h.startManualFlowRun).not.toHaveBeenCalled()
-    expect(h.engineSendText).toHaveBeenCalledTimes(1)
-    const enviado = h.engineSendText.mock.calls[0]?.[0]?.text ?? ''
-    // 3ª revisão de 20/08/2026 (N1, parte 2): `/cal\.com/i` só provava a
-    // ausência DAQUELE host — não de qualquer link. Trocado por uma
-    // checagem de ausência de QUALQUER URL, porque este lead não está
-    // qualificado e não tem handoff nenhum acontecendo: não pode ganhar
-    // link nenhum, do Cal.com ou de qualquer outro lugar.
-    expect(enviado).not.toMatch(/https?:\/\//i)
-    // 3ª revisão de 20/08/2026 (N2, parte do teste): a lista antiga
-    // (reservad|confirmad|agendad|marcad) não pega "confirmo", "confirmar",
-    // "agendar", "marco" etc. — flexões diferentes do radical. Radicais
-    // mais curtos cobrem as conjugações reais. Este é o caminho SEM
-    // handoff (lead não qualificado) — aqui a promessa tem que ficar
-    // totalmente ausente, ao contrário do teste de N2 acima.
-    //
-    // ⚠️ Adaptado na hora: `/confirm|reserv|agend|marc/i` sem ressalva
-    // reprovava o PRÓPRIO fallback certo deste caminho (AGENDAR_SEM_
-    // QUALIFICACAO), porque "agendamento" — substantivo neutro, "antes de
-    // seguir com o agendamento" — contém o radical "agend" sem ser
-    // promessa nenhuma. O `(?!amento)` poupa só esse substantivo; toda
-    // conjugação real de verbo (agendar, agendei, agendado, agendando,
-    // agenda) continua proibida.
-    expect(enviado).not.toMatch(/confirm|reserv|agend(?!amento)|marc/i)
-    expect(enviado.toLowerCase()).toContain('me conta um pouco mais sobre o seu caso')
-  })
-
-  // ⚠️ Mesmo workaround do teste "qualificado + PJ" logo acima: qualquer
-  // linha em `contact_tags` também conta como "tem reunião marcada" para
-  // `temReuniaoAgora` (mock genérico, não filtra por tag). `desmarcar: true`
-  // desliga essa releitura de propósito, senão o caminho vira JA_TEM_REUNIAO
-  // em vez do bloqueio de PJ que este teste quer provar.
-  it('C4/I4: [[AGENDAR]] + PJ (tag já salva) → não deixa a transição solta, envia aviso honesto e notifica a equipe', async () => {
-    h.state.porTabela.contact_tags = [{ tags: { name: 'PJ' } }]
-    h.state.porTabela.profiles = [{ user_id: 'user-a' }]
-    h.generateReply.mockResolvedValue({
-      text: 'Perfeito, já vou te mostrar os horários disponíveis!',
-      handoff: false,
-      move: 'qualified',
-      agendar: true,
-      desmarcar: true,
-    })
-
-    await dispatchInboundToAiReply(ARGS)
-
-    expect(h.startManualFlowRun).not.toHaveBeenCalled()
-    expect(h.engineSendText).toHaveBeenCalledWith(
-      expect.objectContaining({ text: expect.stringContaining('equipe do escritório') }),
-    )
-    const notifInsert = h.state.inserts.find(
-      (i) => i.table === 'notifications' && i.rows.some((r) => r.type === 'pj_agendamento_bloqueado'),
-    )
-    expect(notifInsert?.rows[0]).toMatchObject({
-      user_id: 'user-a',
-      contact_id: 'contact-1',
-      conversation_id: 'conv-1',
-      type: 'pj_agendamento_bloqueado',
-    })
-  })
-
-  it('C5: [[AGENDAR]] + move super SEM tag PJ salva ainda → não chama o Fluxo (brecha fechada)', async () => {
-    h.state.porTabela.profiles = [{ user_id: 'user-a' }]
-    h.generateReply.mockResolvedValue({
-      text: 'Perfeito, já vou te mostrar os horários disponíveis!',
-      handoff: false,
-      move: 'super',
-      agendar: true,
-    })
-
-    await dispatchInboundToAiReply(ARGS)
-
-    expect(h.startManualFlowRun).not.toHaveBeenCalled()
-    const notifInsert = h.state.inserts.find(
-      (i) => i.table === 'notifications' && i.rows.some((r) => r.type === 'pj_agendamento_bloqueado'),
-    )
-    expect(notifInsert).toBeDefined()
-  })
-
-  it('I1: etapa "Perdido" NÃO conta como qualificada (lista positiva, não negação de AI_ETAPAS_QUE_AVANCAM)', async () => {
-    h.state.porTabela.deals = [{ stage_id: AI_STAGE_PERDIDO }]
-    h.generateReply.mockResolvedValue({
-      text: 'Perfeito, já vou te mostrar os horários disponíveis!',
-      handoff: false,
-      agendar: true,
-    })
-
-    await dispatchInboundToAiReply(ARGS)
-
-    expect(h.startManualFlowRun).not.toHaveBeenCalled()
   })
 })
