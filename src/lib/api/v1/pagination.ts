@@ -17,6 +17,8 @@
 // clients pass it back verbatim and never parse it.
 // ============================================================
 
+import { badRequest } from './respond';
+
 export const DEFAULT_LIMIT = 50;
 export const MAX_LIMIT = 100;
 
@@ -120,4 +122,20 @@ export function buildPage<T extends { created_at: string; id: string }>(
   }
   const items = rows.slice(0, limit);
   return { items, nextCursor: encodeCursor(items[items.length - 1]) };
+}
+
+/**
+ * Parse a `?created_after=`-style ISO 8601 date filter. Recusa data
+ * malformada em vez de ignorar o filtro em silêncio: um filtro
+ * ignorado devolveria a lista inteira, e quem lê (radar, relatório)
+ * contaria o acervo todo como "movimento de hoje" sem nenhum aviso —
+ * foi exatamente o defeito achado em `GET /api/v1/contacts` em
+ * 13/08/2026 (SGE/comercial/DEFEITO_API_RADAR_CRM.md), nunca corrigido
+ * até agora. `created_at`/`updated_at` são sempre devolvidos em UTC.
+ */
+export function dataIso(bruto: string | null, campo: string): string | null {
+  if (!bruto) return null;
+  const t = Date.parse(bruto);
+  if (Number.isNaN(t)) throw badRequest(`${campo} não é uma data ISO 8601 válida`);
+  return new Date(t).toISOString();
 }

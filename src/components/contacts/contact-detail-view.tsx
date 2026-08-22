@@ -862,6 +862,10 @@ export function ContactDetailView({
       onSaved={() => {
         setDealFormOpen(false);
         fetchDeals();
+        // Este painel abre dentro do Funil e da lista de Contatos — sem
+        // isto, o card editado aqui fica desatualizado atrás desta ficha
+        // até a página inteira ser recarregada (parecia "travado").
+        onUpdated();
       }}
     />
     <TemplatePicker

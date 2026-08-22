@@ -5,9 +5,11 @@ import {
   decodeCursor,
   keysetFilter,
   buildPage,
+  dataIso,
   DEFAULT_LIMIT,
   MAX_LIMIT,
 } from './pagination';
+import { ApiError } from './respond';
 
 const req = (qs: string) => new Request(`https://x.test/api/v1/contacts${qs}`);
 
@@ -108,5 +110,32 @@ describe('buildPage', () => {
     const page = buildPage(rows, 5);
     expect(page.items).toHaveLength(5);
     expect(page.nextCursor).toBe(encodeCursor(rows[4]));
+  });
+});
+
+describe('dataIso', () => {
+  it('returns null when the param is absent', () => {
+    expect(dataIso(null, 'created_after')).toBeNull();
+  });
+
+  it('normalizes a valid ISO date to a UTC timestamp', () => {
+    expect(dataIso('2026-08-13T00:00:00-03:00', 'created_after')).toBe(
+      '2026-08-13T03:00:00.000Z'
+    );
+  });
+
+  it('⛔ 13/08/2026: recusa data malformada em vez de devolver null / ignorar em silêncio', () => {
+    // Era exatamente esse silêncio que fazia GET /api/v1/contacts devolver
+    // a lista inteira sem avisar quando o filtro vinha errado.
+    expect(() => dataIso('not-a-date', 'created_after')).toThrow(ApiError);
+    try {
+      dataIso('not-a-date', 'created_after');
+      throw new Error('deveria ter lançado');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApiError);
+      expect((err as ApiError).code).toBe('bad_request');
+      expect((err as ApiError).status).toBe(400);
+      expect((err as ApiError).message).toContain('created_after');
+    }
   });
 });

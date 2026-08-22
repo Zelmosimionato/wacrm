@@ -13,22 +13,12 @@
 // ============================================================
 
 import { requireApiKey } from '@/lib/auth/api-context';
-import { okList, fail, badRequest, toApiErrorResponse } from '@/lib/api/v1/respond';
-import { parseListParams, keysetFilter, buildPage } from '@/lib/api/v1/pagination';
+import { okList, fail, toApiErrorResponse } from '@/lib/api/v1/respond';
+import { parseListParams, keysetFilter, buildPage, dataIso } from '@/lib/api/v1/pagination';
 
 const CAMPOS =
   'id, contact_id, pipeline_id, stage_id, title, value, currency, status, ' +
   'created_at, updated_at, stage_entered_at';
-
-/** Recusa data malformada em vez de ignorar o filtro em silêncio: um
- *  filtro ignorado devolveria a lista inteira, e o radar contaria o
- *  acervo todo como "movimento de hoje". */
-function dataIso(bruto: string | null, campo: string): string | null {
-  if (!bruto) return null;
-  const t = Date.parse(bruto);
-  if (Number.isNaN(t)) throw badRequest(`${campo} não é uma data ISO 8601 válida`);
-  return new Date(t).toISOString();
-}
 
 export async function GET(request: Request) {
   try {
