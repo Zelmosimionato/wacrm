@@ -268,6 +268,45 @@ export async function sendTextMessage(
   return { messageId: data.messages[0].id }
 }
 
+export interface SendTypingIndicatorArgs {
+  phoneNumberId: string
+  accessToken: string
+  /** wamid da mensagem do contato que disparou a resposta — marca ela
+   *  como lida e liga o "digitando..." nessa conversa, do jeito que a
+   *  Cloud API exige (associado a uma mensagem especifica). */
+  messageId: string
+}
+
+/**
+ * Marca a mensagem do contato como lida e liga o indicador de
+ * "digitando..." no WhatsApp dele. Expira sozinho (Meta: ate ~25s ou
+ * ate a proxima mensagem sair) — nunca precisa ser desligado a mao.
+ * Sem retorno util (Meta devolve so `{success:true}`), entao quem
+ * chama trata isso como fire-and-forget.
+ */
+export async function sendTypingIndicator(
+  args: SendTypingIndicatorArgs
+): Promise<void> {
+  const { phoneNumberId, accessToken, messageId } = args
+  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      status: 'read',
+      message_id: messageId,
+      typing_indicator: { type: 'text' },
+    }),
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+}
+
 export type MediaKind = 'image' | 'video' | 'document' | 'audio'
 
 export interface SendMediaMessageArgs {

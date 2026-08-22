@@ -1,5 +1,7 @@
 import type { ChatMessage } from './types'
 import { supabaseAdmin } from './admin-client'
+import { sendTypingIndicator } from '@/lib/whatsapp/meta-api'
+import { decrypt } from '@/lib/whatsapp/encryption'
 import { loadAiConfig } from './config'
 import { buildConversationContext } from './context'
 import { retrieveKnowledge } from './knowledge'
@@ -602,6 +604,59 @@ async function ultimaEntrada(
 }
 
 /**
+ * Wamid (id do WhatsApp) de uma mensagem, dado o id interno — usado so
+ * pra ligar o indicador de "digitando" na mensagem certa. Consulta
+ * separada da de `ultimaEntrada` de proposito: nao mexe no que a
+ * guarda de rajada ja usa pra decidir se descarta a resposta.
+ */
+async function wamidDaMensagem(
+  db: ReturnType<typeof supabaseAdmin>,
+  messageId: string,
+): Promise<string | null> {
+  const { data } = await db
+    .from('messages')
+    .select('message_id')
+    .eq('id', messageId)
+    .maybeSingle()
+  return (data as { message_id: string | null } | null)?.message_id ?? null
+}
+
+/**
+ * Liga "digitando..." no WhatsApp do contato antes da espera de
+ * rajada — sem isso, os `AI_ESPERA_RAJADA_MS` (6s por padrao) e o
+ * tempo de geracao da IA passam em silencio total, sensacao de bot
+ * mudo em vez de alguem respondendo. Fire-and-forget de proposito:
+ * falha aqui (conta sem WhatsApp configurado, wamid nao encontrado,
+ * rejeicao da Meta) nunca pode impedir a resposta real de sair.
+ */
+async function ligarDigitando(
+  db: ReturnType<typeof supabaseAdmin>,
+  accountId: string,
+  gatilhoMessageId: string | null,
+): Promise<void> {
+  if (!gatilhoMessageId) return
+  try {
+    const wamid = await wamidDaMensagem(db, gatilhoMessageId)
+    if (!wamid) return
+    const { data: config } = await db
+      .from('whatsapp_config')
+      .select('phone_number_id, access_token')
+      .eq('account_id', accountId)
+      .maybeSingle()
+    if (!config?.phone_number_id || !config.access_token) return
+    await sendTypingIndicator({
+      phoneNumberId: config.phone_number_id,
+      accessToken: decrypt(config.access_token),
+      messageId: wamid,
+    })
+  } catch (err) {
+    console.warn(
+      `[ai auto-reply] indicador de digitando falhou (seguindo sem ele): ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+}
+
+/**
  * Passa a conversa para um humano e para de responder nela.
  *
  * ⛔ Existe porque o teto de respostas por conversa desligava a IA **em
@@ -1058,6 +1113,7 @@ export async function dispatchInboundToAiReply(
     // segundos, esta resposta é descartada e quem responde é o disparo da
     // última — com a conversa inteira em contexto.
     const gatilho = await ultimaEntrada(db, conversationId)
+    void ligarDigitando(db, accountId, gatilho)
     await sleep(esperaRajadaMs())
     if ((await ultimaEntrada(db, conversationId)) !== gatilho) return
 
@@ -1426,6 +1482,16 @@ export async function dispatchInboundToAiReply(
           config.handoffAgentId,
           !!conv.assigned_agent_id,
         )
+      } else if (reservaFeita && textoFinal === text) {
+        // Achado ao vivo, 21/08/2026 (retomado à noite): `startManualFlowRun`
+        // já manda o card de horários do Fluxo por dentro, ANTES deste ponto
+        // do código — a frase de transição do modelo só sairia DEPOIS, no
+        // loop de bolhas lá embaixo. Resultado: card primeiro, "vou te
+        // mostrar os horários..." depois, parecendo a IA comentando o que
+        // acabou de fazer. `textoFinal === text` garante que só suprime
+        // quando NADA mexeu nela ainda (nem FALHA_AGENDA, nem PJ, nem a
+        // trava anti-mentira acima — essas PRECISAM sair, nunca suprimir).
+        textoFinal = ''
       }
     }
 
@@ -1459,7 +1525,7 @@ export async function dispatchInboundToAiReply(
     // ONE logical reply — the per-conversation slot was claimed once
     // above, so extra bubbles do NOT each consume a slot. A short gap
     // between sends preserves order and feels human.
-    const bubbles = splitBubbles(textoFinal)
+    const bubbles = textoFinal.trim() ? splitBubbles(textoFinal) : []
     for (let i = 0; i < bubbles.length; i++) {
       await engineSendText({
         accountId,
