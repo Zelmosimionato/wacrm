@@ -49,7 +49,32 @@ async function main() {
   await db.from('flow_nodes').delete().eq('flow_id', flow.id)
 
   const nodes = [
-    { node_key: 'start', node_type: 'start', config: { next_node_key: 'offer_slots' } },
+    { node_key: 'start', node_type: 'start', config: { next_node_key: 'checar_email' } },
+    {
+      // 'contains @' cobre ausente E presente-mas-sem-cara-de-email —
+      // 'absent' sozinho deixava passar qualquer lixo já gravado em
+      // contacts.email.
+      node_key: 'checar_email', node_type: 'condition',
+      config: {
+        subject: 'contact_field', subject_key: 'email', operator: 'contains', value: '@',
+        true_next: 'offer_slots', false_next: 'pedir_email_inicial',
+      },
+    },
+    {
+      node_key: 'pedir_email_inicial', node_type: 'collect_input',
+      config: {
+        prompt_text: 'Antes de te mostrar os horários, preciso do seu e-mail — é pra lá que vai o convite com o link da videochamada. Pode me passar?',
+        var_key: 'email_capturado', next_node_key: 'checar_email_inicial_arroba',
+      },
+    },
+    {
+      node_key: 'checar_email_inicial_arroba', node_type: 'condition',
+      config: { subject: 'var', subject_key: 'email_capturado', operator: 'contains', value: '@', true_next: 'checar_email_inicial_ponto', false_next: 'pedir_email_inicial' },
+    },
+    {
+      node_key: 'checar_email_inicial_ponto', node_type: 'condition',
+      config: { subject: 'var', subject_key: 'email_capturado', operator: 'contains', value: '.', true_next: 'offer_slots', false_next: 'pedir_email_inicial' },
+    },
     {
       node_key: 'offer_slots', node_type: 'offer_slots',
       config: {
@@ -79,15 +104,31 @@ async function main() {
       node_key: 'pedir_email', node_type: 'collect_input',
       config: {
         prompt_text: 'Pra eu deixar sua reunião confirmada, preciso do seu e-mail — é pra lá que vai o convite com o link da videochamada. Pode me passar?',
-        var_key: 'email_capturado', next_node_key: 'book_meeting',
+        var_key: 'email_capturado', next_node_key: 'checar_email_arroba',
       },
     },
     {
       node_key: 'pedir_email_invalido', node_type: 'collect_input',
       config: {
         prompt_text: 'Esse e-mail não está recebendo mensagens — deve ter escapado um errinho de digitação.\n\nPode conferir e me mandar de novo? É para lá que vai o convite da videochamada.',
-        var_key: 'email_capturado', next_node_key: 'book_meeting',
+        var_key: 'email_capturado', next_node_key: 'checar_email_invalido_arroba',
       },
+    },
+    {
+      node_key: 'checar_email_arroba', node_type: 'condition',
+      config: { subject: 'var', subject_key: 'email_capturado', operator: 'contains', value: '@', true_next: 'checar_email_ponto', false_next: 'pedir_email' },
+    },
+    {
+      node_key: 'checar_email_ponto', node_type: 'condition',
+      config: { subject: 'var', subject_key: 'email_capturado', operator: 'contains', value: '.', true_next: 'book_meeting', false_next: 'pedir_email' },
+    },
+    {
+      node_key: 'checar_email_invalido_arroba', node_type: 'condition',
+      config: { subject: 'var', subject_key: 'email_capturado', operator: 'contains', value: '@', true_next: 'checar_email_invalido_ponto', false_next: 'pedir_email_invalido' },
+    },
+    {
+      node_key: 'checar_email_invalido_ponto', node_type: 'condition',
+      config: { subject: 'var', subject_key: 'email_capturado', operator: 'contains', value: '.', true_next: 'book_meeting', false_next: 'pedir_email_invalido' },
     },
     { node_key: 'handoff_sem_horario', node_type: 'handoff', config: { note: 'Fluxo de Agendamento: sem horário livre no Cal.com.' } },
     { node_key: 'handoff_recusado', node_type: 'handoff', config: { note: 'Fluxo de Agendamento: Cal.com recusou a reserva.' } },
