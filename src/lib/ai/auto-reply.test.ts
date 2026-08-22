@@ -699,7 +699,7 @@ describe('dispatchInboundToAiReply — [[AGENDAR]] revisão 20/08/2026 (C1/C3/C4
     // conjugação real de verbo (agendar, agendei, agendado, agendando,
     // agenda) continua proibida.
     expect(enviado).not.toMatch(/confirm|reserv|agend(?!amento)|marc/i)
-    expect(enviado).toContain('me conta um pouco mais sobre o seu caso')
+    expect(enviado.toLowerCase()).toContain('me conta um pouco mais sobre o seu caso')
   })
 
   // ⚠️ Mesmo workaround do teste "qualificado + PJ" logo acima: qualquer

@@ -83,7 +83,7 @@ const PJ_AGENDAMENTO_MANUAL =
  * FALTA, nunca que está feito").
  */
 const AGENDAR_SEM_QUALIFICACAO =
-  'Antes de seguir com o agendamento, me conta um pouco mais sobre o seu caso — qual é a situação e o valor envolvido? Assim consigo te orientar direito.'
+  'Me conta um pouco mais sobre o seu caso — qual é a situação e o valor envolvido? Assim consigo te orientar direito.'
 /**
  * Fallback seguro para quando a trava anti-mentira (AFIRMA_QUE_AGENDOU)
  * dispara (achado N2 da 2ª revisão de 20/08/2026): antes disto o código
@@ -1502,11 +1502,34 @@ export async function dispatchInboundToAiReply(
     // é sistema preso — e quem está do outro lado vê um robô quebrado. Nenhuma
     // instrução conserta isso, porque a frase repetida vinha do meu código.
     // Repetiu, a conversa é de humano.
+    // Achado ao vivo, 21/08/2026 (retomado à noite): estes textos são
+    // fallbacks FIXOS — repetem de propósito sempre que o mesmo portão
+    // continua fechado entre um turno e outro (ex.: lead ainda não deu
+    // informação suficiente pra qualificar). Isso não é a IA "confusa"
+    // gerando a mesma frase à toa — é o sistema respondendo certo duas
+    // vezes seguidas. Contar isso como loop derrubava a conversa
+    // inteira (autoreply desligado) mesmo com o sistema funcionando
+    // como devia.
+    const TEXTOS_FIXOS_DO_SISTEMA = new Set([
+      FALTA_EMAIL,
+      FALTA_NOME,
+      EMAIL_NAO_RECEBE,
+      HORARIO_TOMADO,
+      FALHA_AGENDA,
+      PJ_AGENDAMENTO_MANUAL,
+      AGENDAR_SEM_QUALIFICACAO,
+      AGENDAMENTO_EM_ANDAMENTO,
+      JA_TEM_REUNIAO,
+    ])
     const ultimaDaIa = [...messages]
       .reverse()
       .find((m) => m.role === 'assistant')
       ?.content.trim()
-    if (ultimaDaIa && splitBubbles(textoFinal).some((b) => b.trim() === ultimaDaIa)) {
+    if (
+      ultimaDaIa &&
+      !TEXTOS_FIXOS_DO_SISTEMA.has(textoFinal) &&
+      splitBubbles(textoFinal).some((b) => b.trim() === ultimaDaIa)
+    ) {
       console.error(
         `[ai auto-reply] ⛔ repetiria a mesma frase na conversa ${conversationId} — passando para humano. Frase: ${ultimaDaIa.slice(0, 120)}`,
       )
