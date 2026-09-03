@@ -10,6 +10,7 @@ import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { loadAiConfig } from '@/lib/ai/config'
 import { transcreverAudioDoWhatsApp } from '@/lib/ai/transcreve'
+import { sendMessageToConversation } from '@/lib/whatsapp/send-message'
 import { isVesperaButton, handleVesperaButton } from '@/lib/appointments/vespera-buttons'
 import { isNudgeButton, handleNudgeButton, ehPararMensagens } from '@/lib/nurture/nudge-buttons'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
@@ -918,17 +919,17 @@ async function processMessage(
   } else if (contentType === 'audio' && !textoParaIa) {
     // Áudio que não deu para transcrever. ⛔ NUNCA ficar mudo: quem gravou um
     // áudio contando o problema e não recebe nada conclui que ninguém ouviu.
+    // 25/08/2026: em vez de desligar a IA e esperar um humano ouvir o áudio,
+    // a própria Márcia avisa que não entendeu e pede pro lead escrever ou
+    // gravar de novo — resolve a maioria dos casos sem depender de ninguém.
     console.warn(
-      `[webhook] áudio sem transcrição na conversa ${conversation.id} — passando para humano`,
+      `[webhook] áudio sem transcrição na conversa ${conversation.id} — pedindo pro lead repetir`,
     )
-    await supabaseAdmin()
-      .from('conversations')
-      .update({
-        ai_autoreply_disabled: true,
-        ai_handoff_summary:
-          'O lead mandou um ÁUDIO que o sistema não conseguiu transcrever. Ouça o áudio no inbox e responda — a IA foi desligada nesta conversa para não responder no escuro.',
-      })
-      .eq('id', conversation.id)
+    await sendMessageToConversation(supabaseAdmin(), accountId, {
+      conversationId: conversation.id,
+      messageType: 'text',
+      contentText: 'Desculpa, não consegui entender o áudio 🙏 Pode escrever a mensagem ou gravar de novo?',
+    })
   }
 
   // message.received webhook (public API). Awaited — not fire-and-forget

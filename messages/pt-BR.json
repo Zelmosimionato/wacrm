@@ -257,7 +257,7 @@
     "sidebar": {
       "contactInfo": "Informações do contato",
       "tags": "Etiquetas",
-      "notes": "Notas",
+      "notes": "Notas do Contato",
       "deals": "Negócios",
       "noTags": "Nenhuma etiqueta",
       "noDeals": "Nenhum negócio",
@@ -356,7 +356,7 @@
         "tags": "Etiquetas",
         "details": "Detalhes",
         "activity": "Atividade",
-        "notes": "Notas",
+        "notes": "Notas do Contato",
         "custom": "Campos personalizados",
         "deals": "Negócios",
         "noTags": "Nenhuma etiqueta",
@@ -520,7 +520,7 @@
       "stage": "Etapa",
       "assignedTo": "Atribuído a",
       "unassigned": "Sem atribuição",
-      "notes": "Notas",
+      "notes": "Notas do Negócio",
       "notesPlaceholder": "Adicionar notas...",
       "status": "Status",
       "markAsWon": "Marcar como ganho",
@@ -836,7 +836,8 @@
         "wait": "Aguardar",
         "condition": "Condição (Se/Senão)",
         "send_webhook": "Enviar webhook",
-        "close_conversation": "Fechar conversa"
+        "close_conversation": "Fechar conversa",
+        "cancel_calcom_booking": "Cancelar agendamento (Cal.com)"
       },
       "triggers": {
         "new_message_received": {
@@ -930,7 +931,9 @@
         "languageLabel": "Idioma",
         "select": "Selecione um modelo…",
         "unknown": "{name} ({lang}) — não está na lista de aprovados",
-        "unknownLang": "desconhecido"
+        "unknownLang": "desconhecido",
+        "variableLabel": "Variável {n}",
+        "variablePlaceholder": "ex.: {{nome}} ou {{campo.Data agendamento}}"
       },
       "branches": {
         "yes": "Sim",
@@ -963,12 +966,20 @@
           "tag_presence": "Presença de etiqueta",
           "contact_field": "Campo do contato",
           "message_content": "Conteúdo da mensagem",
-          "time_of_day": "Hora do dia"
+          "time_of_day": "Hora do dia",
+          "template_sent": "Template já enviado",
+          "deal_stage": "Etapa do card",
+          "sem_resposta_desde": "Sem resposta do cliente desde"
         },
         "operandLabel": "Operando",
         "placeholderTime": "HH:mm-HH:mm",
         "placeholderContact": "nome / e-mail / empresa",
         "placeholderTag": "id da etiqueta",
+        "placeholderTemplateName": "nome do template",
+        "placeholderHoursLookback": "Janela (horas)",
+        "placeholderStage": "id da etapa",
+        "placeholderDateField": "id do campo com a data de referência",
+        "placeholderHoursAntes": "Horas antes da data (início da janela de silêncio)",
         "urlLabel": "URL",
         "headersLabel": "Cabeçalhos",
         "placeholderHeaders": "{\"Authorization\": \"Bearer ...\"}",
@@ -977,7 +988,8 @@
         "matchType": "Tipo de correspondência",
         "matchContains": "Contém",
         "matchExact": "Exata",
-        "closeConversationHint": "Define o status da conversa como \"fechada\". Nenhuma configuração necessária."
+        "closeConversationHint": "Define o status da conversa como \"fechada\". Nenhuma configuração necessária.",
+        "cancelCalcomHint": "Cancela o agendamento do contato no Cal.com (lê o Cal.com UID salvo no contato). Sem UID ou já cancelado, o passo é pulado sem erro. Sem configuração."
       }
     }
   },

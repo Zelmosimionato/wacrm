@@ -34,7 +34,8 @@ import {
   MousePointerClick,
   List,
   MoveRight,
-  Bell,} from "lucide-react"
+  Bell,
+  CalendarX,} from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -120,6 +121,11 @@ const STEP_META: Record<AutomationStepType, StepMeta> = {
   // Precisa existir aqui porque STEP_META e Record<AutomationStepType,...>,
   // exaustivo por tipo.
   start_flow: { label: "start_flow", icon: Zap, border: "border-l-primary" },
+  cancel_calcom_booking: {
+    label: "cancel_calcom_booking",
+    icon: CalendarX,
+    border: "border-l-rose-500",
+  },
 }
 
 const ADDABLE_STEPS: AutomationStepType[] = [
@@ -138,6 +144,7 @@ const ADDABLE_STEPS: AutomationStepType[] = [
   "send_webhook",
   "close_conversation",
   "notify",
+  "cancel_calcom_booking",
 ]
 
 const TRIGGER_OPTIONS: { value: AutomationTriggerType }[] = [
@@ -568,12 +575,18 @@ function DealPipelineFields({
 function SendTemplateFields({
   templateName,
   language,
+  variables,
   onChange,
   t,
 }: {
   templateName: string
   language: string
-  onChange: (patch: { template_name: string; language: string }) => void
+  variables: Record<string, string>
+  onChange: (patch: {
+    template_name?: string
+    language?: string
+    variables?: Record<string, string>
+  }) => void
   t: ReturnType<typeof useTranslations>
 }) {
   const { templates } = useResources()
@@ -611,32 +624,63 @@ function SendTemplateFields({
     (t) => toValue(t.name, t.language ?? "en_US") === current,
   )
 
+  // Placeholders declared by the approved template body ({{1}}, {{2}}...)
+  // — drives how many variable-mapping inputs to render below the
+  // picker. Meta template bodies only ever use consecutive numeric
+  // placeholders, so the max number found is the count.
+  const matchedTemplate = templates.find(
+    (tmpl) => toValue(tmpl.name, tmpl.language ?? "en_US") === current,
+  )
+  const variableNumbers = matchedTemplate
+    ? Array.from(
+        new Set(
+          Array.from(matchedTemplate.body_text.matchAll(/\{\{(\d+)\}\}/g)).map(
+            (m) => m[1],
+          ),
+        ),
+      ).sort((a, b) => Number(a) - Number(b))
+    : []
+
   return (
-    <FieldBlock label={t("templates.templateLabel")}>
-      <select
-        value={current}
-        onChange={(e) => {
-          const [name, lang] = e.target.value.split("::")
-          onChange({ template_name: name ?? "", language: lang ?? "" })
-        }}
-        className={SELECT_CLASS}
-      >
-        <option value="">{t("templates.select")}</option>
-        {templates.map((tmpl) => {
-          const lang = tmpl.language ?? "en_US"
-          return (
-            <option key={tmpl.id} value={toValue(tmpl.name, lang)}>
-              {tmpl.name} ({lang})
+    <>
+      <FieldBlock label={t("templates.templateLabel")}>
+        <select
+          value={current}
+          onChange={(e) => {
+            const [name, lang] = e.target.value.split("::")
+            onChange({ template_name: name ?? "", language: lang ?? "" })
+          }}
+          className={SELECT_CLASS}
+        >
+          <option value="">{t("templates.select")}</option>
+          {templates.map((tmpl) => {
+            const lang = tmpl.language ?? "en_US"
+            return (
+              <option key={tmpl.id} value={toValue(tmpl.name, lang)}>
+                {tmpl.name} ({lang})
+              </option>
+            )
+          })}
+          {current && !hasMatch && (
+            <option value={current}>
+              {t("templates.unknown", { name: templateName, lang: language || t("templates.unknownLang") })}
             </option>
-          )
-        })}
-        {current && !hasMatch && (
-          <option value={current}>
-            {t("templates.unknown", { name: templateName, lang: language || t("templates.unknownLang") })}
-          </option>
-        )}
-      </select>
-    </FieldBlock>
+          )}
+        </select>
+      </FieldBlock>
+      {variableNumbers.map((n) => (
+        <FieldBlock key={n} label={t("templates.variableLabel", { n })}>
+          <Input
+            value={variables[n] ?? ""}
+            onChange={(e) =>
+              onChange({ variables: { ...variables, [n]: e.target.value } })
+            }
+            placeholder={t("templates.variablePlaceholder")}
+            className="bg-muted text-foreground"
+          />
+        </FieldBlock>
+      ))}
+    </>
   )
 }
 
@@ -1192,12 +1236,20 @@ function StepRenderer({
   parentPath: StepPath
 } & Omit<StepListProps, "steps" | "parentPath">) {
   const t = useTranslations("Automations.builder")
-  const path: StepPath = [
-    ...parentPath,
+  // parentPath for a branch-scoped list already ends in a placeholder
+  // marker segment (added by ConditionBranches so StepList can derive
+  // parentScope) — REPLACE it with the real, indexed segment here
+  // instead of appending, or every step nested inside a SIM/NAO branch
+  // ends up one path level too deep and mapAtPath/walkBranches silently
+  // drops its updates (found 24/08/2026: config edits on branch-nested
+  // steps never persisted, even via real clicks/keyboard).
+  const path: StepPath =
     parentScope.kind === "root"
-      ? { kind: "root", index }
-      : { kind: "branch", parentCid: parentScope.parentCid, branch: parentScope.branch, index },
-  ]
+      ? [...parentPath, { kind: "root", index }]
+      : [
+          ...parentPath.slice(0, -1),
+          { kind: "branch", parentCid: parentScope.parentCid, branch: parentScope.branch, index },
+        ]
   const meta = STEP_META[step.step_type]
   const Icon = meta.icon
   const expanded = props.expandedId === step.cid
@@ -1426,6 +1478,7 @@ function StepEditor({
         <SendTemplateFields
           templateName={(cfg.template_name as string) ?? ""}
           language={(cfg.language as string) ?? ""}
+          variables={(cfg.variables as Record<string, string>) ?? {}}
           onChange={(patch) => set(patch)}
           t={t}
         />
@@ -1606,6 +1659,9 @@ function StepEditor({
               <option value="contact_field">{t("config.subjects.contact_field")}</option>
               <option value="message_content">{t("config.subjects.message_content")}</option>
               <option value="time_of_day">{t("config.subjects.time_of_day")}</option>
+              <option value="template_sent">{t("config.subjects.template_sent")}</option>
+              <option value="deal_stage">{t("config.subjects.deal_stage")}</option>
+              <option value="sem_resposta_desde">{t("config.subjects.sem_resposta_desde")}</option>
             </select>
           </FieldBlock>
           <FieldBlock label={t("config.operandLabel")}>
@@ -1617,6 +1673,12 @@ function StepEditor({
                   ? t("config.placeholderContact")
                   : cfg.subject === "tag_presence"
                   ? t("config.placeholderTag")
+                  : cfg.subject === "template_sent"
+                  ? t("config.placeholderTemplateName")
+                  : cfg.subject === "deal_stage"
+                  ? t("config.placeholderStage")
+                  : cfg.subject === "sem_resposta_desde"
+                  ? t("config.placeholderDateField")
                   : ""
               }
               value={(cfg.operand as string) ?? ""}
@@ -1627,6 +1689,28 @@ function StepEditor({
           {(cfg.subject === "contact_field" || cfg.subject === "message_content") && (
             <FieldBlock label="Value">
               <Input
+                value={(cfg.value as string) ?? ""}
+                onChange={(e) => set({ value: e.target.value })}
+                className="bg-muted text-foreground"
+              />
+            </FieldBlock>
+          )}
+          {cfg.subject === "template_sent" && (
+            <FieldBlock label={t("config.placeholderHoursLookback")}>
+              <Input
+                type="number"
+                placeholder="24"
+                value={(cfg.value as string) ?? ""}
+                onChange={(e) => set({ value: e.target.value })}
+                className="bg-muted text-foreground"
+              />
+            </FieldBlock>
+          )}
+          {cfg.subject === "sem_resposta_desde" && (
+            <FieldBlock label={t("config.placeholderHoursAntes")}>
+              <Input
+                type="number"
+                placeholder="21"
                 value={(cfg.value as string) ?? ""}
                 onChange={(e) => set({ value: e.target.value })}
                 className="bg-muted text-foreground"
@@ -1658,6 +1742,15 @@ function StepEditor({
       return (
         <p className="text-xs text-muted-foreground">
           {t("config.closeConversationHint", { defaultValue: "Sets the conversation status to \"closed\". No configuration needed." })}
+        </p>
+      )
+    case "cancel_calcom_booking":
+      return (
+        <p className="text-xs text-muted-foreground">
+          {t("config.cancelCalcomHint", {
+            defaultValue:
+              "Cancela o agendamento do contato no Cal.com (lê o Cal.com UID salvo no contato). Sem UID ou já cancelado, o passo é pulado sem erro. Sem configuração.",
+          })}
         </p>
       )
     default:
@@ -1715,11 +1808,29 @@ function insertAt(
     copy.splice(index, 0, node)
     return copy
   }
+  // The target condition can itself be nested inside another condition's
+  // branch (e.g. a "Enviar modelo" added under the NAO of a condition that
+  // is itself under the NAO of an outer condition) — the old version only
+  // searched the top-level `steps` array for `parent.parentCid`, so any
+  // add-step click below the first level of nesting silently matched
+  // nothing and did nothing (found 24/08/2026: clicking "Enviar modelo"
+  // under a nested condition's branch never added a step, no error either
+  // — same class of bug as the mapAtPath/walkBranches one fixed earlier
+  // this session, but in the sibling insert path).
   return steps.map((s) => {
-    if (s.cid !== parent.parentCid || !s.branches) return s
-    const list = [...s.branches[parent.branch]]
-    list.splice(index, 0, node)
-    return { ...s, branches: { ...s.branches, [parent.branch]: list } }
+    if (s.cid === parent.parentCid && s.branches) {
+      const list = [...s.branches[parent.branch]]
+      list.splice(index, 0, node)
+      return { ...s, branches: { ...s.branches, [parent.branch]: list } }
+    }
+    if (!s.branches) return s
+    return {
+      ...s,
+      branches: {
+        yes: insertAt(s.branches.yes, parent, index, node),
+        no: insertAt(s.branches.no, parent, index, node),
+      },
+    }
   })
 }
 

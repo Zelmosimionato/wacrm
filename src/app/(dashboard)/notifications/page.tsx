@@ -8,7 +8,6 @@ import type { Notification } from "@/types";
 import { Bell, CheckCheck, Clock, Loader2, UserPlus } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 import { NotificationRules } from "@/components/notifications/notification-rules";
 import { toast } from "sonner";
 
@@ -35,6 +34,7 @@ export default function NotificationsPage() {
       .from("notifications")
       .select("*")
       .eq("account_id", accountId)
+      .is("read_at", null)
       .order("created_at", { ascending: false })
       .limit(100);
     if (fetchErr) {
@@ -49,8 +49,11 @@ export default function NotificationsPage() {
     load();
   }, [load]);
 
-  // Realtime — new assignments appear without a refresh, and a
-  // "mark all read" fired from another tab/device stays in sync here.
+  // Realtime — new notices appear without a refresh, and marking read from
+  // another tab/device (or another automation step) drops the row here too.
+  // The list only ever holds UNREAD rows now, so a read UPDATE means
+  // "remove", not "update in place" — otherwise a row marked read elsewhere
+  // would linger, greyed out, forever (the bug this whole page used to have).
   useEffect(() => {
     const supabase = createClient();
     const channel = supabase
@@ -61,6 +64,7 @@ export default function NotificationsPage() {
         (payload) => {
           if (payload.eventType === "INSERT") {
             const row = payload.new as Notification;
+            if (row.read_at) return; // arrived pre-read — nothing to show
             setNotifications((prev) => {
               if (!prev) return [row];
               if (prev.some((n) => n.id === row.id)) return prev;
@@ -69,8 +73,10 @@ export default function NotificationsPage() {
           } else if (payload.eventType === "UPDATE") {
             const row = payload.new as Notification;
             setNotifications((prev) =>
-              prev?.map((n) => (n.id === row.id ? { ...n, ...row } : n)) ??
-              prev,
+              row.read_at
+                ? (prev?.filter((n) => n.id !== row.id) ?? prev)
+                : (prev?.map((n) => (n.id === row.id ? { ...n, ...row } : n)) ??
+                  prev),
             );
           } else if (payload.eventType === "DELETE") {
             const oldRow = payload.old as Partial<Notification>;
@@ -89,16 +95,9 @@ export default function NotificationsPage() {
 
   const markRead = useCallback(
     async (id: string) => {
-      // Optimistic — the row is already visually "read" by the time the
-      // request lands, so the UI doesn't wait on the round-trip.
-      setNotifications(
-        (prev) =>
-          prev?.map((n) =>
-            n.id === id && !n.read_at
-              ? { ...n, read_at: new Date().toISOString() }
-              : n,
-          ) ?? prev,
-      );
+      // Optimistic — the row leaves the list immediately, before the
+      // round-trip lands, so "read" actually means gone, not greyed-out.
+      setNotifications((prev) => prev?.filter((n) => n.id !== id) ?? prev);
       const supabase = createClient();
       const { error: updateErr } = await supabase
         .from("notifications")
@@ -123,15 +122,16 @@ export default function NotificationsPage() {
     [markRead, router],
   );
 
-  const unreadIds = notifications?.filter((n) => !n.read_at).map((n) => n.id) ?? [];
+  // Every row in `notifications` is unread by construction (the fetch and
+  // the realtime handler above both filter on that) — no need to re-derive
+  // an unread subset here.
+  const unreadIds = notifications?.map((n) => n.id) ?? [];
 
   const markAllRead = useCallback(async () => {
     if (unreadIds.length === 0) return;
     setMarkingAll(true);
     const now = new Date().toISOString();
-    setNotifications(
-      (prev) => prev?.map((n) => (n.read_at ? n : { ...n, read_at: now })) ?? prev,
-    );
+    setNotifications([]);
     const supabase = createClient();
     const { error: updateErr } = await supabase
       .from("notifications")
@@ -209,49 +209,28 @@ export default function NotificationsPage() {
         <ul className="space-y-2">
           {notifications.map((n) => {
             const Icon = TYPE_ICON[n.type] ?? Bell;
-            const isUnread = !n.read_at;
             return (
               <li key={n.id}>
                 <button
                   type="button"
                   onClick={() => handleClick(n)}
-                  className={cn(
-                    "flex w-full items-start gap-3 rounded-xl border p-4 text-left transition-colors",
-                    isUnread
-                      ? "border-primary/30 bg-primary/5 hover:border-primary/50"
-                      : "border-border bg-card hover:border-border/70",
-                  )}
+                  className="flex w-full items-start gap-3 rounded-xl border border-primary/30 bg-primary/5 p-4 text-left transition-colors hover:border-primary/50"
                 >
                   <div
-                    className={cn(
-                      "flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg",
-                      isUnread ? "bg-primary/15" : "bg-muted",
-                    )}
+                    className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-primary/15"
                     aria-hidden
                   >
-                    <Icon
-                      className={cn(
-                        "h-5 w-5",
-                        isUnread ? "text-primary" : "text-muted-foreground",
-                      )}
-                    />
+                    <Icon className="h-5 w-5 text-primary" />
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span
-                        className={cn(
-                          "truncate text-sm font-semibold",
-                          isUnread ? "text-foreground" : "text-muted-foreground",
-                        )}
-                      >
+                      <span className="truncate text-sm font-semibold text-foreground">
                         {n.title}
                       </span>
-                      {isUnread && (
-                        <span
-                          aria-label="Unread"
-                          className="h-2 w-2 flex-shrink-0 rounded-full bg-primary"
-                        />
-                      )}
+                      <span
+                        aria-label="Unread"
+                        className="h-2 w-2 flex-shrink-0 rounded-full bg-primary"
+                      />
                     </div>
                     {n.body && (
                       <p className="mt-0.5 truncate text-xs text-muted-foreground">

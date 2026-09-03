@@ -484,7 +484,13 @@ export type AutomationStepType =
    *  cliente: e o unico passo do motor que nao sai do escritorio. */
   | 'notify'
   /** Acorda um Fluxo (motor de Fluxos) para o contato do evento. */
-  | 'start_flow';
+  | 'start_flow'
+  /** Cancela o booking do Cal.com do contato (le o uid do campo
+   *  personalizado "Cal.com UID", reusa `cancelCalcomBooking`). Sem
+   *  configuracao — sempre o contato do evento. Nunca falha o passo: sem
+   *  uid ou cancelamento recusado e "pulado", nao erro (idempotente —
+   *  card que ja chegou cancelado, ex. pelo botao da vespera, nao repete). */
+  | 'cancel_calcom_booking';
 
 export interface StartFlowStepConfig {
   flow_id: string;
@@ -643,7 +649,18 @@ export type ConditionSubject =
   | 'message_content'
   | 'time_of_day'
   /** O card do contato ainda está na etapa `operand`? */
-  | 'deal_stage';
+  | 'deal_stage'
+  /** Já saiu alguma mensagem com o template `operand` nesta conversa nas
+   *  últimas `value` horas (padrão 24h se `value` vazio)? */
+  | 'template_sent'
+  /** O cliente ficou em silêncio? `operand` é o id do campo personalizado
+   *  com a data de referência (ex: data da reunião); `value` é quantas
+   *  horas ANTES dessa data marca o início da janela de silêncio. True
+   *  quando NÃO existe nenhuma mensagem do cliente (sender_type=customer)
+   *  na conversa desde esse instante — o mesmo par tag-ausente/silêncio
+   *  que os lembretes de véspera precisam pra não tratar como silêncio
+   *  quem respondeu de boca sem clicar em botão nenhum. */
+  | 'sem_resposta_desde';
 
 export interface ConditionStepConfig {
   subject: ConditionSubject;

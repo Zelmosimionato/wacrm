@@ -146,6 +146,9 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
     case 'close_conversation':
       // No config required.
       break
+    case 'cancel_calcom_booking':
+      // No config required — always the event's own contact.
+      break
     case 'notify': {
       // ⛔ Sem este caso o passo caia no `default` e a automacao NAO ligava:
       // "Cannot keep automation active with invalid configuration". Foi o que

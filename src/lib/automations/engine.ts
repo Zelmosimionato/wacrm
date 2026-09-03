@@ -28,6 +28,7 @@ import { engineSendText, engineSendTemplate, engineSendInteractive } from './met
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
 import { dentroDoExpediente, proximoInstanteDeExpediente } from './horario-comercial'
+import { cancelCalcomBooking } from '@/lib/appointments/calcom-cancel'
 
 // ------------------------------------------------------------
 // Public API
@@ -125,6 +126,9 @@ export async function automacaoVaiResponder(
 
 /** Etapa "Perdido" do funil de vendas. */
 const STAGE_PERDIDO = '0d0382a5-f15d-4e43-88aa-0c70337d94d4'
+
+/** Campo personalizado "Cal.com UID" — passo `cancel_calcom_booking` le daqui. */
+const CF_CAL_UID = '9a4af810-d6d3-4201-b39d-9ed46648b5d9'
 
 /** Passos que FALAM com o cliente. Os outros (etiqueta, card, webhook) seguem. */
 const PASSOS_QUE_FALAM = ['send_message', 'send_template', 'send_buttons', 'send_list']
@@ -943,6 +947,38 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       return 'conversation closed'
     }
 
+    case 'cancel_calcom_booking': {
+      // Achado 24/08/2026: a automacao "Reagendar reuniao — convite com
+      // botao" so mandava a mensagem — o cancelamento de verdade no Cal.com
+      // (que ja existe e ja roda no caminho do botao da vespera,
+      // `handleVesperaButton`) nunca foi portado pra automacao nativa
+      // quando o script antigo (`reagendar_watcher.js`) foi desligado em
+      // 14/08. A Daniela (5512991059294) ficou com reuniao reservada de
+      // verdade no Cal.com mesmo com o card em "Reagendar reuniao".
+      //
+      // Sem config: sempre o contato do evento. Sem uid ou sem chave, ou
+      // se o Cal.com recusar (ja cancelado, por ex.) — PULADO, nunca erro:
+      // idempotente de proposito, porque o mesmo card pode chegar aqui ja
+      // cancelado pelo botao da vespera.
+      if (!args.contactId) throw new Error('cancel_calcom_booking needs a contact')
+      const apiKey = process.env.CALCOM_API_KEY
+      if (!apiKey) return 'pulado: sem CALCOM_API_KEY configurada'
+      const { data: cf } = await db
+        .from('contact_custom_values')
+        .select('value')
+        .eq('contact_id', args.contactId)
+        .eq('custom_field_id', CF_CAL_UID)
+        .maybeSingle()
+      const uid = (cf as { value?: string | null } | null)?.value?.trim()
+      if (!uid) return 'pulado: contato sem Cal.com UID'
+      const cancelado = await cancelCalcomBooking(
+        uid,
+        apiKey,
+        'Escritório moveu o card para Reagendar',
+      )
+      return cancelado ? `cancelado no Cal.com (${uid})` : `pulado: Cal.com recusou (${uid})`
+    }
+
     case 'notify': {
       // ⛔ Unico passo que nao fala com o cliente: escreve so na tabela
       // `notifications`, lida pelo badge do menu e pela tela de Notificacao.
@@ -1197,6 +1233,68 @@ async function evaluateCondition(cfg: ConditionStepConfig, args: ExecuteArgs): P
       const f = parse(from)
       const t = parse(to)
       return f <= t ? mins >= f && mins < t : mins >= f || mins < t
+    }
+    case 'template_sent': {
+      // Ja saiu alguma mensagem com este template_name na conversa mais
+      // recente do contato, dentro da janela de horas pedida (padrao 24h)?
+      // Existe pra automacoes tipo "confirma so se ainda nao confirmou" —
+      // sem isto nao ha como uma condicao olhar o HISTORICO de mensagens,
+      // so o estado atual do contato/card (achado 24/08/2026).
+      if (!args.contactId || !cfg.operand) return false
+      const horas = Number(cfg.value) > 0 ? Number(cfg.value) : 24
+      const desde = new Date(Date.now() - horas * 60 * 60 * 1000).toISOString()
+      const { data: conv } = await db
+        .from('conversations')
+        .select('id')
+        .eq('contact_id', args.contactId)
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle()
+      const conversationId = conv?.id as string | undefined
+      if (!conversationId) return false
+      const { count } = await db
+        .from('messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('conversation_id', conversationId)
+        .eq('template_name', cfg.operand)
+        .gte('created_at', desde)
+      return (count ?? 0) > 0
+    }
+    case 'sem_resposta_desde': {
+      // Silêncio de verdade: nem clique em botão (isso é outra condição —
+      // tag_presence), nem NENHUMA mensagem do cliente na conversa desde a
+      // referência. `operand` é o campo personalizado com a data-alvo
+      // (ex: data da reunião); `value` são as horas ANTES dessa data em
+      // que a janela de silêncio começa a ser vigiada. Sem campo/data
+      // legível ou sem conversa: não dá pra afirmar silêncio, false.
+      if (!args.contactId || !cfg.operand) return false
+      const { data: cv } = await db
+        .from('contact_custom_values')
+        .select('value')
+        .eq('contact_id', args.contactId)
+        .eq('custom_field_id', cfg.operand)
+        .maybeSingle()
+      const dataAlvo = (cv as { value?: string | null } | null)?.value
+      const alvoMs = dataAlvo ? Date.parse(dataAlvo) : NaN
+      if (!Number.isFinite(alvoMs)) return false
+      const horasAntes = Number(cfg.value) || 0
+      const desde = new Date(alvoMs - horasAntes * 60 * 60 * 1000).toISOString()
+      const { data: conv } = await db
+        .from('conversations')
+        .select('id')
+        .eq('contact_id', args.contactId)
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle()
+      const conversationId = conv?.id as string | undefined
+      if (!conversationId) return true
+      const { count } = await db
+        .from('messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('conversation_id', conversationId)
+        .eq('sender_type', 'customer')
+        .gte('created_at', desde)
+      return (count ?? 0) === 0
     }
     default:
       return false

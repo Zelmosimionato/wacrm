@@ -20,6 +20,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { CorrigirAgendamentoDialog } from "@/components/contacts/corrigir-agendamento-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -475,6 +476,14 @@ export function DealForm({
                     {t("reopenDeal")}
                   </Button>
                 )}
+              </div>
+            )}
+            {deal && deal.contact_id && (
+              <div className="border-t border-border/50 pt-3">
+                <CorrigirAgendamentoDialog
+                  contactId={deal.contact_id}
+                  onDone={onSaved}
+                />
               </div>
             )}
           </div>
