@@ -51,63 +51,93 @@ function formatar(iso: string): string {
   return `${data}, ${semana}, às ${hora}`
 }
 
+/** Uma chamada crua ao /slots — devolve o mapa dia→ISOs, nunca lança (ver header do arquivo). */
+async function buscarSlots(
+  eventTypeId: string | number,
+  apiKey: string,
+  inicio: Date,
+  fim: Date,
+): Promise<Map<string, string[]>> {
+  const porDia = new Map<string, string[]>()
+  const q = new URLSearchParams({
+    eventTypeId: String(eventTypeId),
+    start: inicio.toISOString(),
+    end: fim.toISOString(),
+    timeZone: TZ,
+  })
+  const res = await fetch(`${CAL_API}/slots?${q}`, {
+    headers: {
+      'cal-api-version': V_SLOTS,
+      Authorization: `Bearer ${apiKey}`,
+    },
+  })
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    console.error('[calcom-slots]', res.status, body.slice(0, 200))
+    return porDia
+  }
+  const json = (await res.json()) as {
+    data?: Record<string, Array<{ start?: string; time?: string }>>
+  }
+  // A v2 devolve { data: { "2026-08-11": [{ start: "..." }, ...], ... } }.
+  for (const [dia, lista] of Object.entries(json.data ?? {})) {
+    const isos = (lista ?? [])
+      .map((s) => s.start ?? s.time)
+      .filter((x): x is string => !!x)
+      .sort()
+    if (isos.length) porDia.set(dia, isos)
+  }
+  return porDia
+}
+
 /**
  * Próximos horários livres, ESPALHADOS POR DIA.
  *
  * @param eventTypeId  o tipo de evento do Cal.com (a videochamada de 45min)
- * @param dias         janela a consultar a partir de agora. ⚠️ 14 dias era pouco:
- *                     em 09/08/2026 uma lead perguntou "teria em setembro?" e a IA
- *                     respondeu "estou com agenda apenas para as próximas duas
- *                     semanas" — dedução correta da lista curta e falsa no mundo.
- *                     A janela precisa alcançar o mês seguinte.
+ * @param dias         janela a consultar a partir de agora. Reduzida de 45 para 14 em
+ *                     31/08/2026 (decisão do titular): "45 dias é muito para oferecer
+ *                     ... tem de marcar no máximo na próxima semana" — uma reunião
+ *                     gratuita de qualificação marcada a mais de 2 semanas esfria o
+ *                     lead. ⚠️ Isso reabre o motivo original dos 45 dias (09/08/2026,
+ *                     lead perguntou "teria em setembro?" e a IA negou com uma janela
+ *                     curta) — decisão consciente do titular, não desfazer sem
+ *                     confirmar com ele de novo se voltar a acontecer.
  * @param limite       quantos devolver — a IA oferece no máximo três de cada vez,
  *                     mas precisa de mais na mão para atender "e na quinta?"
  */
 export async function horariosLivres(
   eventTypeId: string | number,
   apiKey: string,
-  dias = 45,
+  dias = 14,
   limite = 8,
 ): Promise<SlotLivre[]> {
   try {
     const agora = new Date()
     const fim = new Date(agora.getTime() + dias * 86_400_000)
-    const q = new URLSearchParams({
-      eventTypeId: String(eventTypeId),
-      start: agora.toISOString(),
-      end: fim.toISOString(),
-      timeZone: TZ,
-    })
-    const res = await fetch(`${CAL_API}/slots?${q}`, {
-      headers: {
-        'cal-api-version': V_SLOTS,
-        Authorization: `Bearer ${apiKey}`,
-      },
-    })
-    if (!res.ok) {
-      const body = await res.text().catch(() => '')
-      console.error('[calcom-slots]', res.status, body.slice(0, 200))
-      return []
+
+    // Reforço 31/08/2026: numa consulta de janela larga, o Cal.com devolveu
+    // dado incompleto uma vez (sumiu um dia próximo que uma consulta estreita,
+    // segundos depois, trouxe normalmente — não reproduzido de novo, então é
+    // tratado como falha intermitente do lado deles, não bug nosso). Rodar as
+    // duas em paralelo e mesclar é seguro (mesmo endpoint, mesma leitura) e
+    // garante que uma falha pontual na consulta larga nunca esconda um
+    // horário bem próximo que uma consulta curta capturaria.
+    const fimPerto = new Date(agora.getTime() + Math.min(dias, 7) * 86_400_000)
+    const [porDiaLargo, porDiaPerto] = await Promise.all([
+      buscarSlots(eventTypeId, apiKey, agora, fim),
+      buscarSlots(eventTypeId, apiKey, agora, fimPerto),
+    ])
+    const porDia = new Map(porDiaLargo)
+    for (const [dia, isos] of porDiaPerto) {
+      if (!porDia.has(dia)) porDia.set(dia, isos)
     }
-    const json = (await res.json()) as {
-      data?: Record<string, Array<{ start?: string; time?: string }>>
-    }
-    // A v2 devolve { data: { "2026-08-11": [{ start: "..." }, ...], ... } }.
-    //
+
     // ⚠️ Pegar os N mais cedo entrega N horários DO MESMO DIA — e aí a IA não
     // tem o que oferecer a quem pede outro dia. Em 08/08/2026 ela recebeu 4
     // horários, todos de quarta, o lead quis remarcar, e ela INVENTOU uma
     // quinta-feira para ter uma segunda opção. Espalhar por dia tira a
     // tentação: opção de verdade no lugar de opção imaginada.
-    const porDia = new Map<string, string[]>()
-    for (const [dia, lista] of Object.entries(json.data ?? {})) {
-      const isos = (lista ?? [])
-        .map((s) => s.start ?? s.time)
-        .filter((x): x is string => !!x)
-        .sort()
-      if (isos.length) porDia.set(dia, isos)
-    }
-
+    //
     // Rodízio: o 1º horário de cada dia, depois o 2º de cada dia, e assim por
     // diante — dias mais próximos primeiro — até completar o limite.
     const dias_ = [...porDia.keys()].sort()
