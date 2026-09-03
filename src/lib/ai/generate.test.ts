@@ -45,6 +45,8 @@ describe('parseGeneration', () => {
       handoff: false,
       move: null,
       agendar: null,
+      segmento: null,
+      valor: null,
       desmarcar: false,
       portaAberta: false,
       usage: null,
@@ -57,6 +59,8 @@ describe('parseGeneration', () => {
       handoff: true,
       move: null,
       agendar: null,
+      segmento: null,
+      valor: null,
       desmarcar: false,
       portaAberta: false,
       usage: null,
@@ -66,6 +70,8 @@ describe('parseGeneration', () => {
       handoff: true,
       move: null,
       agendar: null,
+      segmento: null,
+      valor: null,
       desmarcar: false,
       portaAberta: false,
       usage: null,
@@ -79,6 +85,8 @@ describe('parseGeneration', () => {
       handoff: false,
       move: null,
       agendar: null,
+      segmento: null,
+      valor: null,
       desmarcar: false,
       portaAberta: false,
       usage,
@@ -97,6 +105,25 @@ describe('parseGeneration', () => {
 
   it('sem marcador, não agenda nada', () => {
     expect(parseGeneration('Qual horário fica melhor?').agendar).toBeNull()
+  })
+
+  // Trava de piso (01/09/2026, caso Andreia): o valor precisa sair do texto
+  // igual ao AGENDAR/PF/PJ — se escapasse, o cliente leria "[[VALOR:9000]]"
+  // no WhatsApp; se não fosse lido, a trava de auto-reply.ts não teria como
+  // decidir se a resposta pode sair.
+  it('lê o valor determinado e remove o marcador do texto', () => {
+    const r = parseGeneration('Entendi, é uma dívida de pessoa física de R$ 9.000. [[VALOR:9000]]')
+    expect(r.valor).toBe(9000)
+    expect(r.text).toBe('Entendi, é uma dívida de pessoa física de R$ 9.000.')
+  })
+
+  it('sem marcador de valor, valor fica null', () => {
+    expect(parseGeneration('Me conta mais sobre a dívida?').valor).toBeNull()
+  })
+
+  it('aceita o marcador de valor junto do segmento e de um movimento de card', () => {
+    const r = parseGeneration('Show, PJ com R$ 500 mil! [[PJ]][[VALOR:500000]][[SUPER]]')
+    expect(r).toMatchObject({ valor: 500000, segmento: 'PJ', move: 'super', text: 'Show, PJ com R$ 500 mil!' })
   })
 
   it('aceita o marcador junto de um movimento de card', () => {
@@ -170,6 +197,8 @@ describe('generateReply — OpenAI', () => {
       handoff: false,
       move: null,
       agendar: null,
+      segmento: null,
+      valor: null,
       desmarcar: false,
       portaAberta: false,
       usage: { promptTokens: 42, completionTokens: 8, totalTokens: 50 },
@@ -233,6 +262,8 @@ describe('generateReply — Anthropic', () => {
       handoff: false,
       move: null,
       agendar: null,
+      segmento: null,
+      valor: null,
       desmarcar: false,
       portaAberta: false,
       usage: { promptTokens: 30, completionTokens: 6, totalTokens: 36 },

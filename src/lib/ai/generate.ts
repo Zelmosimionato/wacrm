@@ -14,6 +14,9 @@ import {
   DESMARCAR_SENTINEL,
   PERDIDO_SENTINEL,
   PORTA_ABERTA_SENTINEL,
+  PF_SENTINEL,
+  PJ_SENTINEL,
+  VALOR_SENTINEL_RE,
   aiRequestTimeoutMs,
 } from './defaults'
 import { generateOpenAi } from './providers/openai'
@@ -94,6 +97,18 @@ export function parseGeneration(
   // lista morre ali — o modelo nunca escreve a data.
   const mAgendar = raw.match(AGENDAR_SENTINEL_RE)
   const agendar = mAgendar ? Number(mAgendar[1]) : null
+  // Segmento: PF/PJ confirmado NESTE turno. PJ ganha se, por algum motivo, os
+  // dois vierem juntos (não deveria acontecer, mas a resposta não pode virar
+  // "nenhum dos dois" por causa disso).
+  const segmento: GenerateResult['segmento'] = raw.includes(PJ_SENTINEL)
+    ? 'PJ'
+    : raw.includes(PF_SENTINEL)
+      ? 'PF'
+      : null
+  // `[[VALOR:9000]]` → valor da dívida que a IA acabou de determinar nesta
+  // resposta. Mesmo padrão do AGENDAR: guardamos só o número.
+  const mValor = raw.match(VALOR_SENTINEL_RE)
+  const valor = mValor ? Number(mValor[1]) : null
   const text = [
     HANDOFF_SENTINEL,
     SUPER_SENTINEL,
@@ -102,9 +117,12 @@ export function parseGeneration(
     DESMARCAR_SENTINEL,
     PERDIDO_SENTINEL,
     PORTA_ABERTA_SENTINEL,
+    PF_SENTINEL,
+    PJ_SENTINEL,
   ]
     .reduce((acc, s) => acc.split(s).join(''), raw)
     .replace(new RegExp(AGENDAR_SENTINEL_RE.source, 'gi'), '')
+    .replace(new RegExp(VALOR_SENTINEL_RE.source, 'gi'), '')
     .trim()
-  return { text, handoff, move, agendar, desmarcar, portaAberta, usage }
+  return { text, handoff, move, agendar, segmento, valor, desmarcar, portaAberta, usage }
 }

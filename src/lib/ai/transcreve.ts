@@ -27,24 +27,26 @@ const TIMEOUT_MS = 60_000
 /** Teto de segurança: o WhatsApp já limita, mas mídia inesperada não pode virar conta alta. */
 const MAX_BYTES = 25 * 1024 * 1024
 
-export async function transcreverAudioDoWhatsApp(args: {
-  mediaId: string
-  metaToken: string
+/**
+ * O envio pro Whisper em si — a parte que NÃO depende de onde o áudio veio.
+ * Extraído de `transcreverAudioDoWhatsApp` (24/08/2026) para o segundo
+ * número (Evolution/wazap) poder transcrever também: aquele áudio já chega
+ * como buffer (baixado do Storage próprio), sem media id nem token da Meta —
+ * só a chamada ao Whisper é comum aos dois canais.
+ */
+export async function transcreverAudioBuffer(args: {
+  buffer: ArrayBuffer | Buffer
+  mimeType: string
   apiKey: string
 }): Promise<string | null> {
-  const { mediaId, metaToken, apiKey } = args
+  const { buffer, mimeType, apiKey } = args
   try {
-    const { url, mimeType } = await getMediaUrl({ mediaId, accessToken: metaToken })
-    const { buffer, contentType } = await downloadMedia({
-      downloadUrl: url,
-      accessToken: metaToken,
-    })
     if (buffer.byteLength > MAX_BYTES) {
       console.error(`[transcreve] áudio grande demais (${buffer.byteLength} bytes) — ignorado`)
       return null
     }
 
-    const tipo = contentType || mimeType || 'audio/ogg'
+    const tipo = mimeType || 'audio/ogg'
     // O WhatsApp manda ogg/opus; a extensão no nome importa para a API aceitar.
     const ext = tipo.includes('mp4') || tipo.includes('m4a') ? 'm4a' : tipo.includes('mpeg') ? 'mp3' : 'ogg'
 
@@ -69,8 +71,27 @@ export async function transcreverAudioDoWhatsApp(args: {
     const json = (await res.json()) as { text?: string }
     const texto = json.text?.trim()
     if (!texto) return null
-    console.log(`[transcreve] ${mediaId}: ${texto.length} chars`)
+    console.log(`[transcreve] ${texto.length} chars`)
     return texto
+  } catch (err) {
+    console.error('[transcreve]', err instanceof Error ? err.message : String(err))
+    return null
+  }
+}
+
+export async function transcreverAudioDoWhatsApp(args: {
+  mediaId: string
+  metaToken: string
+  apiKey: string
+}): Promise<string | null> {
+  const { mediaId, metaToken, apiKey } = args
+  try {
+    const { url, mimeType } = await getMediaUrl({ mediaId, accessToken: metaToken })
+    const { buffer, contentType } = await downloadMedia({
+      downloadUrl: url,
+      accessToken: metaToken,
+    })
+    return transcreverAudioBuffer({ buffer, mimeType: contentType || mimeType || 'audio/ogg', apiKey })
   } catch (err) {
     console.error('[transcreve]', err instanceof Error ? err.message : String(err))
     return null

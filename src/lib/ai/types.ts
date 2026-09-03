@@ -71,6 +71,18 @@ export interface GenerateResult {
    *  mostrada nesta resposta), ou null. É índice, nunca data: o modelo escolhe
    *  da lista lida do Cal.com e assim não tem como inventar horário. */
   agendar: number | null
+  /** A pessoa acabou de confirmar se a dívida é pessoa física ou jurídica,
+   *  nesta mesma resposta — ou null se este turno não tratou disso. Quem
+   *  chama persiste a tag na hora; a trava de agendamento (auto-reply.ts)
+   *  lê a tag persistida, não este campo, porque a confirmação pode ter
+   *  vindo num turno anterior. */
+  segmento: 'PF' | 'PJ' | null
+  /** O valor aproximado/exato da dívida que a IA acabou de determinar,
+   *  nesta mesma resposta — ou null se este turno não tratou disso. A
+   *  trava de piso (auto-reply.ts) usa este campo pra decidir, na hora, se
+   *  troca a resposta inteira por uma recusa — antes de qualquer coisa
+   *  sair pro cliente. Mesmo padrão do `segmento` acima. */
+  valor: number | null
   /** Provider token usage for this call, or null when unavailable. */
   usage: AiUsage | null
 }

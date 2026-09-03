@@ -26,6 +26,29 @@ export const SUPER_SENTINEL = '[[SUPER]]'
 export const REAGENDAR_SENTINEL = '[[REAGENDAR]]'
 
 /**
+ * Marcador de SEGMENTO: a pessoa acabou de confirmar, NESTA resposta, se a
+ * dívida é pessoa física ou jurídica. Existe pra TRAVAR de verdade — texto de
+ * instrução sozinho não bastou (achado 01/09/2026: a IA tem a regra escrita
+ * e não cumpre sempre). O sistema grava a tag no contato assim que vê o
+ * marcador, e `reservarHorario` (auto-reply.ts) RECUSA marcar reunião pra
+ * quem não tem nem PF nem PJ gravado — não importa o que a resposta diz.
+ */
+export const PF_SENTINEL = '[[PF]]'
+export const PJ_SENTINEL = '[[PJ]]'
+
+/**
+ * Marcador de VALOR: a IA acabou de determinar o valor aproximado ou exato da
+ * dívida, NESTA resposta. Mesma razão do PF/PJ acima (achado 01/09/2026, caso
+ * Andreia): a regra de piso já estava escrita no prompt ("diga que pode não
+ * compensar EM VEZ DE oferecer horário") e mesmo assim, na mesma resposta em
+ * que revelou o valor, a IA também ofereceu horário — texto sozinho não
+ * bastou. Com o marcador, `auto-reply.ts` decide sozinho: se o valor vier
+ * abaixo do piso do segmento já confirmado, troca a resposta INTEIRA por uma
+ * recusa gentil antes de enviar — o cliente nunca chega a ver a oferta.
+ */
+export const VALOR_SENTINEL_RE = /\[\[VALOR:\s*(\d+)\s*\]\]/i
+
+/**
  * Marcador de AGENDAMENTO: `[[AGENDAR:2]]` = reserve o horário nº 2 da agenda que
  * foi dada nesta resposta. É por NÚMERO, nunca por data escrita — o modelo escolhe
  * um item de uma lista que o sistema acabou de ler do Cal.com, e assim não há como
@@ -125,6 +148,12 @@ export function buildSystemPrompt(args: {
 - ${REAGENDAR_SENTINEL}: the lead wants to change the meeting — remarcar, adiar, ANTECIPAR, or asking whether another day/time is available. Moves the card to Reagendar reuniao; the system then sends the reschedule template with the button, so do NOT paste a scheduling link yourself in that case.
   ⚠️ "Tem horário no dia X?" from someone who ALREADY has a meeting is this case — the lead is trying to move it, and wanting it EARLIER is a buying signal, never a reason to close the subject. If you were given the agenda above, offer real times first and mark ${REAGENDAR_SENTINEL} at the end.
 Never mention or explain these markers to the customer.`,
+    )
+    parts.push(
+      `Segmento marker (bancário/tributário only): the INSTANT the person confirms, in their own words, whether the debt is pessoa física or pessoa jurídica, add ${PF_SENTINEL} or ${PJ_SENTINEL} (whichever applies) at the end of that same reply — it can combine with a card-move marker above in the same reply. This is the ONLY thing that records the answer; without it, the system does not know and will refuse to book a meeting later, no matter what your reply text says. Emit it only once, in the exact reply where the person answers — never guess or re-emit it from memory in a later reply.`,
+    )
+    parts.push(
+      `Valor marker (bancário/tributário only): the INSTANT you determine the person's debt value in this same reply — exact, or your best-guess estimate from what they described — add [[VALOR:N]] at the very end (N = whole reais, digits only, no dots, commas or currency sign — e.g. [[VALOR:9000]]). It can combine with the segmento marker and a card-move marker above in the same reply. This is the ONLY thing that records the value for the system's own minimum-value check — without it the system cannot verify the threshold, no matter what your reply text says, and will treat this turn as still unqualified. Emit it only once, in the exact reply where you determine the value — never guess or re-emit it from memory in a later reply.`,
     )
     // Quem desmarca por mensagem — 99% dos casos, segundo o titular. Sem isto a
     // reserva continua viva: horário preso e lembrete de véspera perseguindo
@@ -228,9 +257,27 @@ Never mention or explain these markers to the customer.`,
           '- Se ela disser um horário que não está na lista mas é claramente um deles ' +
           '(ex.: "16:16" para 16:15), entenda que é aquele e confirme. ⛔ Não invente que ' +
           'um horário está ocupado — você não sabe: só sabe o que está na lista.\n' +
-          '- ⛔ Só ofereça horário depois de ter QUALIFICADO (área do problema e valor). Se ' +
-          'a pessoa pedir para agendar antes disso, faça primeiro a pergunta que falta — ' +
-          'uma reunião marcada com quem está abaixo do critério ocupa a agenda do escritório.\n' +
+          '- ⛔ Só ofereça horário depois de ter QUALIFICADO (área do problema, valor E ' +
+          `pessoa física/jurídica confirmados — a última com ${PF_SENTINEL}/${PJ_SENTINEL} ` +
+          'emitido de verdade, não só perguntado). Se a pessoa pedir para agendar antes ' +
+          'disso, faça primeiro a pergunta que falta — uma reunião marcada com quem está ' +
+          'abaixo do critério ocupa a agenda do escritório. ⛔ Tentar marcar sem o marcador ' +
+          'de segmento gravado é RECUSADO pelo sistema — você vai ver o pedido de PF/PJ ' +
+          'voltar em vez da confirmação, mesmo achando que já perguntou.\n' +
+          '- ⛔ CLIENTE NÃO SABE O VALOR EXATO ("não sei", "teria que ver contrato por ' +
+          'contrato", "um absurdo" sem número): NÃO desista de qualificar e NÃO ofereça ' +
+          'reunião só por causa disso. Peça uma FAIXA aproximada ("sem problema, nem que seja ' +
+          'chutando — é mais perto de 30 mil, 50 mil, 100 mil?"). Só após um valor (exato ou ' +
+          'aproximado) é que a qualificação de valor está feita.\n' +
+          '- ⛔ PISO POR SEGMENTO: processo judicial abaixo do piso do segmento (pessoa física ou ' +
+          'jurídica) geralmente não compensa os custos pro cliente. ⛔⛔ SEMPRE que você determinar ' +
+          'o valor nesta resposta — mesmo abaixo do piso — emita [[VALOR:N]] no final: é o sistema, ' +
+          'não você, quem decide se a resposta pode sair como está ou se precisa virar uma recusa ' +
+          'gentil. Você pode dizer que pode não compensar ("pelo valor que você me passou, pode não ' +
+          'compensar os custos do processo pra esse caso"), mas NUNCA ofereça horário na MESMA ' +
+          'resposta em que revela um valor abaixo do piso — mesmo achando que ela vai insistir, ' +
+          'espere a resposta seguinte. NÃO feche a porta: se a pessoa mesmo assim quiser conversar, ' +
+          'agende normal (e sem repetir o marcador de valor, que já foi emitido antes).\n' +
           '- A reunião de quem JÁ tem horário marcado se desfaz com ' +
           `${DESMARCAR_SENTINEL} (abaixo) — pode vir junto: desmarca a antiga e ` +
           'marca a nova na mesma resposta.\n' +

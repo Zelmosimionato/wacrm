@@ -43,6 +43,34 @@ const FALTA_EMAIL =
   'Para eu já deixar a sua reunião confirmada, preciso do seu e-mail — é para lá que vai o convite com o link da videochamada.\n\nPode me passar, por gentileza?'
 const FALTA_NOME =
   'Para eu já deixar a sua reunião confirmada, me confirma o seu nome completo, por gentileza?'
+/** Trava de verdade (01/09/2026): a IA tem a regra de perguntar PF/PJ
+ *  escrita e nem sempre cumpre. Sem a tag gravada, `reservarHorario` recusa
+ *  marcar e devolve este texto em vez da confirmação — não importa o que a
+ *  resposta gerada dizia. */
+const FALTA_SEGMENTO =
+  'Antes de eu confirmar o horário, só uma última pergunta: essa dívida é sua, pessoal, ou é de uma empresa?'
+/**
+ * Pisos confidenciais de valor por segmento (mesma fonte da qualificação em
+ * `ai_configs.system_prompt`). ⚠️ Tributário PJ tem piso real de R$50k, não
+ * R$100k — usar o piso de PJ aqui (mais alto) pra todo mundo é simplificação
+ * consciente, mesmo trade-off já aceito na trava de PF/PJ de 01/09: no pior
+ * caso pede uma confirmação a mais de quem insistir, nunca perde o lead —
+ * a porta sempre fica aberta (ver VALOR_ABAIXO_DO_PISO).
+ */
+const PISO_PF = 50_000
+const PISO_PJ = 100_000
+/**
+ * Trava de verdade pro PISO DE VALOR (01/09/2026, caso Andreia): a IA tinha a
+ * regra escrita ("diga que pode não compensar EM VEZ DE oferecer horário") e,
+ * na mesma resposta em que revelou o valor, também ofereceu horário — texto
+ * sozinho não bastou, mesma classe de falha do PF/PJ. Troca a resposta
+ * INTEIRA antes de sair: o cliente nunca chega a ver a oferta indevida (não é
+ * "oferece e depois cancela"). ⛔ Nunca revela o número nem o critério; a
+ * porta fica aberta — se a pessoa insistir na resposta seguinte, o próximo
+ * turno não carrega o marcador de valor de novo e segue o fluxo normal.
+ */
+const VALOR_ABAIXO_DO_PISO =
+  'Pelo valor que você me passou, o custo de um processo judicial pode não compensar em relação ao benefício.\n\nMas se mesmo assim você quiser conversar com um advogado sobre o seu caso, é só me avisar que agendo uma reunião gratuita pra você.'
 const EMAIL_NAO_RECEBE =
   'Esse e-mail não está recebendo mensagens — deve ter escapado um errinho de digitação.\n\nPode conferir e me mandar de novo? É para lá que vai o convite da videochamada.'
 const HORARIO_TOMADO =
@@ -195,6 +223,66 @@ const CF_LOCAL = '62721dd7-92f9-4587-b3db-65a8e1a51120'
 const CF_DATA_ISO = 'e482845b-8ed4-4f4d-ae0e-0eed9dafbe4e'
 const CF_CAL_UID = '9a4af810-d6d3-4201-b39d-9ed46648b5d9'
 const TAG_AGENDOU = 'c0278b4c-8f17-416e-a7e4-b66b6e78315a'
+const TAG_PF = '9f870fd7-1155-4ede-9da8-8678360c0ae9'
+const TAG_PJ = 'ea69a90c-407b-411c-953c-2d9920ef6a5e'
+
+/** Lê o segmento PF/PJ já GRAVADO (tag persistida) — não o desta resposta,
+ *  porque a confirmação de PF/PJ pode ter vindo num turno anterior ao que
+ *  revela o valor (foi exatamente o caso da Andreia, 01/09/2026). PJ ganha
+ *  se, por algum motivo, as duas tags existirem — mesmo desempate do
+ *  `parseGeneration`. */
+async function segmentoPersistido(
+  db: ReturnType<typeof supabaseAdmin>,
+  contactId: string,
+): Promise<'PF' | 'PJ' | null> {
+  const { data } = await db
+    .from('contact_tags')
+    .select('tag_id')
+    .eq('contact_id', contactId)
+    .in('tag_id', [TAG_PF, TAG_PJ])
+  if (!data?.length) return null
+  return data.some((t) => t.tag_id === TAG_PJ) ? 'PJ' : 'PF'
+}
+
+/** "47.500,00" → 47500 · "450" → 450 · "1.234" → 1234 (ponto = milhar, vírgula
+ *  = decimal, padrão BR). */
+function normalizaValorBr(bruto: string): number | null {
+  const limpo = bruto.replace(/\./g, '').replace(',', '.')
+  const n = Number(limpo)
+  return Number.isFinite(n) ? Math.round(n) : null
+}
+
+/**
+ * Rede da trava de piso (01/09/2026, caso Rogério): extrai o ÚLTIMO valor em
+ * reais que o PRÓPRIO CLIENTE escreveu — nunca o que a IA escreveu. Existe
+ * porque o marcador `[[VALOR:N]]` depende da IA lembrar de emitir, e no caso
+ * do Rogério ela reconheceu "R$450,00" na conversa e foi direto pra oferecer
+ * horário sem nunca emitir nada. Isto NÃO substitui o marcador — só entra
+ * quando `valor` (do turno) veio null, como último recurso.
+ * ⚠️ Heurística de texto, não entendimento: uma conversa com vários números
+ * (valor original do empréstimo, parcela, valor já pago) pode pegar o número
+ * errado. Por isso exige contexto de moeda explícito (`R$`, "mil" ou "reais"
+ * — nunca número solto, que seria telefone/data/contagem de parcela) e serve
+ * só de REDE: o pior caso de acertar errado é travar uma resposta boa, e a
+ * recusa (`VALOR_ABAIXO_DO_PISO`) sempre deixa a porta aberta pra insistir.
+ */
+export function valorDeclaradoPeloCliente(messages: ChatMessage[]): number | null {
+  const PADRAO = /R\$\s*([\d.,]+)|([\d.,]+)\s*mil\b|([\d.,]+)\s*reais\b/gi
+  let ultimo: number | null = null
+  for (const m of messages) {
+    if (m.role !== 'user') continue
+    PADRAO.lastIndex = 0
+    let match: RegExpExecArray | null
+    while ((match = PADRAO.exec(m.content))) {
+      const bruto = match[1] ?? match[2] ?? match[3]
+      const numero = normalizaValorBr(bruto)
+      if (numero === null) continue
+      const ehMil = match[2] !== undefined
+      ultimo = ehMil ? numero * 1000 : numero
+    }
+  }
+  return ultimo
+}
 
 /** Assina o cancelamento feito daqui. O intake lê isto no webhook
  *  BOOKING_CANCELLED e fica quieto — senão o lead recebe, logo depois da
@@ -375,6 +463,18 @@ interface DispatchArgs {
 const CLIENT_MODE_BLOCK =
   'ATENCAO - MODO CLIENTE (prioridade maxima, sobrepoe QUALQUER instrucao de qualificacao acima): este contato JA E CLIENTE do escritorio, nao e um lead novo. NUNCA faca qualificacao com ele: nao pergunte o nome, nao pergunte o valor da divida, nao peca dados, nao aplique criterio de valor e nao envie link de agendamento. Trate como atendimento de cliente: acolha com empatia, confirme que recebemos a mensagem e informe que a equipe/o advogado responsavel vai verificar o andamento do caso dele e retornar em breve. Responda em no maximo 2 frases curtas e cordiais. Nao prometa prazos nem resultados, nao invente nada sobre o processo. Mesmo que o cliente esteja aflito ou reclamando, RESPONDA com esse acolhimento - NAO use o protocolo de transferencia ([[HANDOFF]]); o encaminhamento para um humano e feito automaticamente pelo sistema depois da sua resposta.'
 
+// Achado 25/08/2026 (caso Mislene, 5511983013062): lead mencionou um
+// processo judicial de 10 anos, ja em fase de execucao, e a Marcia seguiu
+// o roteiro padrao de qualificacao (perguntou valor, PF/PJ) em vez de
+// reconhecer que isso e diferente de uma consulta comum. O titular teve
+// que perceber sozinho e assumir a conversa na mao. Combinado com ele:
+// nao da pra pegar isso com regex (a frase varia demais - numero de
+// processo, "ja entrei com acao", "fase de execucao", etc), tem que ser
+// julgamento do modelo. E ele foi claro: ela precisa dar alguma satisfacao
+// na conversa ANTES de passar — nao pode simplesmente sumir.
+const PROCESSO_EM_ANDAMENTO_BLOCK =
+  'ATENCAO - LEAD COM PROCESSO JUDICIAL JA EM ANDAMENTO: se em algum momento da conversa o lead deixar claro que ja existe um processo judicial em curso sobre o assunto (cita numero de processo, diz que "ja entrou com acao", que esta em "fase de execucao", que ja foi executado, ou relato equivalente) - isto e diferente de alguem so buscando avaliar se tem direito a algo, e merece atencao imediata de um advogado, nao o fluxo padrao de qualificacao. Assim que perceber isso, PARE de fazer perguntas de qualificacao (nao continue pedindo valor, PF/PJ etc). Responda em no maximo 2 frases curtas e cordiais confirmando que entendeu que ha um processo em andamento e que vai passar o caso para um dos advogados do escritorio entrar em contato diretamente - nunca desapareca sem dar essa satisfacao. Nao prometa prazos, valores ou resultados sobre o processo. Depois dessa resposta, use o protocolo de transferencia ([[HANDOFF]]) para encerrar e passar para um humano.'
+
 /**
  * A contact counts as "returning" if their newest-but-one message in the
  * (reused) conversation is at least this far before the current inbound —
@@ -523,7 +623,7 @@ async function ligarDigitando(
  * deixou de ser respondido — ninguém no escritório soube. Ficar sem resposta é
  * o pior desfecho possível para um lead que estava quase marcando.
  */
-async function passarParaHumano(
+export async function passarParaHumano(
   db: ReturnType<typeof supabaseAdmin>,
   accountId: string,
   contactId: string,
@@ -538,7 +638,29 @@ async function passarParaHumano(
   }
   if (handoffAgentId && !jaTemDono) update.assigned_agent_id = handoffAgentId
   await db.from('conversations').update(update).eq('id', conversationId)
+  await avisarHandoff(db, accountId, contactId, conversationId, resumo, handoffAgentId)
+}
 
+/**
+ * Só o aviso (notificação no CRM + WhatsApp) de um handoff — separado de
+ * `passarParaHumano` pra caminhos que já desligam a IA com sua própria
+ * lógica de atribuição (ex: áudio sem transcrição nos webhooks) e só
+ * precisam do aviso, sem herdar/alterar o comportamento de assignment.
+ *
+ * Achado 25/08/2026: desligar `ai_autoreply_disabled` sem chamar isto
+ * deixa o handoff mudo — foi o caso do handoff decidido pela própria IA
+ * (o caminho mais comum) e do "cliente existente", nenhum dos dois
+ * passava por aqui. Consertado nesses dois pontos e nos dois webhooks de
+ * áudio sem transcrição.
+ */
+export async function avisarHandoff(
+  db: ReturnType<typeof supabaseAdmin>,
+  accountId: string,
+  contactId: string,
+  conversationId: string,
+  resumo: string,
+  handoffAgentId: string | null,
+): Promise<void> {
   // Achado ao vivo, 22/08/2026: desligar a IA sem avisar ninguém deixa a
   // conversa muda até alguém tropeçar nela por acaso — foi quase 1h sem
   // resposta pra um lead real, e "ninguém do escritório olha isso em fim
@@ -614,6 +736,25 @@ async function alertarPorWhatsapp(
  * back to the phone when the profile has none — so a "name" that is just
  * the phone (or otherwise has no letters) is treated as illegible.
  */
+// Achado 25/08/2026: o perfil do WhatsApp é texto livre — muita gente usa
+// frase/motivação/religiosa em vez do próprio nome ("Bênção de Deus", "eu
+// amo animais"). Isso tinha letra, passava no filtro antigo, e a Márcia
+// cumprimentava o lead com a frase inteira e NUNCA perguntava o nome de
+// verdade (a instrução que injeta o nome no prompt é propositalmente
+// absoluta — "SOBREPÕE qualquer instrução de pedir o nome" — então o
+// conserto tem que ser aqui no filtro, não ali). Bloqueia pela primeira
+// palavra ser um pronome/verbo/palavra religiosa comum que nunca é
+// primeiro nome sozinho, e por emoji — os dois padrões mais comuns desse
+// tipo de "nome" no WhatsApp.
+const PRIMEIRA_PALAVRA_NAO_E_NOME = new Set([
+  'eu', 'tu', 'ele', 'ela', 'nos', 'nós', 'voce', 'você', 'vc',
+  'amo', 'amor', 'sou', 'minha', 'meu', 'feliz', 'obrigado', 'obrigada',
+  'bencao', 'benção', 'bênção', 'bencaos', 'benções', 'bênçãos', 'deus', 'jesus', 'senhor',
+  'gracas', 'graças', 'fe', 'fé', 'paz', 'abencoado', 'abençoado',
+  'abencoada', 'abençoada', 'anonimo', 'anônimo', 'particular', 'usuario',
+  'usuário', 'contato', 'whatsapp', 'familia', 'família', 'vida', 'luz',
+])
+
 export function legibleFirstName(
   name?: string | null,
   phone?: string | null,
@@ -622,9 +763,11 @@ export function legibleFirstName(
   const n = name.trim()
   if (n.length < 2) return null
   if (!/\p{L}/u.test(n)) return null // no letters → junk / a bare number
+  if (/\p{Extended_Pictographic}/u.test(n)) return null // emoji no "nome"
   const digitsOnly = (s: string) => s.replace(/\D/g, '')
   if (phone && digitsOnly(n) && digitsOnly(n) === digitsOnly(phone)) return null
   const token = n.split(/\s+/)[0]
+  if (PRIMEIRA_PALAVRA_NAO_E_NOME.has(token.toLowerCase())) return null
   // Normalise an ALL-CAPS or all-lower token to Title case for the
   // greeting ("DANUZE" → "Danuze"); leave mixed-case names untouched.
   if (token === token.toUpperCase() || token === token.toLowerCase()) {
@@ -1164,6 +1307,7 @@ export async function dispatchInboundToAiReply(
       horarios: slots.map((s) => s.rotulo),
     })
     if (isClient) systemPrompt += '\n\n' + CLIENT_MODE_BLOCK
+    else systemPrompt += '\n\n' + PROCESSO_EM_ANDAMENTO_BLOCK
     // O que o funil já sabe desta pessoa: o formulário que ela preencheu e,
     // se agendou, o dia da reunião. Sem isso a IA repergunta o que o site já
     // perguntou e desconversa sobre a própria agenda do escritório.
@@ -1214,11 +1358,59 @@ export async function dispatchInboundToAiReply(
       return
     }
 
-    const { text, handoff, move, agendar, desmarcar, portaAberta, usage } = await generateReply({
+    const { text, handoff, move, agendar, segmento, valor, desmarcar, portaAberta, usage } = await generateReply({
       config,
       systemPrompt,
       messages,
     })
+
+    // Grava a tag PF/PJ na hora que o marcador aparece — não espera o resto
+    // do turno. É o que a trava de agendamento (abaixo) vai ler depois,
+    // inclusive em turnos futuros: a pergunta pode ter sido respondida numa
+    // resposta anterior à que está marcando a reunião.
+    if (segmento) {
+      const tagId = segmento === 'PJ' ? TAG_PJ : TAG_PF
+      const { error: segErr } = await db
+        .from('contact_tags')
+        .upsert({ contact_id: contactId, tag_id: tagId }, { onConflict: 'contact_id,tag_id', ignoreDuplicates: true })
+      if (segErr) {
+        console.warn(`[ia-segmento] não consegui gravar tag ${segmento} (contact ${contactId}): ${segErr.message}`)
+      }
+    }
+
+    // ⛔⛔ TRAVA DE VERDADE — PISO DE VALOR, não só o prompt (01/09/2026, caso
+    // Andreia: revelou ~R$9.000 de dívida PF e ofereceu 2 horários na MESMA
+    // resposta, mesmo com a instrução escrita dizendo o contrário). Calcula
+    // ANTES de `textoFinal`/`moveFinal` nascerem, pra travar a resposta
+    // inteira — não só a reserva final, como faz a trava de PF/PJ (mais
+    // abaixo): aqui o problema é a OFERTA em si, que acontece bem antes de
+    // qualquer marcador de agendamento existir.
+    //
+    // Reforçada no mesmo dia (caso Rogério, R$450 de cheque especial): ela
+    // reconheceu o valor na conversa mas nunca "concluiu" nada — foi direto
+    // pra oferecer horário sem NUNCA emitir [[VALOR:N]]. Marcador que depende
+    // da IA lembrar de emitir tem esse limite; por isso a trava agora usa
+    // DUAS fontes independentes.
+    let valorOverride: string | null = null
+    // Fonte 1 (preferida): o marcador que a IA emitiu — pode ser uma
+    // ESTIMATIVA mais inteligente (ex.: somar parcelas), não só o número cru.
+    // Fonte 2 (rede): quando a IA não deu nenhum valor, procura direto no que
+    // o PRÓPRIO CLIENTE escreveu — não depende da IA cooperar.
+    const valorEfetivo = valor ?? valorDeclaradoPeloCliente(messages)
+    if (valorEfetivo !== null) {
+      const seg = segmento ?? (await segmentoPersistido(db, contactId))
+      // Segmento ainda não confirmado → usa o piso mais ALTO (PJ) como
+      // padrão de segurança: melhor pedir confirmação a mais de um lead bom
+      // do que deixar passar um lead abaixo do piso (achado 01/09, Rogério —
+      // segmento nunca tinha sido perguntado quando ela já ofereceu horário).
+      const piso = seg === 'PF' ? PISO_PF : PISO_PJ
+      if (valorEfetivo < piso) {
+        console.warn(
+          `[ia-valor] resposta travada — valor R$${valorEfetivo} (${valor !== null ? 'marcador' : 'regex no texto do cliente'}) abaixo do piso ${seg ?? 'PJ (padrão)'} (contact ${contactId})`,
+        )
+        valorOverride = VALOR_ABAIXO_DO_PISO
+      }
+    }
 
     // Record token spend on the account's BYO key. Fire-and-forget so it
     // never adds latency to the customer-facing send: `logAiUsage`
@@ -1235,27 +1427,28 @@ export async function dispatchInboundToAiReply(
     })
 
     if (handoff || !text) {
-      // The model can't (or shouldn't) answer — stop auto-replying on
-      // this thread and hand it to a human. We (a) pause the bot here
-      // (sticky until re-enabled), (b) route the conversation to the
-      // configured handoff agent — null leaves it in the shared queue —
-      // and (c) leave a short internal note so whoever picks it up has
-      // context. Assigning fires the `on_conversation_assigned` trigger,
-      // which notifies the agent.
+      // O modelo não pode (ou não deve) responder — passa pra humano.
+      // Achado 25/08/2026: este era o caminho MAIS COMUM de handoff (a
+      // própria Márcia decidindo via [[HANDOFF]]) e o único que nunca
+      // passava por `passarParaHumano` — não gravava notificação nem
+      // mandava o alerta de WhatsApp. "Assigning fires on_conversation_
+      // assigned" só é verdade quando há handoffAgentId configurado E a
+      // conversa ainda não tem dono; fora isso, o handoff ficava mudo dos
+      // dois lados — foi o caso de hoje (Diego, Mislene). Reusa
+      // `passarParaHumano` em vez de duplicar a lógica.
       const summary = buildHandoffSummary({
         messages,
         replyCount: conv.ai_reply_count ?? 0,
       })
-      const update: Record<string, unknown> = {
-        ai_autoreply_disabled: true,
-        ai_handoff_summary: summary,
-      }
-      // Only set the assignee when a target is configured AND the thread
-      // isn't already owned — never stomp an existing human assignment.
-      if (config.handoffAgentId && !conv.assigned_agent_id) {
-        update.assigned_agent_id = config.handoffAgentId
-      }
-      await db.from('conversations').update(update).eq('id', conversationId)
+      await passarParaHumano(
+        db,
+        accountId,
+        contactId,
+        conversationId,
+        summary,
+        config.handoffAgentId,
+        !!conv.assigned_agent_id,
+      )
       return
     }
 
@@ -1286,8 +1479,11 @@ export async function dispatchInboundToAiReply(
     // reunião que não existe — exatamente o vexame que o roteiro sempre temeu.
     // Reservar só depois de ganhar o slot de resposta garante o par
     // "marcou ⇔ avisou": nunca uma reunião criada sem ninguém contar.
-    let textoFinal = text
-    let moveFinal = move
+    // Piso de valor travado: a resposta gerada nem chega a ser considerada —
+    // nem pra sair como texto, nem pra mover o card. Ver bloco `valorOverride`
+    // acima.
+    let textoFinal = valorOverride ?? text
+    let moveFinal = valorOverride ? null : move
     let reservaFeita = false
     if (!isClient && iaAgendaAtiva()) {
       // 1) DESFAZER primeiro. O que a pessoa avisou por mensagem — "não vou
@@ -1303,14 +1499,39 @@ export async function dispatchInboundToAiReply(
       }
 
       // 2) REMARCAR (ou marcar pela primeira vez).
-      if (agendar !== null) {
+      //
+      // ⛔⛔ TRAVA DE VERDADE — PF/PJ, não só o prompt. Achado 01/09/2026: a
+      // regra de perguntar pessoa física/jurídica já estava escrita no prompt,
+      // forte, e mesmo assim não era sempre cumprida (mesma classe do caso da
+      // Sylvia, 31/08 — dívida sem valor exato). Texto sozinho não bastou, e
+      // texto sozinho não vai bastar de novo. Aqui é o único lugar que
+      // realmente marca a reunião no Cal.com — se a tag PF/PJ não está
+      // gravada, RECUSA marcar, não importa o que a resposta da IA já dizia.
+      // (`valorOverride` já teria zerado o texto acima; aqui é defesa a mais
+      // pro raro caso de a IA emitir AGENDAR na mesma resposta que revela um
+      // valor abaixo do piso.)
+      let agendarTravado = valorOverride ? null : agendar
+      if (agendarTravado !== null) {
+        const { data: temSegmento } = await db
+          .from('contact_tags')
+          .select('tag_id')
+          .eq('contact_id', contactId)
+          .in('tag_id', [TAG_PF, TAG_PJ])
+          .limit(1)
+        if (!temSegmento?.length) {
+          console.warn(`[ia-agenda] agendamento recusado — sem tag PF/PJ (contact ${contactId})`)
+          textoFinal = FALTA_SEGMENTO
+          agendarTravado = null
+        }
+      }
+      if (agendarTravado !== null) {
         const nomeCompleto = legibleFirstName(contactRow?.name, contactRow?.phone)
           ? (contactRow?.name?.trim() ?? null)
           : null
         const r = await reservarHorario({
           db,
           contactId,
-          indice: agendar,
+          indice: agendarTravado,
           slots,
           nome: nomeCompleto,
           email,
@@ -1467,13 +1688,18 @@ export async function dispatchInboundToAiReply(
     // Existing client: the AI acknowledged in client mode; now hand the
     // thread to a human - the bot must not field questions about the case.
     if (isClient) {
-      const clientUpdate: Record<string, unknown> = {
-        ai_autoreply_disabled: true,
-        ai_handoff_summary:
-          'Cliente existente - atendimento sobre o caso. A IA acolheu e encaminhou para um humano (nao qualifica cliente).',
-      }
-      if (config.handoffAgentId) clientUpdate.assigned_agent_id = config.handoffAgentId
-      await db.from('conversations').update(clientUpdate).eq('id', conversationId)
+      // Mesmo achado do handoff decidido pelo modelo (25/08/2026): este
+      // caminho também nunca chamava `passarParaHumano` — sem notificação,
+      // sem WhatsApp.
+      await passarParaHumano(
+        db,
+        accountId,
+        contactId,
+        conversationId,
+        'Cliente existente - atendimento sobre o caso. A IA acolheu e encaminhou para um humano (nao qualifica cliente).',
+        config.handoffAgentId,
+        !!conv.assigned_agent_id,
+      )
     }
   } catch (err) {
     console.error('[ai auto-reply] dispatch failed:', err)

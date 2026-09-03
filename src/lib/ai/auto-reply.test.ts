@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { AiConfig } from './types'
-import { AFIRMA_QUE_AGENDOU, PESSOA_AFIRMA_REUNIAO, emailNaConversa } from './auto-reply'
+import {
+  AFIRMA_QUE_AGENDOU,
+  PESSOA_AFIRMA_REUNIAO,
+  emailNaConversa,
+  valorDeclaradoPeloCliente,
+} from './auto-reply'
 
 describe('emailNaConversa', () => {
   // O e-mail chega colado em outra coisa, com maiúscula, ou sozinho. Ler do
@@ -32,6 +37,65 @@ describe('emailNaConversa', () => {
 
   it('sem e-mail nenhum, devolve null', () => {
     expect(emailNaConversa([{ role: 'user', content: 'pode ser quarta às 14h' }])).toBeNull()
+  })
+})
+
+// Rede da trava de piso (01/09/2026, caso Rogério): quando a IA não emite
+// [[VALOR:N]], é isto que procura o valor direto na mensagem do cliente.
+describe('valorDeclaradoPeloCliente', () => {
+  it('lê valor com R$', () => {
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'R$ 450,00 na época' }]),
+    ).toBe(450)
+  })
+
+  it('lê valor com "mil"', () => {
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'devo uns 25 mil' }]),
+    ).toBe(25000)
+  })
+
+  it('lê valor com "reais"', () => {
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'são 9000 reais' }]),
+    ).toBe(9000)
+  })
+
+  it('normaliza ponto de milhar e vírgula decimal (padrão BR)', () => {
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'já paguei R$ 47.500,00' }]),
+    ).toBe(47500)
+  })
+
+  it('vale o último valor que a pessoa mandou', () => {
+    expect(
+      valorDeclaradoPeloCliente([
+        { role: 'user', content: 'acho que é uns R$ 30 mil' },
+        { role: 'user', content: 'na verdade conferi, são R$ 45.000,00' },
+      ]),
+    ).toBe(45000)
+  })
+
+  it('ignora o que a própria IA escreveu', () => {
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'assistant', content: 'nosso piso é R$ 50.000' }]),
+    ).toBeNull()
+  })
+
+  // Número sem contexto de moeda é telefone, data ou contagem de parcela —
+  // nunca o valor da dívida. Exigir R$/mil/reais evita esse falso positivo.
+  it('ignora número solto sem contexto de moeda', () => {
+    expect(
+      valorDeclaradoPeloCliente([
+        { role: 'user', content: '48 parcelas, terminou em 2023, meu telefone é 11987654321' },
+      ]),
+    ).toBeNull()
+  })
+
+  it('sem nenhum valor na conversa, devolve null', () => {
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'quero saber sobre meu processo' }]),
+    ).toBeNull()
   })
 })
 
@@ -161,6 +225,27 @@ vi.mock('./admin-client', () => ({
       chain.update = (payload: Record<string, unknown>) => {
         h.state.updatePayload = payload
         return { eq: () => Promise.resolve({ error: null }) }
+      }
+      // Generico igual ao resto do encadeador: só grava o que foi inserido
+      // em `porTabela`, pra qualquer teste que precise conferir. Faltava
+      // isto — o handoff decidido pelo modelo (25/08/2026) foi o primeiro
+      // caminho a chamar `.insert()` em `notifications` de dentro deste
+      // teste, e o encadeador não tinha esse passo.
+      chain.insert = (payload: unknown) => {
+        const linhasNovas = Array.isArray(payload) ? payload : [payload]
+        h.state.porTabela[table] = [...(h.state.porTabela[table] ?? []), ...linhasNovas]
+        return Promise.resolve({ error: null })
+      }
+      // Mesmo padrão do insert acima — faltava pro caminho do marcador de
+      // segmento PF/PJ (01/09/2026), que grava a tag com `.upsert()` assim
+      // que a IA confirma no turno. Sem isto, todo teste que exercitasse
+      // esse caminho quebrava com "upsert is not a function" (achado
+      // montando o teste da trava de piso de valor — 0 chamadas a
+      // engineSendText, sem exceção visível).
+      chain.upsert = (payload: unknown) => {
+        const linhasNovas = Array.isArray(payload) ? payload : [payload]
+        h.state.porTabela[table] = [...(h.state.porTabela[table] ?? []), ...linhasNovas]
+        return Promise.resolve({ error: null })
       }
       return chain
     },
@@ -333,5 +418,187 @@ describe('dispatchInboundToAiReply — handoff', () => {
       ai_autoreply_disabled: true,
       assigned_agent_id: 'agent-7',
     })
+  })
+})
+
+// Trava de verdade pro PISO DE VALOR (01/09/2026, caso Andreia): a IA revelou
+// ~R$9.000 de dívida de pessoa física e, na MESMA resposta, ofereceu dois
+// horários de reunião — mesmo com a instrução escrita dizendo pra não fazer
+// isso. Texto sozinho não bastou (mesma classe de falha do PF/PJ, achado no
+// mesmo dia). Estes testes provam que agora quem decide é o sistema, não o
+// texto que a IA escreveu.
+describe('dispatchInboundToAiReply — piso de valor', () => {
+  const TAG_PF = '9f870fd7-1155-4ede-9da8-8678360c0ae9'
+  const TAG_PJ = 'ea69a90c-407b-411c-953c-2d9920ef6a5e'
+  const VALOR_ABAIXO_DO_PISO =
+    'Pelo valor que você me passou, o custo de um processo judicial pode não compensar em relação ao benefício.\n\nMas se mesmo assim você quiser conversar com um advogado sobre o seu caso, é só me avisar que agendo uma reunião gratuita pra você.'
+
+  it('troca a resposta inteira quando o valor declarado vem abaixo do piso do segmento (PF)', async () => {
+    h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PF }]
+    h.generateReply.mockResolvedValue({
+      text: 'Entendi, você tem R$9.000 em aberto. Tenho horário amanhã às 14h ou quinta às 15h — qual prefere?',
+      handoff: false,
+      move: 'qualified',
+      agendar: null,
+      segmento: null,
+      valor: 9000,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    await dispatchInboundToAiReply(ARGS)
+    // A recusa tem uma linha em branco no meio, então sai em 2 balões
+    // (splitBubbles) — junta de volta pra comparar com o texto original.
+    const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
+    expect(enviado).toBe(VALOR_ABAIXO_DO_PISO)
+  })
+
+  it('deixa a resposta da IA passar quando o valor está acima do piso do segmento (PJ)', async () => {
+    h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PJ }]
+    const textoIa = 'Perfeito, com esse valor faz sentido conversarmos. Tenho horário amanhã às 14h.'
+    h.generateReply.mockResolvedValue({
+      text: textoIa,
+      handoff: false,
+      move: 'qualified',
+      agendar: null,
+      segmento: null,
+      valor: 150000,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-1', text: textoIa }),
+    )
+  })
+
+  // Reforço 01/09/2026 (caso Rogério, R$450 sem segmento nunca perguntado):
+  // sem segmento gravado, o piso padrão agora é o mais ALTO (PJ) — melhor
+  // pedir confirmação a mais de um lead bom do que deixar passar um abaixo
+  // do piso. Antes desse reforço este caso NÃO travava; agora trava.
+  it('sem segmento gravado ainda, usa o piso mais alto (PJ) como padrão de segurança', async () => {
+    h.generateReply.mockResolvedValue({
+      text: 'Entendi, você tem R$9.000 em aberto. Tenho horário amanhã às 14h.',
+      handoff: false,
+      move: null,
+      agendar: null,
+      segmento: null,
+      valor: 9000,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    await dispatchInboundToAiReply(ARGS)
+    const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
+    expect(enviado).toBe(VALOR_ABAIXO_DO_PISO)
+  })
+
+  it('sem segmento gravado ainda, deixa passar um valor claramente acima do piso mais alto', async () => {
+    const textoIa = 'Perfeito, com esse valor faz sentido conversarmos. Tenho horário amanhã às 14h.'
+    h.generateReply.mockResolvedValue({
+      text: textoIa,
+      handoff: false,
+      move: null,
+      agendar: null,
+      segmento: null,
+      valor: 200000,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-1', text: textoIa }),
+    )
+  })
+
+  // Caso Rogério de verdade: a IA nunca emitiu [[VALOR:N]] (nunca "concluiu"
+  // nada), mas o cliente disse "R$450,00" na própria mensagem. A rede de
+  // regex pega isso independente da IA cooperar.
+  it('sem marcador da IA, extrai o valor que o PRÓPRIO CLIENTE escreveu e trava mesmo assim', async () => {
+    h.buildConversationContext.mockResolvedValue([
+      { role: 'user', content: 'Vim do site de Direito Bancário e gostaria de mais informações' },
+      { role: 'assistant', content: 'Pode me contar um pouco do seu caso?' },
+      { role: 'user', content: 'R$ 450,00 na época, mas já faz mais de 10 anos.' },
+    ])
+    h.generateReply.mockResolvedValue({
+      text: 'Entendo. Se quiser, posso oferecer alguns horários para essa conversa.',
+      handoff: false,
+      move: null,
+      agendar: null,
+      segmento: null,
+      valor: null,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    await dispatchInboundToAiReply(ARGS)
+    const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
+    expect(enviado).toBe(VALOR_ABAIXO_DO_PISO)
+  })
+
+  it('a rede de regex ignora número solto sem contexto de moeda (não é telefone/data/parcela)', async () => {
+    h.buildConversationContext.mockResolvedValue([
+      { role: 'user', content: 'Meu processo é o 48 parcelas, terminou em 2023' },
+    ])
+    const textoIa = 'Entendido. Pode me contar mais sobre a dívida?'
+    h.generateReply.mockResolvedValue({
+      text: textoIa,
+      handoff: false,
+      move: null,
+      agendar: null,
+      segmento: null,
+      valor: null,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-1', text: textoIa }),
+    )
+  })
+
+  it('o marcador da IA tem prioridade sobre a regex quando os dois aparecem', async () => {
+    // Cliente escreveu um número pequeno (parcela), mas a IA já somou e
+    // determinou o valor de verdade, mais alto — o marcador dela vale mais
+    // que a extração cega de texto.
+    h.buildConversationContext.mockResolvedValue([
+      { role: 'user', content: '48 parcelas de R$ 1.320,00, ainda faltam pagar 9' },
+    ])
+    const textoIa = 'Perfeito, com esse valor faz sentido conversarmos.'
+    h.generateReply.mockResolvedValue({
+      text: textoIa,
+      handoff: false,
+      move: null,
+      agendar: null,
+      segmento: 'PF',
+      valor: 80000,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-1', text: textoIa }),
+    )
+  })
+
+  it('lê o segmento confirmado NESTE MESMO turno, sem precisar da tag já persistida', async () => {
+    h.generateReply.mockResolvedValue({
+      text: 'Entendi, pessoa física com R$9.000. Tenho horário amanhã às 14h.',
+      handoff: false,
+      move: null,
+      agendar: null,
+      segmento: 'PF',
+      valor: 9000,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    await dispatchInboundToAiReply(ARGS)
+    const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
+    expect(enviado).toBe(VALOR_ABAIXO_DO_PISO)
   })
 })
