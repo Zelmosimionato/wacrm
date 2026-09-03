@@ -303,6 +303,15 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
                         </span>
                       )}
                     </div>
+                    {/* Prévia das notas do negócio (ex.: qualificação vinda
+                        do formulário) — antes só apareciam abrindo o card
+                        pelo DealForm; ficavam invisíveis aqui e na aba
+                        "Notas" (que é outra tabela, contact_notes). */}
+                    {deal.notes && (
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground/80">
+                        {deal.notes}
+                      </p>
+                    )}
                   </button>
                 ))
               )}

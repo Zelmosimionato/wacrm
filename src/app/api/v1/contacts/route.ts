@@ -3,15 +3,24 @@
 // POST /api/v1/contacts  — create a contact  (scope: contacts:write)
 //
 // List is keyset-paginated (see src/lib/api/v1/pagination.ts) and
-// supports `?search=` (name/phone) and `?tag=<tagId>` filters. Create
-// is find-or-create by phone: an existing match returns 200 with
-// `created: false`; a new row returns 201 with `created: true`.
+// supports `?search=` (name/phone), `?tag=<tagId>` and `?created_after=`
+// filters. Create is find-or-create by phone: an existing match returns
+// 200 with `created: false`; a new row returns 201 with `created: true`.
+//
+// `created_after` foi ADICIONADO em 24/08/2026: o parâmetro chegava e era
+// silenciosamente ignorado (nunca lido de `url.searchParams`) — o radar
+// comercial pedia leads "de hoje" e recebia sempre os mesmos 100 mais
+// recentes, sem erro nenhum. Mesmo padrão do `opportunities/route.ts`
+// (que já suportava): data malformada RECUSA a chamada em vez de
+// ignorar o filtro em silêncio — filtro ignorado devolveria o acervo
+// inteiro como se fosse "de hoje".
 // ============================================================
 
 import { requireApiKey } from '@/lib/auth/api-context';
 import { ok, okList, fail, toApiErrorResponse } from '@/lib/api/v1/respond';
 import {
   parseListParams,
+  parseDateParam,
   keysetFilter,
   buildPage,
 } from '@/lib/api/v1/pagination';
@@ -39,6 +48,7 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const search = sanitizeSearch(url.searchParams.get('search') ?? '');
     const tag = url.searchParams.get('tag');
+    const createdAfter = parseDateParam(url.searchParams.get('created_after'), 'created_after');
 
     // When filtering by tag, add an aliased INNER join on contact_tags
     // used purely for the WHERE — the parent is kept only if it has the
@@ -61,6 +71,10 @@ export async function GET(request: Request) {
 
     if (tag) {
       query = query.eq('tag_filter.tag_id', tag);
+    }
+
+    if (createdAfter) {
+      query = query.gte('created_at', createdAfter);
     }
 
     query = query

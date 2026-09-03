@@ -13,8 +13,14 @@ import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe';
 import { resolveImportTagIds } from '@/lib/contacts/resolve-import-tags';
 import { sanitizePhoneForMeta, isValidE164 } from '@/lib/whatsapp/phone-utils';
 
-/** Row select that embeds the contact's tags for serialization. */
-export const CONTACT_SELECT = '*, contact_tags(tags(*))';
+/** Row select that embeds the contact's tags + custom field values for
+ *  serialization. `contact_custom_values` had no embed at all before
+ *  24/08/2026 — the API always wrote custom values (radar/intake
+ *  attribution: Origem, Anúncio, Campanha, Público, ...) but could
+ *  never read them back; `include=custom_fields` etc. were never real
+ *  params, they just silently matched nothing. */
+export const CONTACT_SELECT =
+  '*, contact_tags(tags(*)), contact_custom_values(value, custom_fields(field_name))';
 
 export interface ApiContact {
   id: string;
@@ -24,6 +30,7 @@ export interface ApiContact {
   company: string | null;
   avatar_url: string | null;
   tags: { id: string; name: string; color: string }[];
+  custom_fields: Record<string, string>;
   created_at: string;
   updated_at: string;
 }
@@ -39,10 +46,22 @@ export class ContactError extends Error {
 }
 
 type RawTagJoin = { tags: { id: string; name: string; color: string } | null };
+type RawCustomValueJoin = {
+  value: string | null;
+  custom_fields: { field_name: string } | null;
+};
 
 /** Flatten a `CONTACT_SELECT` row into the public contact shape. */
 export function serializeContact(row: Record<string, unknown>): ApiContact {
   const joins = (row.contact_tags as RawTagJoin[] | undefined) ?? [];
+  const customJoins =
+    (row.contact_custom_values as RawCustomValueJoin[] | undefined) ?? [];
+  const custom_fields: Record<string, string> = {};
+  for (const c of customJoins) {
+    if (c.custom_fields?.field_name && c.value != null) {
+      custom_fields[c.custom_fields.field_name] = c.value;
+    }
+  }
   return {
     id: row.id as string,
     phone: row.phone as string,
@@ -54,6 +73,7 @@ export function serializeContact(row: Record<string, unknown>): ApiContact {
       .map((j) => j.tags)
       .filter((t): t is NonNullable<RawTagJoin['tags']> => t != null)
       .map((t) => ({ id: t.id, name: t.name, color: t.color })),
+    custom_fields,
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
   };

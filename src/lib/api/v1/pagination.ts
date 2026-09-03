@@ -17,6 +17,8 @@
 // clients pass it back verbatim and never parse it.
 // ============================================================
 
+import { badRequest } from './respond';
+
 export const DEFAULT_LIMIT = 50;
 export const MAX_LIMIT = 100;
 
@@ -38,6 +40,23 @@ export interface ListParams {
  * unparseable `cursor` is treated as absent (first page) rather than
  * erroring — the worst case is the client re-reads from the top.
  */
+/**
+ * Parse an optional `?<campo>=` date query param as ISO 8601. Throws
+ * `badRequest` on a malformed value instead of silently dropping the
+ * filter — an ignored filter would return the whole table looking like
+ * a valid, narrow result (bit us for real in `/contacts?created_after`,
+ * 24/08/2026: the param was never read at all, so every call looked
+ * "successful" and always returned the same most-recent rows). Shared
+ * by every list route that takes a date filter (opportunities,
+ * contacts, ...) — do not re-implement this per-route.
+ */
+export function parseDateParam(bruto: string | null, campo: string): string | null {
+  if (!bruto) return null;
+  const t = Date.parse(bruto);
+  if (Number.isNaN(t)) throw badRequest(`${campo} não é uma data ISO 8601 válida`);
+  return new Date(t).toISOString();
+}
+
 export function parseListParams(request: Request): ListParams {
   const url = new URL(request.url);
 

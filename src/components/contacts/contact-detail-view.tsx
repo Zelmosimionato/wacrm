@@ -9,6 +9,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { Contact, Tag, ContactTag, ContactNote, CustomField, ContactCustomValue, Deal, MessageTemplate, PipelineStage } from '@/types';
 import { DealForm } from '@/components/pipelines/deal-form';
+import { CorrigirAgendamentoDialog } from '@/components/contacts/corrigir-agendamento-dialog';
 import {
   TemplatePicker,
   type TemplateSendValues,
@@ -772,6 +773,15 @@ export function ContactDetailView({
                         />
                       </div>
                     ))}
+                    {contactId && (
+                      <div className="border-t border-border/50 pt-3">
+                        <CorrigirAgendamentoDialog
+                          contactId={contactId}
+                          localAtual={customValues['62721dd7-92f9-4587-b3db-65a8e1a51120']}
+                          onDone={() => fetchCustomFields()}
+                        />
+                      </div>
+                    )}
                     <Button
                       onClick={saveCustomFields}
                       disabled={savingCustom}
@@ -843,6 +853,15 @@ export function ContactDetailView({
                             </span>
                           )}
                         </div>
+                        {/* Prévia das notas do negócio — mesma razão do
+                            Inbox: antes só apareciam abrindo o card pelo
+                            DealForm; a aba "Notas" desta ficha é outra
+                            tabela (contact_notes), não isto. */}
+                        {deal.notes && (
+                          <p className="mt-1.5 line-clamp-2 text-xs text-muted-foreground/80">
+                            {deal.notes}
+                          </p>
+                        )}
                       </button>
                     ))}
                   </div>
