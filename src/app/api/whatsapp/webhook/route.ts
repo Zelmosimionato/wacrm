@@ -570,6 +570,31 @@ async function handleReaction(
   }
 }
 
+/**
+ * Extrai "[ref: utm_source=google utm_campaign=X utm_content=Y gclid=Z]" do
+ * texto (anexado pela tag do GTM no link do WhatsApp da home do PF, quando o
+ * clique veio de um anuncio do Google) e devolve no mesmo shape de `vars`
+ * que o intake.js usa pro Meta/Typebot (`campanha`/`publico`/`origem`), pra
+ * a automacao nativa "Novo contato criado" (ja configurada na tela do CRM
+ * pra gravar Origem/Campanha/Anuncio) tratar os dois caminhos igual.
+ * Sem `[ref: ...]` no texto, devolve null (maioria das mensagens).
+ */
+function parseRefGoogleAds(texto: string): Record<string, string> | null {
+  const m = /\[ref:\s*([^\]]+)\]/.exec(texto)
+  if (!m) return null
+  const partes: Record<string, string> = {}
+  for (const par of m[1].trim().split(/\s+/)) {
+    const idx = par.indexOf('=')
+    if (idx <= 0) continue
+    partes[par.slice(0, idx)] = par.slice(idx + 1)
+  }
+  if (!partes.gclid && !partes.utm_source) return null
+  const vars: Record<string, string> = { origem: 'Google Ads' }
+  if (partes.utm_campaign) vars.campanha = partes.utm_campaign
+  if (partes.utm_content) vars.publico = partes.utm_content
+  return vars
+}
+
 async function processMessage(
   message: WhatsAppMessage,
   contact: { profile: { name: string }; wa_id: string },
@@ -793,6 +818,15 @@ async function processMessage(
   // Fire-and-forget: a slow or failing automation must not block the
   // webhook's 200 OK response to Meta.
   const inboundText = contentText ?? message.text?.body ?? ''
+  // Atribuicao Google Ads: a tag "Anexa UTM/gclid ao link do WhatsApp"
+  // (GTM-KGGQHLGH, publicada 04/09/2026) anexa "[ref: utm_source=...
+  // utm_campaign=... utm_content=... gclid=...]" na 1a mensagem quando o
+  // clique veio de um anuncio do Google (o botao da home nao tinha
+  // formulario nenhum, entao esse rastro so chega assim). So REPASSA como
+  // vars pro motor de automacao, mesmo padrao que o intake.js ja usa pro
+  // Meta/Typebot (nunca grava campo customizado direto aqui -- quem decide
+  // isso e a automacao "Novo contato criado" configurada na tela do CRM).
+  const googleAdsVars = parseRefGoogleAds(inboundText)
   const automationTriggers: (
     | 'new_contact_created'
     | 'first_inbound_message'
@@ -837,6 +871,7 @@ async function processMessage(
         // Only set on interactive taps; drives the interactive_reply
         // trigger's exact-id match.
         interactive_reply_id: interactiveReplyId ?? undefined,
+        ...(googleAdsVars ? { vars: googleAdsVars } : {}),
       },
     }).catch((err) => console.error('[automations] dispatch failed:', err))
   }
