@@ -42,6 +42,17 @@ export async function POST(
     context: {
       stage_id: deal.stage_id as string,
       pipeline_id: deal.pipeline_id as string,
+      // AutomationContext e' uma interface FECHADA (nao aceita chave extra
+      // direto no topo - estoura o excess-property check do TS). `vars` e'
+      // Record<string, unknown> de proposito: e' por onde um passo
+      // `send_webhook` interpola {{vars.contact_id}}/{{vars.deal_id}} no
+      // body_template. Sem isto, deal_stage_changed nunca alimentava vars -
+      // uma automacao de webhook nao tinha como saber QUAL card/contato
+      // disparou.
+      vars: {
+        contact_id: (deal.contact_id as string | null) ?? null,
+        deal_id: deal.id as string,
+      },
     },
   })
 
