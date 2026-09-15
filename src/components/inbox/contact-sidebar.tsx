@@ -7,6 +7,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import type { Contact, Deal, ContactNote, Tag, PipelineStage } from "@/types";
 import { DealForm } from "@/components/pipelines/deal-form";
+import { shouldShowCreateDealButton } from "@/components/shared/contact-drawer-deals";
 import {
   Phone,
   Mail,
@@ -317,16 +318,21 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
               )}
               {/* Create a card for this contact — makes no-deal contacts
                   (e.g. WhatsApp leads without a card) actionable: create,
-                  then move/lose as any other deal. */}
-              <button
-                type="button"
-                onClick={openCreateDeal}
-                className="flex w-full items-center justify-center gap-1 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                title="Criar negócio para este contato"
-              >
-                <Plus className="h-3 w-3" />
-                Criar negócio
-              </button>
+                  then move/lose as any other deal. Only shown when the
+                  contact has no deal yet (bug found 16/09/2026: this used
+                  to render unconditionally even when a deal already
+                  existed). */}
+              {shouldShowCreateDealButton(deals) && (
+                <button
+                  type="button"
+                  onClick={openCreateDeal}
+                  className="flex w-full items-center justify-center gap-1 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  title="Criar negócio para este contato"
+                >
+                  <Plus className="h-3 w-3" />
+                  Criar negócio
+                </button>
+              )}
             </div>
           </div>
 
