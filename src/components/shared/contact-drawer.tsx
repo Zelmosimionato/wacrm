@@ -26,7 +26,7 @@ import {
   SheetTitle,
   SheetDescription,
 } from '@/components/ui/sheet';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from '@/components/ui/accordion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -122,6 +122,8 @@ export function ContactDrawer({
   // Deals tab
   const [deals, setDeals] = useState<Deal[]>([]);
   const [loadingDeals, setLoadingDeals] = useState(false);
+
+  const defaultOpenSection = focusDealId ? 'deals' : 'details';
 
   const fetchContact = useCallback(async () => {
     if (!contactId) return;
@@ -631,42 +633,13 @@ export function ContactDrawer({
             </SheetHeader>
 
             {/* Tabs */}
-            <Tabs defaultValue="details" className="flex-1 flex flex-col min-h-0">
-              <TabsList className="bg-muted/50 border-b border-border mx-4 mt-3">
-                <TabsTrigger
-                  value="details"
-                  className="data-active:bg-muted data-active:text-primary text-muted-foreground"
-                >
-                  {t('tabs.details')}
-                </TabsTrigger>
-                <TabsTrigger
-                  value="tags"
-                  className="data-active:bg-muted data-active:text-primary text-muted-foreground"
-                >
-                  {t('tabs.tags', { fallback: 'Tags' })}
-                </TabsTrigger>
-                <TabsTrigger
-                  value="notes"
-                  className="data-active:bg-muted data-active:text-primary text-muted-foreground"
-                >
-                  {t('tabs.notes')}
-                </TabsTrigger>
-                <TabsTrigger
-                  value="custom"
-                  className="data-active:bg-muted data-active:text-primary text-muted-foreground"
-                >
-                  {t('tabs.custom')}
-                </TabsTrigger>
-                <TabsTrigger
-                  value="deals"
-                  className="data-active:bg-muted data-active:text-primary text-muted-foreground"
-                >
-                  {t('tabs.deals')}
-                </TabsTrigger>
-              </TabsList>
-
-              {/* Details Tab */}
-              <TabsContent value="details" className="flex-1 overflow-y-auto px-4 py-3">
+            <Accordion
+              defaultValue={[defaultOpenSection]}
+              className="flex-1 overflow-y-auto px-4 py-3"
+            >
+              <AccordionItem value="details">
+                <AccordionTrigger>{t('tabs.details')}</AccordionTrigger>
+                <AccordionContent>
                 <div className="space-y-3">
                   <div className="space-y-1.5">
                     <Label className="text-muted-foreground text-xs">{t('company', { fallback: 'Name' })}</Label>
@@ -716,10 +689,12 @@ export function ContactDrawer({
                     {t('saveChangesBtn')}
                   </Button>
                 </div>
-              </TabsContent>
+                </AccordionContent>
+              </AccordionItem>
 
-              {/* Tags Tab */}
-              <TabsContent value="tags" className="flex-1 overflow-y-auto px-4 py-3">
+              <AccordionItem value="tags">
+                <AccordionTrigger>{t('tabs.tags', { fallback: 'Tags' })}</AccordionTrigger>
+                <AccordionContent>
                 <div className="space-y-3">
                   <p className="text-xs text-muted-foreground">
                     {t('tagsTab.clickTagDesc')}
@@ -755,10 +730,13 @@ export function ContactDrawer({
                     </div>
                   )}
                 </div>
-              </TabsContent>
+                </AccordionContent>
+              </AccordionItem>
 
-              {/* Notes Tab */}
-              <TabsContent value="notes" className="flex-1 flex flex-col min-h-0 px-4 py-3">
+              <AccordionItem value="notes">
+                <AccordionTrigger>{t('tabs.notes')}</AccordionTrigger>
+                <AccordionContent>
+                <div className="space-y-2">
                 <div className="space-y-2 mb-3">
                   <Textarea
                     value={newNote}
@@ -781,7 +759,7 @@ export function ContactDrawer({
                   </Button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto space-y-2">
+                <div className="space-y-2">
                   {loadingNotes ? (
                     <div className="flex items-center justify-center py-8">
                       <Loader2 className="size-5 animate-spin text-muted-foreground" />
@@ -820,10 +798,13 @@ export function ContactDrawer({
                     ))
                   )}
                 </div>
-              </TabsContent>
+                </div>
+                </AccordionContent>
+              </AccordionItem>
 
-              {/* Custom Fields Tab */}
-              <TabsContent value="custom" className="flex-1 overflow-y-auto px-4 py-3">
+              <AccordionItem value="custom">
+                <AccordionTrigger>{t('tabs.custom')}</AccordionTrigger>
+                <AccordionContent>
                 {loadingCustom ? (
                   <div className="flex items-center justify-center py-8">
                     <Loader2 className="size-5 animate-spin text-muted-foreground" />
@@ -876,10 +857,12 @@ export function ContactDrawer({
                     </Button>
                   </div>
                 )}
-              </TabsContent>
+                </AccordionContent>
+              </AccordionItem>
 
-              {/* Deals Tab */}
-              <TabsContent value="deals" className="flex-1 overflow-y-auto px-4 py-3">
+              <AccordionItem value="deals">
+                <AccordionTrigger>{t('tabs.deals')}</AccordionTrigger>
+                <AccordionContent>
                 {loadingDeals ? (
                   <div className="flex items-center justify-center py-8">
                     <Loader2 className="size-5 animate-spin text-primary" />
@@ -945,8 +928,9 @@ export function ContactDrawer({
                     ))}
                   </div>
                 )}
-              </TabsContent>
-            </Tabs>
+                </AccordionContent>
+              </AccordionItem>
+            </Accordion>
           </div>
         )}
       </SheetContent>
