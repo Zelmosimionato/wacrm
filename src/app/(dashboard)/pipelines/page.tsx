@@ -9,7 +9,7 @@ import { PipelineBoard } from "@/components/pipelines/pipeline-board";
 const CF_DATA_REUNIAO = "e482845b-8ed4-4f4d-ae0e-0eed9dafbe4e";
 import { PipelineSettings } from "@/components/pipelines/pipeline-settings";
 import { DealForm } from "@/components/pipelines/deal-form";
-import { ContactDetailView } from "@/components/contacts/contact-detail-view";
+import { ContactDrawer } from "@/components/shared/contact-drawer";
 import { PipelineAnalytics } from "@/components/pipelines/pipeline-analytics";
 import { Button } from "@/components/ui/button";
 import {
@@ -77,6 +77,7 @@ export default function PipelinesPage() {
   // The lead behind the card — same panel the contact list opens.
   const [leadOpen, setLeadOpen] = useState(false);
   const [leadContactId, setLeadContactId] = useState<string | null>(null);
+  const [leadFocusDeal, setLeadFocusDeal] = useState<Deal | null>(null);
   const [defaultStageId, setDefaultStageId] = useState<string>("");
 
   // Guard against double-seeding (React StrictMode double-effect in dev).
@@ -302,6 +303,7 @@ export default function PipelinesPage() {
   const handleEditDeal = useCallback((deal: Deal) => {
     if (deal.contact_id) {
       setLeadContactId(deal.contact_id);
+      setLeadFocusDeal(deal);
       setLeadOpen(true);
       return;
     }
@@ -583,10 +585,11 @@ export default function PipelinesPage() {
       />
 
       {/* The lead behind the card — history, templates, conversation. */}
-      <ContactDetailView
+      <ContactDrawer
         open={leadOpen}
         onOpenChange={setLeadOpen}
         contactId={leadContactId}
+        focusDealId={leadFocusDeal?.id}
         onUpdated={refreshDeals}
       />
     </div>
