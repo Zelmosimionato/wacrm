@@ -1,12 +1,12 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import type { Contact, Deal, ContactNote, Tag, PipelineStage } from "@/types";
 import { DealForm } from "@/components/pipelines/deal-form";
+import { ContactDrawer } from "@/components/shared/contact-drawer";
 import { shouldShowCreateDealButton } from "@/components/shared/contact-drawer-deals";
 import {
   Phone,
@@ -47,6 +47,8 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
   // Pipeline to use when creating a fresh deal from the inbox (create mode,
   // editDeal === null). Set by openCreateDeal to the lead funnel (Vendas).
   const [createPipelineId, setCreatePipelineId] = useState("");
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerFocusDealId, setDrawerFocusDealId] = useState<string | undefined>(undefined);
 
   const fetchContactData = useCallback(async () => {
     if (!contact) return;
@@ -199,13 +201,17 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
                 initials
               )}
             </div>
-            <Link
-              href={`/contacts?contact=${contact.id}`}
+            <button
+              type="button"
+              onClick={() => {
+                setDrawerFocusDealId(undefined);
+                setDrawerOpen(true);
+              }}
               className="mt-3 text-sm font-semibold text-foreground hover:text-primary hover:underline"
               title="Abrir contato"
             >
               {displayName}
-            </Link>
+            </button>
             {contact.company && (
               <p className="text-xs text-muted-foreground">{contact.company}</p>
             )}
@@ -280,7 +286,10 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
                   <button
                     key={deal.id}
                     type="button"
-                    onClick={() => openDeal(deal)}
+                    onClick={() => {
+                      setDrawerFocusDealId(deal.id);
+                      setDrawerOpen(true);
+                    }}
                     className="w-full rounded-lg bg-muted px-3 py-2 text-left transition-colors hover:bg-muted/70"
                     title="Abrir card"
                   >
@@ -396,6 +405,17 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
           setDealFormOpen(false);
           fetchContactData();
         }}
+      />
+      <ContactDrawer
+        open={drawerOpen}
+        onOpenChange={setDrawerOpen}
+        contactId={contact.id}
+        onUpdated={fetchContactData}
+        initialContact={contact}
+        initialTags={tags}
+        initialDeals={deals}
+        initialNotes={notes}
+        focusDealId={drawerFocusDealId}
       />
     </div>
   );
