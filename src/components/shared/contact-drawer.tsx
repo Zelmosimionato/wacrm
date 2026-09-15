@@ -227,7 +227,6 @@ export function ContactDrawer({
     }
 
     if (seedTags) {
-      setAllTags((prev) => (prev.length ? prev : prev));
       setContactTagIds(seedTags.map((t) => t.id));
     }
     // allTags (every tag that exists, for the toggle grid) is never part of
