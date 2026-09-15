@@ -15,6 +15,7 @@ import {
   setCachedContactDrawerData,
   invalidateContactDrawerCache,
 } from '@/components/shared/contact-drawer-cache';
+import { shouldShowCreateDealButton, pickSalesPipeline } from '@/components/shared/contact-drawer-deals';
 import {
   TemplatePicker,
   type TemplateSendValues,
@@ -305,6 +306,8 @@ export function ContactDrawer({
   const [editDeal, setEditDeal] = useState<Deal | null>(null);
   const [formStages, setFormStages] = useState<PipelineStage[]>([]);
   const [dealFormOpen, setDealFormOpen] = useState(false);
+  const [creatingDeal, setCreatingDeal] = useState(false);
+  const [createPipelineId, setCreatePipelineId] = useState('');
   const openDeal = useCallback(async (deal: Deal) => {
     const { data } = await supabase
       .from('pipeline_stages')
@@ -315,6 +318,29 @@ export function ContactDrawer({
     setEditDeal(deal);
     setDealFormOpen(true);
   }, [supabase]);
+  const openCreateDeal = useCallback(async () => {
+    if (!contactId) return;
+    setCreatingDeal(true);
+    const { data: pipes } = await supabase
+      .from('pipelines')
+      .select('id, name')
+      .order('created_at', { ascending: true });
+    const pipeline = pickSalesPipeline((pipes ?? []) as { id: string; name: string }[]);
+    if (!pipeline) {
+      setCreatingDeal(false);
+      return;
+    }
+    setCreatePipelineId(pipeline.id);
+    const { data: stageRows } = await supabase
+      .from('pipeline_stages')
+      .select('*')
+      .eq('pipeline_id', pipeline.id)
+      .order('position');
+    setFormStages((stageRows ?? []) as PipelineStage[]);
+    setEditDeal(null);
+    setDealFormOpen(true);
+    setCreatingDeal(false);
+  }, [contactId, supabase]);
   useEffect(() => {
     if (!open || !contactId) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -928,6 +954,17 @@ export function ContactDrawer({
                     ))}
                   </div>
                 )}
+                  {shouldShowCreateDealButton(deals) && (
+                    <button
+                      type="button"
+                      onClick={openCreateDeal}
+                      disabled={creatingDeal}
+                      className="mt-2 flex w-full items-center justify-center gap-1 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                    >
+                      <Plus className="size-3" />
+                      {t('dealsTab.createDeal', { fallback: 'Criar negócio' })}
+                    </button>
+                  )}
                 </AccordionContent>
               </AccordionItem>
             </Accordion>
@@ -939,10 +976,13 @@ export function ContactDrawer({
       open={dealFormOpen}
       onOpenChange={setDealFormOpen}
       deal={editDeal}
-      pipelineId={editDeal?.pipeline_id ?? ''}
+      pipelineId={editDeal?.pipeline_id ?? createPipelineId}
       stages={formStages}
+      defaultContactId={contactId ?? undefined}
+      defaultTitle={contact?.name || contact?.phone}
       onSaved={() => {
         setDealFormOpen(false);
+        if (contactId) invalidateContactDrawerCache(contactId);
         fetchDeals();
       }}
     />
