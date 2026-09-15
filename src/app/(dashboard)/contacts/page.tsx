@@ -51,7 +51,7 @@ import {
   X,
 } from 'lucide-react';
 import { ContactForm } from '@/components/contacts/contact-form';
-import { ContactDetailView } from '@/components/contacts/contact-detail-view';
+import { ContactDrawer } from '@/components/shared/contact-drawer';
 import { ImportModal } from '@/components/contacts/import-modal';
 import { CustomFieldsManager } from '@/components/contacts/custom-fields-manager';
 import { useCan } from '@/hooks/use-can';
@@ -774,7 +774,7 @@ export default function ContactsPage() {
       />
 
       {/* Contact Detail Sheet */}
-      <ContactDetailView
+      <ContactDrawer
         open={detailOpen}
         onOpenChange={setDetailOpen}
         contactId={detailContactId}
