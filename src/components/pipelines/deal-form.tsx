@@ -189,6 +189,16 @@ export function DealForm({
       toast.error(t("toastRequired"));
       return;
     }
+    // Trava de valor: nao deixa entrar no Funil Operacional sem o valor real
+    // do contrato preenchido -- e a fonte do evento de venda real pro CAPI
+    // (Meta/Google), e o titular relatou que esquece de preencher na
+    // correria se nao houver um bloqueio na hora.
+    const targetPipeline = allPipelines.find((p) => p.id === pipelineIdState);
+    const isFunilOperacional = targetPipeline?.name === "Funil Operacional";
+    if (isFunilOperacional && (parseFloat(value) || 0) <= 0) {
+      toast.error(t("toastValorContratoObrigatorio"));
+      return;
+    }
     setSaving(true);
 
     const payload = {

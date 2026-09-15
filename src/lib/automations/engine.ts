@@ -25,6 +25,7 @@ import type {
 import { supabaseAdmin } from './admin-client'
 import { startManualFlowRun } from '@/lib/flows/engine'
 import { engineSendText, engineSendTemplate, engineSendInteractive } from './meta-send'
+import { enviarPeloSegundoNumero, registrarEnvioSegundoNumero, janelaAberta } from '@/lib/whatsapp/segundo-numero'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
 import { dentroDoExpediente, proximoInstanteDeExpediente } from './horario-comercial'
@@ -534,17 +535,57 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
     case 'send_message': {
       const cfg = step.step_config as SendMessageStepConfig
       if (!args.contactId) throw new Error('send_message needs a contact')
-      const text = interpolate(cfg.text, args)
+      let text = interpolate(cfg.text, args)
+      // Achado 14/09/2026: {{contact.*}} nunca era resolvido aqui (so
+      // message.text/vars.* no interpolate() acima) -- automacao mandava o
+      // token literal pro cliente. Mesma falha existia nas mensagens
+      // prontas manuais (quick_replies), corrigida a parte pelo mesmo
+      // motivo. So busca o contato quando o texto realmente usa o token,
+      // pra nao gastar uma query em automacao sem personalizacao.
+      if (/\{\{\s*contact\./.test(text)) {
+        const { data: c } = await db
+          .from('contacts')
+          .select('name, phone, email, company')
+          .eq('id', args.contactId)
+          .maybeSingle()
+        const nome = String(c?.name ?? '').trim()
+        const primeiroNome = nome.split(/\s+/)[0] || nome
+        text = text
+          .replace(/\{\{\s*contact\.name\s*\}\}/g, nome)
+          .replace(/\{\{\s*contact\.first_name\s*\}\}/g, primeiroNome)
+          .replace(/\{\{\s*contact\.phone\s*\}\}/g, String(c?.phone ?? ''))
+          .replace(/\{\{\s*contact\.email\s*\}\}/g, String(c?.email ?? ''))
+          .replace(/\{\{\s*contact\.company\s*\}\}/g, String(c?.company ?? ''))
+      }
       if (!text.trim()) throw new Error('send_message has empty text')
       const conversationId = await resolveConversationId(args)
-      const { whatsapp_message_id } = await engineSendText({
-        accountId: args.automation.account_id,
-        userId: args.automation.user_id,
-        conversationId,
-        contactId: args.contactId,
-        text,
-      })
-      return `sent via Meta (${whatsapp_message_id})`
+      // Achado 11/09/2026: automações de texto livre SEMPRE tentavam o
+      // canal oficial, mesmo quando a pessoa não fala com o número há
+      // mais de 24h — a Meta recusa (status 'failed') e ninguém percebia
+      // (ver captura de erro em webhook/route.ts, mesma investigação).
+      // Mesmo fallback que a nutrição já usa: janela aberta -> oficial;
+      // fechada -> segundo número (WhatsApp Web/Evolution, sem janela).
+      if (await janelaAberta(db, conversationId)) {
+        const { whatsapp_message_id } = await engineSendText({
+          accountId: args.automation.account_id,
+          userId: args.automation.user_id,
+          conversationId,
+          contactId: args.contactId,
+          text,
+        })
+        return `sent via Meta (${whatsapp_message_id})`
+      }
+      const { data: contato } = await db
+        .from('contacts')
+        .select('phone, phone_normalized')
+        .eq('id', args.contactId)
+        .maybeSingle()
+      const telefone = ((contato?.phone_normalized || contato?.phone || '') as string).replace(/\D/g, '')
+      if (!telefone) throw new Error('send_message: contato sem telefone pro segundo número (janela oficial fechada)')
+      const ok = await enviarPeloSegundoNumero(telefone, text)
+      if (!ok) throw new Error('send_message: falha no segundo número (janela oficial fechada)')
+      await registrarEnvioSegundoNumero(db, conversationId, text)
+      return 'sent via segundo número (janela oficial fechada)'
     }
 
     case 'send_buttons':

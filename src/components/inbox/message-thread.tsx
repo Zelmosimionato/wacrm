@@ -1242,6 +1242,7 @@ export function MessageThread({
         sessionExpired={sessionInfo.expired}
         canal={canal}
         onCanalChange={setCanal}
+        contact={contact}
         onSend={handleSend}
         onSendMedia={handleSendMedia}
         onSendInteractive={handleSendInteractive}

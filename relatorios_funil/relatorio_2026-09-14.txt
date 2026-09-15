@@ -1,0 +1,1 @@
+ERRO: /rest/v1/deals?select=id,title,stage_id,status,stage_entered_at,created_at,contact_id&pipeline_id=eq.8e89e154-763c-4cf8-b73b-42f7368c59c3 -> HTTP 504 {"message":"Gateway Timeout"}

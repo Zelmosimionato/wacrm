@@ -226,6 +226,24 @@ vi.mock('./admin-client', () => ({
         h.state.updatePayload = payload
         return { eq: () => Promise.resolve({ error: null }) }
       }
+      // Suporte a .delete() — precisava pro destrave da trava persistente de
+      // piso (11/09/2026): quando o cliente declara um valor novo igual/acima
+      // do piso, o código apaga a tag TAG_ABAIXO_PISO em vez de só ignorá-la.
+      // Aplica o filtro na hora (dentro do próprio .eq() encadeado, não atrás
+      // de um .then() — o resto do encadeador também não usa .then() real
+      // pros deletes existentes, e "await objetoQualquer" resolve sozinho).
+      chain.delete = () => {
+        const d: Record<string, unknown> = {}
+        d.eq = (campo: string, valor: unknown) => {
+          if (campo === 'tag_id') {
+            h.state.porTabela[table] = (h.state.porTabela[table] ?? []).filter(
+              (linha) => (linha as { tag_id?: string }).tag_id !== valor,
+            )
+          }
+          return d
+        }
+        return d
+      }
       // Generico igual ao resto do encadeador: só grava o que foi inserido
       // em `porTabela`, pra qualquer teste que precise conferir. Faltava
       // isto — o handoff decidido pelo modelo (25/08/2026) foi o primeiro
@@ -431,7 +449,7 @@ describe('dispatchInboundToAiReply — piso de valor', () => {
   const TAG_PF = '9f870fd7-1155-4ede-9da8-8678360c0ae9'
   const TAG_PJ = 'ea69a90c-407b-411c-953c-2d9920ef6a5e'
   const VALOR_ABAIXO_DO_PISO =
-    'Pelo valor que você me passou, o custo de um processo judicial pode não compensar em relação ao benefício.\n\nMas se mesmo assim você quiser conversar com um advogado sobre o seu caso, é só me avisar que agendo uma reunião gratuita pra você.'
+    'Vou ser honesta: pela nossa experiência, para valores nessa faixa o custo de uma ação acaba não compensando — prefiro te dizer isso a te levar por um caminho que não vale a pena.\n\nMas você não fica sem nada: no nosso blog e nos materiais gratuitos tem bastante coisa que ajuda. Blog: https://simionatoadvogados.com.br/blog/ · Materiais: https://simionatoadvogados.com.br/materiais-gratuitos/'
 
   it('troca a resposta inteira quando o valor declarado vem abaixo do piso do segmento (PF)', async () => {
     h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PF }]
@@ -600,5 +618,88 @@ describe('dispatchInboundToAiReply — piso de valor', () => {
     await dispatchInboundToAiReply(ARGS)
     const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
     expect(enviado).toBe(VALOR_ABAIXO_DO_PISO)
+  })
+})
+
+
+// Trava PERSISTENTE do piso de valor (11/09/2026, caso rafinhamoreiradebarros):
+// o marcador [[VALOR:N]] só é emitido uma vez (instrução do prompt), e a rede
+// de regex exige contexto de moeda explícito. Um valor declarado sem "R$" (ex.:
+// cliente só digita "9614.69") passa pela trava só no turno em que a IA
+// reconhece e recusa — no turno seguinte, se o lead insiste sem repetir o
+// valor, valorEfetivo voltava a null pra sempre e a trava parava de agir.
+// Foi assim que ele ouviu a recusa certa e, insistindo, conseguiu agendar de
+// verdade. Estes testes provam que a trava agora continua valendo mesmo sem
+// o valor se repetir, e que ainda destrava se um valor novo e válido aparecer.
+describe('dispatchInboundToAiReply — piso de valor persiste entre turnos', () => {
+  const TAG_ABAIXO_PISO = '72923bee-2b12-4093-9aa9-cb773aae3928'
+  const TAG_PF = '9f870fd7-1155-4ede-9da8-8678360c0ae9'
+  const VALOR_ABAIXO_DO_PISO =
+    'Vou ser honesta: pela nossa experiência, para valores nessa faixa o custo de uma ação acaba não compensando — prefiro te dizer isso a te levar por um caminho que não vale a pena.\n\nMas você não fica sem nada: no nosso blog e nos materiais gratuitos tem bastante coisa que ajuda. Blog: https://simionatoadvogados.com.br/blog/ · Materiais: https://simionatoadvogados.com.br/materiais-gratuitos/'
+
+  it('grava a trava quando o valor abaixo do piso é confirmado (turno com marcador)', async () => {
+    h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PF }]
+    h.generateReply.mockResolvedValue({
+      text: 'Entendi, R$9.614,69 em aberto. Quer que eu agende uma reunião?',
+      handoff: false,
+      move: null,
+      agendar: null,
+      segmento: null,
+      valor: 9614,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    await dispatchInboundToAiReply(ARGS)
+    const gravado = (h.state.porTabela['contact_tags'] ?? []).some(
+      (l) => (l as { tag_id?: string }).tag_id === TAG_ABAIXO_PISO,
+    )
+    expect(gravado).toBe(true)
+  })
+
+  it('sem valor novo neste turno, usa a trava gravada num turno anterior e continua recusando — mesmo que o lead insista', async () => {
+    // Simula o estado depois do turno que já confirmou e gravou a trava.
+    h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PF }, { tag_id: TAG_ABAIXO_PISO }]
+    // O lead insiste ("quanto fica pra pagar") sem repetir nenhum valor —
+    // exatamente o padrão do caso real — e a IA, sem a trava, ofereceria
+    // reunião de novo.
+    h.generateReply.mockResolvedValue({
+      text: 'Como cada caso é diferente, só um advogado pode avaliar. Quer que eu marque uma reunião?',
+      handoff: false,
+      move: null,
+      agendar: 1,
+      segmento: null,
+      valor: null,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    await dispatchInboundToAiReply(ARGS)
+    const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
+    expect(enviado).toBe(VALOR_ABAIXO_DO_PISO)
+  })
+
+  it('destrava sozinha quando o lead declara depois um valor novo igual/acima do piso', async () => {
+    h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PF }, { tag_id: TAG_ABAIXO_PISO }]
+    const textoIa = 'Perfeito, com esse valor faz sentido conversarmos. Tenho horário amanhã às 14h.'
+    h.generateReply.mockResolvedValue({
+      text: textoIa,
+      handoff: false,
+      move: null,
+      agendar: null,
+      segmento: null,
+      valor: 60000,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-1', text: textoIa }),
+    )
+    const aindaTravado = (h.state.porTabela['contact_tags'] ?? []).some(
+      (l) => (l as { tag_id?: string }).tag_id === TAG_ABAIXO_PISO,
+    )
+    expect(aindaTravado).toBe(false)
   })
 })

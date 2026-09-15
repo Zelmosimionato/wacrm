@@ -70,7 +70,7 @@ const PISO_PJ = 100_000
  * turno não carrega o marcador de valor de novo e segue o fluxo normal.
  */
 const VALOR_ABAIXO_DO_PISO =
-  'Pelo valor que você me passou, o custo de um processo judicial pode não compensar em relação ao benefício.\n\nMas se mesmo assim você quiser conversar com um advogado sobre o seu caso, é só me avisar que agendo uma reunião gratuita pra você.'
+  'Vou ser honesta: pela nossa experiência, para valores nessa faixa o custo de uma ação acaba não compensando — prefiro te dizer isso a te levar por um caminho que não vale a pena.\n\nMas você não fica sem nada: no nosso blog e nos materiais gratuitos tem bastante coisa que ajuda. Blog: https://simionatoadvogados.com.br/blog/ · Materiais: https://simionatoadvogados.com.br/materiais-gratuitos/'
 const EMAIL_NAO_RECEBE =
   'Esse e-mail não está recebendo mensagens — deve ter escapado um errinho de digitação.\n\nPode conferir e me mandar de novo? É para lá que vai o convite da videochamada.'
 const HORARIO_TOMADO =
@@ -225,6 +225,19 @@ const CF_CAL_UID = '9a4af810-d6d3-4201-b39d-9ed46648b5d9'
 const TAG_AGENDOU = 'c0278b4c-8f17-416e-a7e4-b66b6e78315a'
 const TAG_PF = '9f870fd7-1155-4ede-9da8-8678360c0ae9'
 const TAG_PJ = 'ea69a90c-407b-411c-953c-2d9920ef6a5e'
+/** Trava PERSISTENTE do piso de valor (11/09/2026, caso rafinhamoreiradebarros):
+ *  o marcador [[VALOR:N]] só é emitido UMA vez por instrução do prompt, e a
+ *  rede de regex (valorDeclaradoPeloCliente) exige contexto de moeda
+ *  explícito no texto do cliente. Um valor declarado sem "R$"/"mil"/"reais"
+ *  (ex.: cliente só digita "9614.69") passa pelas duas fontes só no turno em
+ *  que a IA reconhece e recusa — a partir do turno seguinte valorEfetivo
+ *  volta a ser null pra sempre, e a trava de piso (abaixo) para de agir,
+ *  mesmo a pessoa nunca tendo dado um valor novo. Foi assim que o
+ *  rafinhamoreiradebarros (R$9.614,69 PF, piso R$50k) ouviu a recusa certa e,
+ *  insistindo no turno seguinte sem repetir o valor, conseguiu agendar de
+ *  verdade. Esta tag grava o veredito assim que ele é calculado, pra
+ *  continuar valendo em turnos futuros sem depender de a IA repetir nada. */
+const TAG_ABAIXO_PISO = '72923bee-2b12-4093-9aa9-cb773aae3928'
 
 /** Lê o segmento PF/PJ já GRAVADO (tag persistida) — não o desta resposta,
  *  porque a confirmação de PF/PJ pode ter vindo num turno anterior ao que
@@ -242,6 +255,47 @@ async function segmentoPersistido(
     .in('tag_id', [TAG_PF, TAG_PJ])
   if (!data?.length) return null
   return data.some((t) => t.tag_id === TAG_PJ) ? 'PJ' : 'PF'
+}
+
+/** Lê se este contato já foi confirmado abaixo do piso em QUALQUER turno
+ *  anterior (tag persistida por `aplicarVeredictoPiso` abaixo). Rede de
+ *  último recurso: só entra quando o turno atual não trouxe nenhum valor
+ *  novo (nem marcador, nem regex no texto do cliente). */
+async function abaixoPisoPersistido(
+  db: ReturnType<typeof supabaseAdmin>,
+  contactId: string,
+): Promise<boolean> {
+  const { data } = await db
+    .from('contact_tags')
+    .select('tag_id')
+    .eq('contact_id', contactId)
+    .eq('tag_id', TAG_ABAIXO_PISO)
+  return !!data?.length
+}
+
+/** Grava (ou apaga) a tag "Abaixo do Piso" quando o turno atual traz um
+ *  valor FRESCO (marcador ou regex — nunca a própria tag persistida, senão
+ *  vira um loop que nunca desliga sozinho). Mantém a porta aberta de
+ *  verdade: se a pessoa mais tarde declarar um valor novo igual ou acima do
+ *  piso, a tag some e ela deixa de estar travada. */
+async function aplicarVeredictoPiso(
+  db: ReturnType<typeof supabaseAdmin>,
+  contactId: string,
+  abaixo: boolean,
+): Promise<void> {
+  if (abaixo) {
+    const { error } = await db
+      .from('contact_tags')
+      .upsert({ contact_id: contactId, tag_id: TAG_ABAIXO_PISO }, { onConflict: 'contact_id,tag_id', ignoreDuplicates: true })
+    if (error) console.warn(`[ia-valor] não consegui gravar a trava persistente (contact ${contactId}): ${error.message}`)
+  } else {
+    const { error } = await db
+      .from('contact_tags')
+      .delete()
+      .eq('contact_id', contactId)
+      .eq('tag_id', TAG_ABAIXO_PISO)
+    if (error) console.warn(`[ia-valor] não consegui destravar (contact ${contactId}): ${error.message}`)
+  }
 }
 
 /** "47.500,00" → 47500 · "450" → 450 · "1.234" → 1234 (ponto = milhar, vírgula
@@ -701,7 +755,7 @@ export async function avisarHandoff(
  * template aprovado ainda pra garantir entrega fora da janela — falha
  * aqui não pode derrubar o handoff, por isso é best-effort e nunca lança.
  */
-async function alertarPorWhatsapp(
+export async function alertarPorWhatsapp(
   db: ReturnType<typeof supabaseAdmin>,
   accountId: string,
   resumo: string,
@@ -1396,7 +1450,12 @@ export async function dispatchInboundToAiReply(
     // ESTIMATIVA mais inteligente (ex.: somar parcelas), não só o número cru.
     // Fonte 2 (rede): quando a IA não deu nenhum valor, procura direto no que
     // o PRÓPRIO CLIENTE escreveu — não depende da IA cooperar.
-    const valorEfetivo = valor ?? valorDeclaradoPeloCliente(messages)
+    const valorFresco = valor ?? valorDeclaradoPeloCliente(messages)
+    // Fonte 3 (trava persistente, 11/09/2026): sem valor novo neste turno,
+    // usa o veredito já gravado de um turno anterior — ver TAG_ABAIXO_PISO
+    // acima. Sentinela bem abaixo de qualquer piso real, só pra comparar.
+    const veioPersistido = valorFresco === null && (await abaixoPisoPersistido(db, contactId))
+    const valorEfetivo = valorFresco ?? (veioPersistido ? -1 : null)
     if (valorEfetivo !== null) {
       const seg = segmento ?? (await segmentoPersistido(db, contactId))
       // Segmento ainda não confirmado → usa o piso mais ALTO (PJ) como
@@ -1404,11 +1463,18 @@ export async function dispatchInboundToAiReply(
       // do que deixar passar um lead abaixo do piso (achado 01/09, Rogério —
       // segmento nunca tinha sido perguntado quando ela já ofereceu horário).
       const piso = seg === 'PF' ? PISO_PF : PISO_PJ
-      if (valorEfetivo < piso) {
+      const abaixo = valorEfetivo < piso
+      if (abaixo) {
         console.warn(
-          `[ia-valor] resposta travada — valor R$${valorEfetivo} (${valor !== null ? 'marcador' : 'regex no texto do cliente'}) abaixo do piso ${seg ?? 'PJ (padrão)'} (contact ${contactId})`,
+          `[ia-valor] resposta travada — valor R${valorEfetivo} (${veioPersistido ? 'trava persistente de turno anterior' : valor !== null ? 'marcador' : 'regex no texto do cliente'}) abaixo do piso ${seg ?? 'PJ (padrão)'} (contact ${contactId})`,
         )
         valorOverride = VALOR_ABAIXO_DO_PISO
+      }
+      // Só regrava a trava quando o turno trouxe sinal FRESCO — nunca a
+      // partir do próprio valor persistido, senão vira um loop que nunca
+      // destrava sozinho.
+      if (!veioPersistido) {
+        await aplicarVeredictoPiso(db, contactId, abaixo)
       }
     }
 

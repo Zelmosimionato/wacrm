@@ -54,7 +54,7 @@ import {
   blankButtonsPayload,
 } from "@/components/interactive/interactive-builder";
 import { validateInteractivePayload } from "@/lib/whatsapp/interactive";
-import type { InteractiveMessagePayload, QuickReply } from "@/types";
+import type { Contact, InteractiveMessagePayload, QuickReply } from "@/types";
 import { QuickReplyPicker } from "./quick-reply-picker";
 
 /** Media content types an agent can send from the composer. */
@@ -130,6 +130,8 @@ interface MessageComposerProps {
    *  one, or the second number running WhatsApp Web. */
   canal: "api" | "web";
   onCanalChange: (canal: "api" | "web") => void;
+  /** Contato da conversa atual, pra resolver {{contact.*}} nas mensagens prontas. */
+  contact?: Contact | null;
 }
 
 function formatDuration(seconds: number): string {
@@ -154,6 +156,7 @@ export function MessageComposer({
   onClearReply,
   canal,
   onCanalChange,
+  contact,
 }: MessageComposerProps) {
   const t = useTranslations("Inbox.composer");
 
@@ -433,7 +436,17 @@ export function MessageComposer({
         openInteractiveBuilder(qr.interactive_payload);
         return;
       }
-      const body = qr.content_text ?? "";
+      // Achado 14/09/2026: {{contact.*}} nunca era resolvido aqui -- a
+      // mensagem pronta ia pro cliente com o token literal. Mesma correcao
+      // aplicada no lado das automacoes (engine.ts, send_message).
+      const nome = (contact?.name ?? "").trim();
+      const primeiroNome = nome.split(/\s+/)[0] || nome;
+      const body = (qr.content_text ?? "")
+        .replace(/\{\{\s*contact\.name\s*\}\}/g, nome)
+        .replace(/\{\{\s*contact\.first_name\s*\}\}/g, primeiroNome)
+        .replace(/\{\{\s*contact\.phone\s*\}\}/g, contact?.phone ?? "")
+        .replace(/\{\{\s*contact\.email\s*\}\}/g, contact?.email ?? "")
+        .replace(/\{\{\s*contact\.company\s*\}\}/g, contact?.company ?? "");
       // Separate the snippet from any existing draft with a newline so the
       // words don't run together ("Thanks" + "we'll…" → "Thankswe'll…").
       setText((prev) =>

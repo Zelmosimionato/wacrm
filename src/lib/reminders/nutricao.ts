@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { engineSendText } from '@/lib/automations/meta-send'
 import { resolveAuditUserId } from '@/lib/api/v1/contacts'
+import { enviarPeloSegundoNumero, registrarEnvioSegundoNumero, janelaAberta } from '@/lib/whatsapp/segundo-numero'
 
 // ============================================================
 // Nutrição pré-reunião — exceção deliberada à régua "atendimento é IA,
@@ -89,47 +90,10 @@ function pausaAleatoria(): Promise<void> {
   return sleep(4_000 + Math.floor(Math.random() * 6_000))
 }
 
-const GATEWAY_SEGUNDO_NUMERO = process.env.WAZAP_URL ?? 'http://127.0.0.1:3002'
-
-async function enviarPeloSegundoNumero(telefone: string, texto: string): Promise<boolean> {
-  try {
-    const res = await fetch(`${GATEWAY_SEGUNDO_NUMERO}/enviar`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ telefone, texto }),
-      signal: AbortSignal.timeout(60_000),
-    })
-    if (!res.ok) {
-      console.error('[nutricao] segundo número recusou o envio:', res.status)
-      return false
-    }
-    return true
-  } catch (err) {
-    console.error('[nutricao] gateway do segundo número fora do ar:', err instanceof Error ? err.message : String(err))
-    return false
-  }
-}
-
-// Registra no CRM uma mensagem que já saiu pelo segundo número — mesmo
-// padrão usado pro envio principal da nutrição, reaproveitado pro SCR.
-async function registrarEnvioSegundoNumero(
-  db: ReturnType<typeof supabaseAdmin>,
-  conversationId: string,
-  texto: string,
-): Promise<void> {
-  await db.from('messages').insert({
-    conversation_id: conversationId,
-    sender_type: 'agent',
-    content_type: 'text',
-    content_text: texto,
-    status: 'sent',
-    channel: 'web',
-  })
-  await db
-    .from('conversations')
-    .update({ last_message_text: texto, last_message_at: new Date().toISOString(), last_channel: 'web' })
-    .eq('id', conversationId)
-}
+// enviarPeloSegundoNumero/registrarEnvioSegundoNumero movidos pra
+// '@/lib/whatsapp/segundo-numero' (11/09/2026) — reusados agora também
+// pelo motor de automações (`send_message` cai pro segundo número quando
+// a janela oficial está fechada, mesmo padrão que já funcionava só aqui).
 
 export async function dispatchNutricaoPreReuniao(): Promise<void> {
   const db = supabaseAdmin()
@@ -243,17 +207,8 @@ export async function dispatchNutricaoPreReuniao(): Promise<void> {
       .maybeSingle()
     const ehPF = !tagPJ
 
-    // Janela de 24h aberta? Olha a última mensagem DO LEAD nesta conversa.
-    const { data: ultimaDoLead } = await db
-      .from('messages')
-      .select('created_at')
-      .eq('conversation_id', conversationId)
-      .eq('sender_type', 'customer')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-    const janelaAberta =
-      !!ultimaDoLead && now - new Date(ultimaDoLead.created_at as string).getTime() < 24 * HOUR
+    // Janela de 24h aberta? (a partir da última mensagem DO LEAD.)
+    const janelaEstaAberta = await janelaAberta(db, conversationId)
 
     // Marca ANTES de enviar — mesmo motivo dos lembretes: falha no envio
     // perde 1 mensagem; marca depois de falhar repetiria a cada tick.
@@ -273,7 +228,7 @@ export async function dispatchNutricaoPreReuniao(): Promise<void> {
     if (!primeiroEnvio) await pausaAleatoria()
     primeiroEnvio = false
 
-    if (janelaAberta) {
+    if (janelaEstaAberta) {
       if (!userId) userId = await resolveAuditUserId(db, accountId)
       try {
         await engineSendText({

@@ -535,6 +535,7 @@
       "deleting": "Deleting...",
       "deleteDeal": "Delete Deal",
       "toastRequired": "Title, contact, and stage are required",
+      "toastValorContratoObrigatorio": "Fill in the contract value before moving to the Operations pipeline",
       "toastFailedSave": "Failed to save deal",
       "toastNotSignedIn": "Not signed in",
       "toastNotLinked": "Your profile is not linked to an account.",

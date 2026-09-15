@@ -2,12 +2,13 @@ import { NextResponse, after } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
+import { sendTextMessage } from '@/lib/whatsapp/meta-api'
 import { normalizePhone } from '@/lib/whatsapp/phone-utils'
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger, automacaoVaiResponder } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
-import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
+import { dispatchInboundToAiReply, alertarPorWhatsapp } from '@/lib/ai/auto-reply'
 import { loadAiConfig } from '@/lib/ai/config'
 import { transcreverAudioDoWhatsApp } from '@/lib/ai/transcreve'
 import { sendMessageToConversation } from '@/lib/whatsapp/send-message'
@@ -93,6 +94,17 @@ interface WhatsAppWebhookEntry {
         status: string
         timestamp: string
         recipient_id: string
+        // Só vem quando status === 'failed'. Até 11/09/2026 esse campo
+        // nunca foi lido — a falha aparecia (status='failed') mas o
+        // MOTIVO (número inválido, usuário bloqueou, template rejeitado
+        // etc.) nunca era guardado em lugar nenhum. Achado ao investigar
+        // 10 de 55 envios falhando nas últimas 24h sem ninguém saber por quê.
+        errors?: Array<{
+          code: number
+          title: string
+          message: string
+          error_data?: { details?: string }
+        }>
       }>
     }
     field: string
@@ -367,7 +379,15 @@ async function handleStatusUpdate(status: {
   status: string
   timestamp: string
   recipient_id: string
+  errors?: Array<{ code: number; title: string; message: string; error_data?: { details?: string } }>
 }) {
+  if (status.status === 'failed' && status.errors?.length) {
+    console.error(
+      `[webhook] envio falhou pra ${status.recipient_id} (msg ${status.id}): ${status.errors
+        .map((e) => `[${e.code}] ${e.title}${e.error_data?.details ? ' — ' + e.error_data.details : ''}`)
+        .join(' | ')}`,
+    )
+  }
   // 1) Mirror onto messages (legacy behavior) — Meta's status values
   //    already match the CHECK constraint on messages.status. No
   //    `.select()`: message_id is NOT unique (migration 009 — Meta ids
@@ -446,6 +466,28 @@ async function handleStatusUpdate(status: {
           status: status.status,
         }
       )
+      // Achado 11/09/2026 (PENDENCIAS-2026-09-10 item 2): mensagem falhava
+      // e ninguém sabia — nem a causa (ver captura de `errors` acima), nem
+      // sequer QUE tinha falhado. Reusa o mesmo canal de WhatsApp já usado
+      // pro aviso de handoff de IA — best-effort, nunca derruba o webhook.
+      // ⛔ Não grava em `notifications`: essa tabela tem CHECK constraint
+      // fechado por tipo (027/040/043/044), um `type` novo precisaria de
+      // migração própria — fora do escopo deste fix pontual.
+      if (status.status === 'failed') {
+        try {
+          const motivo = status.errors?.length
+            ? status.errors
+                .map((e) => `[${e.code}] ${e.title}${e.error_data?.details ? ' — ' + e.error_data.details : ''}`)
+                .join(' | ')
+            : 'motivo não informado pela Meta'
+          const resumo = `Mensagem não entregue (msg ${status.id}).\nMotivo: ${motivo}`
+          await alertarPorWhatsapp(supabaseAdmin(), accountId, resumo)
+        } catch (err) {
+          console.error(
+            `[webhook] aviso de falha de entrega deu erro (best-effort, não afeta o webhook): ${err instanceof Error ? err.message : String(err)}`,
+          )
+        }
+      }
     }
   }
 }

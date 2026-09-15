@@ -535,6 +535,7 @@
       "deleting": "Excluindo...",
       "deleteDeal": "Excluir negócio",
       "toastRequired": "Título, contato e etapa são obrigatórios",
+      "toastValorContratoObrigatorio": "Preencha o valor do contrato antes de mover para o Funil Operacional",
       "toastFailedSave": "Falha ao salvar negócio",
       "toastNotSignedIn": "Não autenticado",
       "toastNotLinked": "Seu perfil não está vinculado a uma conta.",
