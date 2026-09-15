@@ -954,7 +954,7 @@ export function ContactDrawer({
                     ))}
                   </div>
                 )}
-                  {shouldShowCreateDealButton(deals) && (
+                  {!loadingDeals && shouldShowCreateDealButton(deals) && (
                     <button
                       type="button"
                       onClick={openCreateDeal}
