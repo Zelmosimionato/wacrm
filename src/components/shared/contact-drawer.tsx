@@ -11,6 +11,11 @@ import type { Contact, Tag, ContactTag, ContactNote, CustomField, ContactCustomV
 import { DealForm } from '@/components/pipelines/deal-form';
 import { CorrigirAgendamentoDialog } from '@/components/contacts/corrigir-agendamento-dialog';
 import {
+  getCachedContactDrawerData,
+  setCachedContactDrawerData,
+  invalidateContactDrawerCache,
+} from '@/components/shared/contact-drawer-cache';
+import {
   TemplatePicker,
   type TemplateSendValues,
 } from '@/components/inbox/template-picker';
@@ -51,6 +56,17 @@ interface ContactDrawerProps {
   onOpenChange: (open: boolean) => void;
   contactId: string | null;
   onUpdated: () => void;
+  /** Data the calling screen already fetched — when present, the drawer
+   * seeds its state from it instead of re-querying Supabase. Keeps the
+   * Inbox's contact-sidebar (which already has all four) from doubling
+   * its request count just because the drawer opened. */
+  initialContact?: Contact;
+  initialTags?: (Tag & { contact_tag_id: string })[];
+  initialDeals?: Deal[];
+  initialNotes?: ContactNote[];
+  /** When set, the Deals accordion section opens expanded on this deal
+   * instead of the default (Details) section. */
+  focusDealId?: string;
 }
 
 export function ContactDrawer({
@@ -58,6 +74,11 @@ export function ContactDrawer({
   onOpenChange,
   contactId,
   onUpdated,
+  initialContact,
+  initialTags,
+  initialDeals,
+  initialNotes,
+  focusDealId,
 }: ContactDrawerProps) {
   const t = useTranslations('Contacts.detailView');
   const supabase = createClient();
@@ -186,14 +207,70 @@ export function ContactDrawer({
   }, [contactId, supabase]);
 
   useEffect(() => {
-    if (open && contactId) {
+    if (!open || !contactId) return;
+
+    const cached = getCachedContactDrawerData(contactId);
+
+    const seedContact = initialContact ?? cached?.contact;
+    const seedTags = initialTags ?? cached?.tags;
+    const seedDeals = initialDeals ?? cached?.deals;
+    const seedNotes = initialNotes ?? cached?.notes;
+
+    if (seedContact) {
+      setContact(seedContact);
+      setEditName(seedContact.name ?? '');
+      setEditPhone(seedContact.phone);
+      setEditEmail(seedContact.email ?? '');
+      setEditCompany(seedContact.company ?? '');
+    } else {
       fetchContact();
-      fetchTags();
+    }
+
+    if (seedTags) {
+      setAllTags((prev) => (prev.length ? prev : prev));
+      setContactTagIds(seedTags.map((t) => t.id));
+    }
+    // allTags (every tag that exists, for the toggle grid) is never part of
+    // what a caller has — always fetched, same as before.
+    fetchTags();
+
+    if (seedNotes) {
+      setNotes(seedNotes);
+    } else {
       fetchNotes();
-      fetchCustomFields();
+    }
+
+    if (seedDeals) {
+      setDeals(seedDeals);
+    } else {
       fetchDeals();
     }
-  }, [open, contactId, fetchContact, fetchTags, fetchNotes, fetchCustomFields, fetchDeals]);
+
+    // Custom field VALUES are never pre-loaded by any of the 3 screens today
+    // (confirmed in the design doc) — always fetched.
+    fetchCustomFields();
+
+    if (!cached) {
+      setCachedContactDrawerData(contactId, {
+        contact: seedContact,
+        tags: seedTags,
+        deals: seedDeals,
+        notes: seedNotes,
+      });
+    }
+  }, [
+    open,
+    contactId,
+    initialContact,
+    initialTags,
+    initialDeals,
+    initialNotes,
+    fetchContact,
+    fetchTags,
+    fetchNotes,
+    fetchCustomFields,
+    fetchDeals,
+  ]);
 
   // Newest conversation for this contact — powers the "Ver conversa" link.
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -288,6 +365,7 @@ export function ContactDrawer({
       toast.error(t('toastUpdateFailed'));
     } else {
       toast.success(t('toastUpdated'));
+      if (contactId) invalidateContactDrawerCache(contactId);
       fetchContact();
       onUpdated();
     }
@@ -308,6 +386,7 @@ export function ContactDrawer({
         .eq('tag_id', tagId);
       if (!error) {
         setContactTagIds((prev) => prev.filter((id) => id !== tagId));
+        if (contactId) invalidateContactDrawerCache(contactId);
         onUpdated();
       }
     } else {
@@ -316,6 +395,7 @@ export function ContactDrawer({
         .insert({ contact_id: contactId, tag_id: tagId });
       if (!error) {
         setContactTagIds((prev) => [...prev, tagId]);
+        if (contactId) invalidateContactDrawerCache(contactId);
         onUpdated();
       }
     }
