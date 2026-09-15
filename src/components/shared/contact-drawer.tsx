@@ -46,19 +46,19 @@ import {
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
-interface ContactDetailViewProps {
+interface ContactDrawerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   contactId: string | null;
   onUpdated: () => void;
 }
 
-export function ContactDetailView({
+export function ContactDrawer({
   open,
   onOpenChange,
   contactId,
   onUpdated,
-}: ContactDetailViewProps) {
+}: ContactDrawerProps) {
   const t = useTranslations('Contacts.detailView');
   const supabase = createClient();
   const router = useRouter();
