@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import type { AiConfig } from './types'
+import { fetchAgentConfig } from './agent-config'
 
 interface AiConfigRow {
   provider: 'openai' | 'anthropic'
@@ -69,11 +70,31 @@ export async function loadAiConfig(
     }
   }
 
+  const apiKey = decrypt(row.api_key)
+
+  // Márcia 2.0: prompt e modelo vêm ao vivo do Agent da plataforma OpenAI
+  // quando disponível — é a fonte única da verdade (editar lá já vale na
+  // próxima mensagem). O texto do Agent entra aqui como se fosse o
+  // `system_prompt` de sempre: continua passando pelo `buildSystemPrompt()`
+  // de `auto-reply.ts`/`playground`, que é quem injeta o protocolo de
+  // marcadores (`[[QUALIFICADO]]`, `[[AGENDAR:N]]` etc.), a agenda real do
+  // Cal.com e o contexto do contato. Sem isso a Márcia perde a capacidade
+  // de agendar/qualificar/mover card — achado real, 20/09/2026.
+  let systemPrompt = row.system_prompt
+  let model = row.model
+  if (row.provider === 'openai') {
+    const agentConfig = await fetchAgentConfig(apiKey)
+    if (agentConfig) {
+      systemPrompt = agentConfig.instructions
+      model = agentConfig.model
+    }
+  }
+
   return {
     provider: row.provider,
-    model: row.model,
-    apiKey: decrypt(row.api_key),
-    systemPrompt: row.system_prompt,
+    model,
+    apiKey,
+    systemPrompt,
     isActive: row.is_active,
     autoReplyEnabled: row.auto_reply_enabled,
     autoReplyMaxPerConversation: row.auto_reply_max_per_conversation,

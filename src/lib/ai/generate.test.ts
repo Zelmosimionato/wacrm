@@ -177,10 +177,10 @@ describe('parseGeneration', () => {
 })
 
 describe('generateReply — OpenAI', () => {
-  it('calls the chat completions endpoint and returns the reply', async () => {
+  it('calls Responses with File Search and returns the reply', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       okResponse({
-        choices: [{ message: { content: 'Sure — happy to help!' } }],
+        output_text: 'Sure — happy to help!',
         usage: { prompt_tokens: 42, completion_tokens: 8, total_tokens: 50 },
       }),
     )
@@ -204,8 +204,11 @@ describe('generateReply — OpenAI', () => {
       usage: { promptTokens: 42, completionTokens: 8, totalTokens: 50 },
     })
     const [url, opts] = fetchMock.mock.calls[0]
-    expect(url).toContain('api.openai.com')
+    expect(url).toContain('api.openai.com/v1/responses')
     expect(opts.headers.Authorization).toBe('Bearer sk-test')
+    const body = JSON.parse(opts.body)
+    expect(body.instructions).toBe('sys')
+    expect(body.tools).toEqual([{ type: 'file_search', vector_store_ids: ['vs_6aadd769530081918605c3c6da360f30'] }])
   })
 
   it('maps a 401 to an invalid_key AiError', async () => {
