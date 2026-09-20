@@ -12,6 +12,7 @@ import { buildHandoffSummary } from './handoff'
 import { logAiUsage } from './usage'
 import { latestUserMessage } from './query'
 import { engineSendText, engineSendCtaUrl } from '@/lib/flows/meta-send'
+import { enviarPeloSegundoNumero, registrarEnvioSegundoNumero } from '@/lib/whatsapp/segundo-numero'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { horariosLivres, type SlotLivre } from '@/lib/appointments/calcom-slots'
@@ -321,17 +322,34 @@ function normalizaValorBr(bruto: string): number | null {
  * recusa (`VALOR_ABAIXO_DO_PISO`) sempre deixa a porta aberta pra insistir.
  */
 export function valorDeclaradoPeloCliente(messages: ChatMessage[]): number | null {
-  const PADRAO = /R\$\s*([\d.,]+)|([\d.,]+)\s*mil\b|([\d.,]+)\s*reais\b/gi
+  // 18/09/2026, caso Tata: "R$ 90 mil" caia inteiro no 1o ramo (R$ + numero)
+  // e capturava so "90", perdendo o "mil" -- sem o \s*(mil)? aqui, o numero
+  // depois de R$ nunca casava com o 2o ramo (que exige o "mil" colado nele
+  // mesmo, sem R$ na frente). Resultado: R$90 mil virava 90, nao 90000, e um
+  // lead de R$90k caia "abaixo do piso" por engano -- mesmo ja com reuniao
+  // sendo agendada. Agora o "mil" depois de um valor com R$ e capturado.
+  const PADRAO = /R\$\s*([\d.,]+)\s*(mil)?\b|([\d.,]+)\s*mil\b|([\d.,]+)\s*reais\b/gi
   let ultimo: number | null = null
   for (const m of messages) {
     if (m.role !== 'user') continue
     PADRAO.lastIndex = 0
     let match: RegExpExecArray | null
     while ((match = PADRAO.exec(m.content))) {
-      const bruto = match[1] ?? match[2] ?? match[3]
+      let bruto: string | undefined
+      let ehMil = false
+      if (match[1] !== undefined) {
+        bruto = match[1]
+        ehMil = match[2] !== undefined
+      } else if (match[3] !== undefined) {
+        bruto = match[3]
+        ehMil = true
+      } else if (match[4] !== undefined) {
+        bruto = match[4]
+        ehMil = false
+      }
+      if (bruto === undefined) continue
       const numero = normalizaValorBr(bruto)
       if (numero === null) continue
-      const ehMil = match[2] !== undefined
       ultimo = ehMil ? numero * 1000 : numero
     }
   }
@@ -1195,7 +1213,7 @@ export async function dispatchInboundToAiReply(
     const { data: conv, error: convErr } = await db
       .from('conversations')
       .select(
-        'assigned_agent_id, ai_autoreply_disabled, ai_reply_count, ai_handoff_summary, updated_at',
+        'assigned_agent_id, ai_autoreply_disabled, ai_reply_count, ai_handoff_summary, updated_at, last_channel',
       )
       .eq('id', conversationId)
       .maybeSingle()
@@ -1458,15 +1476,18 @@ export async function dispatchInboundToAiReply(
     const valorEfetivo = valorFresco ?? (veioPersistido ? -1 : null)
     if (valorEfetivo !== null) {
       const seg = segmento ?? (await segmentoPersistido(db, contactId))
-      // Segmento ainda não confirmado → usa o piso mais ALTO (PJ) como
-      // padrão de segurança: melhor pedir confirmação a mais de um lead bom
-      // do que deixar passar um lead abaixo do piso (achado 01/09, Rogério —
-      // segmento nunca tinha sido perguntado quando ela já ofereceu horário).
-      const piso = seg === 'PF' ? PISO_PF : PISO_PJ
+      // Segmento ainda não confirmado → usa o piso mais BAIXO (PF) como
+      // padrão de segurança (18/09/2026, caso Babi Blumer: PF com R$70k foi
+      // recusada porque o default antigo usava o piso PJ de R$100k, mais alto
+      // que o dela). Falso positivo de recusar um PF bom é pior que falso
+      // negativo de qualificar um PJ pequeno — o segundo um humano barra na
+      // reunião; o primeiro já perdeu o lead antes de alguém ver. Substitui o
+      // default de 01/09 (Rogério), que priorizava o risco oposto.
+      const piso = seg === 'PJ' ? PISO_PJ : PISO_PF
       const abaixo = valorEfetivo < piso
       if (abaixo) {
         console.warn(
-          `[ia-valor] resposta travada — valor R${valorEfetivo} (${veioPersistido ? 'trava persistente de turno anterior' : valor !== null ? 'marcador' : 'regex no texto do cliente'}) abaixo do piso ${seg ?? 'PJ (padrão)'} (contact ${contactId})`,
+          `[ia-valor] resposta travada — valor R${valorEfetivo} (${veioPersistido ? 'trava persistente de turno anterior' : valor !== null ? 'marcador' : 'regex no texto do cliente'}) abaixo do piso ${seg ?? 'PF (padrão)'} (contact ${contactId})`,
         )
         valorOverride = VALOR_ABAIXO_DO_PISO
       }
@@ -1674,16 +1695,36 @@ export async function dispatchInboundToAiReply(
     // ONE logical reply — the per-conversation slot was claimed once
     // above, so extra bubbles do NOT each consume a slot. A short gap
     // between sends preserves order and feels human.
+    // 20/09/2026: conversa que chegou pelo SEGUNDO número (WhatsApp Web/
+    // Evolution, `channel: 'web'`) tem que ser respondida pelo MESMO canal —
+    // o `engineSendText` só sabe falar com o número oficial da Meta, e a
+    // Meta rejeita o envio pra um contato que nunca abriu janela com ELA
+    // (achado real: Márcia gerava a resposta certa, ficava só no CRM,
+    // `status: 'failed'`, [131047] "mais de 24h" — o contato tinha, sim,
+    // acabado de escrever, só que pro número errado).
     const bubbles = splitBubbles(textoFinal)
+    const viaSegundoNumero = conv.last_channel === 'web'
     for (let i = 0; i < bubbles.length; i++) {
-      await engineSendText({
-        accountId,
-        userId: configOwnerUserId,
-        conversationId,
-        contactId,
-        text: bubbles[i],
-        aiGenerated: true,
-      })
+      if (viaSegundoNumero) {
+        const telefone = contactRow?.phone ?? null
+        const ok = telefone ? await enviarPeloSegundoNumero(telefone, bubbles[i]) : false
+        if (ok) {
+          await registrarEnvioSegundoNumero(db, conversationId, bubbles[i])
+        } else {
+          console.error(
+            `[ai auto-reply] falha ao enviar pelo segundo número (conversa ${conversationId}, telefone ${telefone ?? 'ausente'}) — resposta ficou só no CRM`,
+          )
+        }
+      } else {
+        await engineSendText({
+          accountId,
+          userId: configOwnerUserId,
+          conversationId,
+          contactId,
+          text: bubbles[i],
+          aiGenerated: true,
+        })
+      }
       if (i < bubbles.length - 1) await sleep(900)
     }
 
@@ -1698,16 +1739,27 @@ export async function dispatchInboundToAiReply(
     // juntos chegam em sequência, dizendo a mesma coisa duas vezes.
     if (portaAberta && !isClient && moveFinal !== 'reagendar') {
       try {
-        await engineSendCtaUrl({
-          accountId,
-          userId: configOwnerUserId,
-          conversationId,
-          contactId,
-          bodyText:
-            'Se mudar de ideia, é só tocar no botão abaixo e escolher o melhor horário. Fico à disposição! 😊',
-          buttonText: 'Agendar agora',
-          url: AGENDA_LINK,
-        })
+        // Segundo número é texto puro (sem botão interativo) — manda o
+        // link direto na mensagem em vez do CTA button que só a Meta sabe
+        // renderizar.
+        if (viaSegundoNumero) {
+          const telefone = contactRow?.phone ?? null
+          const textoLink = `Se mudar de ideia, é só acessar o link abaixo e escolher o melhor horário. Fico à disposição! 😊\n${AGENDA_LINK}`
+          const ok = telefone ? await enviarPeloSegundoNumero(telefone, textoLink) : false
+          if (ok) await registrarEnvioSegundoNumero(db, conversationId, textoLink)
+          else console.error(`[ia-agenda] link de porta aberta falhou pelo segundo número (conversa ${conversationId})`)
+        } else {
+          await engineSendCtaUrl({
+            accountId,
+            userId: configOwnerUserId,
+            conversationId,
+            contactId,
+            bodyText:
+              'Se mudar de ideia, é só tocar no botão abaixo e escolher o melhor horário. Fico à disposição! 😊',
+            buttonText: 'Agendar agora',
+            url: AGENDA_LINK,
+          })
+        }
       } catch (err) {
         console.error('[ia-agenda] botão de porta aberta falhou:', err)
       }

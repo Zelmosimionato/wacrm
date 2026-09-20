@@ -67,6 +67,29 @@ describe('valorDeclaradoPeloCliente', () => {
     ).toBe(47500)
   })
 
+  // 18/09/2026, caso Tatá: "R$ 90 mil" caía inteiro no ramo "R$ + número" e
+  // capturava só "90" — o "mil" ficava sem casar com nenhum ramo (o ramo
+  // "número mil" exige o número colado nele mesmo, sem R$ na frente). O
+  // valor real (R$90.000) virava 90, e um lead qualificado, já com reunião
+  // sendo marcada, caía "abaixo do piso" por engano.
+  it('lê "R$ X mil" como X*1000, não perde o "mil" (bug real, caso Tatá)', () => {
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'acredito que o total esteja em torno de R$ 90 mil ou mais' }]),
+    ).toBe(90000)
+  })
+
+  it('lê "R$Xmil" grudado, sem espaço, do mesmo jeito', () => {
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'tenho uma dívida de R$70mil' }]),
+    ).toBe(70000)
+  })
+
+  it('"R$ X" sem "mil" continua lendo o valor literal (não multiplica à toa)', () => {
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'a parcela é de R$ 90' }]),
+    ).toBe(90)
+  })
+
   it('vale o último valor que a pessoa mandou', () => {
     expect(
       valorDeclaradoPeloCliente([
@@ -492,10 +515,9 @@ describe('dispatchInboundToAiReply — piso de valor', () => {
   })
 
   // Reforço 01/09/2026 (caso Rogério, R$450 sem segmento nunca perguntado):
-  // sem segmento gravado, o piso padrão agora é o mais ALTO (PJ) — melhor
-  // pedir confirmação a mais de um lead bom do que deixar passar um abaixo
-  // do piso. Antes desse reforço este caso NÃO travava; agora trava.
-  it('sem segmento gravado ainda, usa o piso mais alto (PJ) como padrão de segurança', async () => {
+  // sem segmento gravado, um valor claramente baixo (abaixo de QUALQUER piso
+  // real) ainda trava — isso não mudou.
+  it('sem segmento gravado ainda, um valor abaixo de qualquer piso real ainda trava', async () => {
     h.generateReply.mockResolvedValue({
       text: 'Entendi, você tem R$9.000 em aberto. Tenho horário amanhã às 14h.',
       handoff: false,
@@ -510,6 +532,31 @@ describe('dispatchInboundToAiReply — piso de valor', () => {
     await dispatchInboundToAiReply(ARGS)
     const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
     expect(enviado).toBe(VALOR_ABAIXO_DO_PISO)
+  })
+
+  // 18/09/2026, caso Babi Blumer: PF com R$70.000 (funcionária pública, acima
+  // do piso PF de R$50k) foi recusada porque, sem segmento ainda confirmado,
+  // o default usava o piso PJ (R$100k) — mais alto que o dela. Trocado o
+  // default pro piso mais BAIXO (PF): um falso positivo (recusar um PF bom)
+  // perde o lead sem ninguém ver; um falso negativo (deixar passar um PJ
+  // pequeno) um humano barra na reunião — o segundo erro é sempre mais barato.
+  it('sem segmento gravado ainda, um valor na faixa PF (entre R$50k e R$100k) NÃO trava mais', async () => {
+    const textoIa = 'Entendi, obrigada por compartilhar. Tenho horário amanhã às 14h.'
+    h.generateReply.mockResolvedValue({
+      text: textoIa,
+      handoff: false,
+      move: null,
+      agendar: null,
+      segmento: null,
+      valor: 70000,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-1', text: textoIa }),
+    )
   })
 
   it('sem segmento gravado ainda, deixa passar um valor claramente acima do piso mais alto', async () => {
