@@ -757,10 +757,12 @@ export async function avisarHandoff(
   // Achado ao vivo, 22/08/2026: desligar a IA sem avisar ninguém deixa a
   // conversa muda até alguém tropeçar nela por acaso — foi quase 1h sem
   // resposta pra um lead real, e "ninguém do escritório olha isso em fim
-  // de semana" (o painel de notifications não basta). Dois avisos agora,
-  // de propósito redundantes: grava em `notifications` (fica no CRM,
-  // rastreável) E manda WhatsApp de verdade pro titular (canal que ele
-  // realmente olha fora do horário comercial).
+  // de semana" (o painel de notifications não basta). Dois avisos agora:
+  // grava em `notifications` (fica no CRM, rastreável, sempre) e manda
+  // WhatsApp de verdade pro titular só quando o lead é Superqualificado
+  // (>= R$500 mil, tag AI_TAG_SUPER) — 21/09/2026: todo handoff mandava
+  // WhatsApp pro titular, virou ruído; ele pediu pra restringir ao que
+  // realmente merece interromper o celular dele fora do horário comercial.
   const destinatarios = handoffAgentId
     ? [handoffAgentId]
     : (
@@ -784,7 +786,14 @@ export async function avisarHandoff(
       )
     }
   }
-  await alertarPorWhatsapp(db, accountId, resumo)
+  const { count: superCount } = await db
+    .from('contact_tags')
+    .select('id', { count: 'exact', head: true })
+    .eq('contact_id', contactId)
+    .eq('tag_id', AI_TAG_SUPER)
+  if ((superCount ?? 0) > 0) {
+    await alertarPorWhatsapp(db, accountId, resumo)
+  }
 }
 
 /**
