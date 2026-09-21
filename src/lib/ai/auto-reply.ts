@@ -1512,6 +1512,15 @@ export async function dispatchInboundToAiReply(
     // pra oferecer horário sem NUNCA emitir [[VALOR:N]]. Marcador que depende
     // da IA lembrar de emitir tem esse limite; por isso a trava agora usa
     // DUAS fontes independentes.
+    //
+    // ⛔ DESATIVADA em 21/09/2026 (auditoria do prompt mestre): este piso é
+    // genérico (só sabe PF=R$50k / PJ=R$100k) e não sabe qual PRODUTO está em
+    // jogo — descoberto interceptando por engano leads de DBC (corte real
+    // R$5k) e GPIX (R$10k) que a própria Márcia já teria qualificado
+    // corretamente pela tabela do catálogo dela. Decisão do titular: por ora
+    // é ELA quem decide (consultando a tabela no prompt), não esta trava
+    // genérica — mecanismo mantido no código, só desligado, não apagado.
+    const PISO_GENERICO_ATIVO = false
     let valorOverride: string | null = null
     // Fonte 1 (preferida): o marcador que a IA emitiu — pode ser uma
     // ESTIMATIVA mais inteligente (ex.: somar parcelas), não só o número cru.
@@ -1523,7 +1532,7 @@ export async function dispatchInboundToAiReply(
     // acima. Sentinela bem abaixo de qualquer piso real, só pra comparar.
     const veioPersistido = valorFresco === null && (await abaixoPisoPersistido(db, contactId))
     const valorEfetivo = valorFresco ?? (veioPersistido ? -1 : null)
-    if (valorEfetivo !== null) {
+    if (PISO_GENERICO_ATIVO && valorEfetivo !== null) {
       const seg = segmento ?? (await segmentoPersistido(db, contactId))
       // Segmento ainda não confirmado → usa o piso mais BAIXO (PF) como
       // padrão de segurança (18/09/2026, caso Babi Blumer: PF com R$70k foi

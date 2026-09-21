@@ -507,22 +507,27 @@ describe('dispatchInboundToAiReply — handoff', () => {
   })
 })
 
-// Trava de verdade pro PISO DE VALOR (01/09/2026, caso Andreia): a IA revelou
-// ~R$9.000 de dívida de pessoa física e, na MESMA resposta, ofereceu dois
-// horários de reunião — mesmo com a instrução escrita dizendo pra não fazer
-// isso. Texto sozinho não bastou (mesma classe de falha do PF/PJ, achado no
-// mesmo dia). Estes testes provam que agora quem decide é o sistema, não o
-// texto que a IA escreveu.
-describe('dispatchInboundToAiReply — piso de valor', () => {
+// Trava GENÉRICA de PISO DE VALOR — histórico: criada 01/09/2026 (caso
+// Andreia: revelou valor e ofereceu horário na MESMA resposta) e reforçada
+// no mesmo dia (caso Rogério) e em 11/09 (rafinhamoreiradebarros) e 18/09
+// (Babi Blumer). Ficou provado 21/09/2026, na auditoria do prompt mestre,
+// que essa trava genérica (só sabe PF=R$50k/PJ=R$100k) não sabe qual
+// PRODUTO está em jogo — ela interceptava por engano leads de DBC (corte
+// real R$5k) e GPIX (R$10k) que a própria Márcia já teria qualificado
+// certo pela tabela do catálogo dela. Decisão do titular: desativada
+// (`PISO_GENERICO_ATIVO = false`) — por ora é ELA quem decide, consultando
+// a tabela no prompt. Mecanismo mantido no código, só desligado. Estes
+// testes agora provam o INVERSO do que provavam antes: a resposta da IA
+// passa sempre, mesmo com valores baixos — a trava está inerte.
+describe('dispatchInboundToAiReply — piso de valor (trava genérica DESATIVADA em 21/09/2026)', () => {
   const TAG_PF = '9f870fd7-1155-4ede-9da8-8678360c0ae9'
   const TAG_PJ = 'ea69a90c-407b-411c-953c-2d9920ef6a5e'
-  const VALOR_ABAIXO_DO_PISO =
-    'Entendi. Pelas informações que você me passou, infelizmente o seu caso não se enquadra no perfil de atendimento que estamos trabalhando neste momento.\n\nComo trabalhamos com processos judiciais, precisamos considerar os custos envolvidos em relação aos benefícios que podem ser obtidos. No seu caso, esses custos podem não compensar, tornando a medida judicial economicamente inviável.\n\nMas agradecemos muito o seu contato. Estaremos sempre de portas abertas caso futuramente precise nos procurar novamente.\n\nMas você não fica sem nada: no nosso blog e nos materiais gratuitos tem bastante coisa que ajuda. Blog: https://simionatoadvogados.com.br/blog/ · Materiais: https://simionatoadvogados.com.br/materiais-gratuitos/'
 
-  it('troca a resposta inteira quando o valor declarado vem abaixo do piso do segmento (PF)', async () => {
+  it('não troca mais a resposta quando o valor declarado vem abaixo do piso genérico (PF)', async () => {
     h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PF }]
+    const textoIa = 'Entendi, você tem R$9.000 em aberto. Tenho horário amanhã às 14h ou quinta às 15h — qual prefere?'
     h.generateReply.mockResolvedValue({
-      text: 'Entendi, você tem R$9.000 em aberto. Tenho horário amanhã às 14h ou quinta às 15h — qual prefere?',
+      text: textoIa,
       handoff: false,
       move: 'qualified',
       agendar: null,
@@ -533,10 +538,9 @@ describe('dispatchInboundToAiReply — piso de valor', () => {
       usage: null,
     })
     await dispatchInboundToAiReply(ARGS)
-    // A recusa tem uma linha em branco no meio, então sai em 2 balões
-    // (splitBubbles) — junta de volta pra comparar com o texto original.
-    const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
-    expect(enviado).toBe(VALOR_ABAIXO_DO_PISO)
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-1', text: textoIa }),
+    )
   })
 
   it('deixa a resposta da IA passar quando o valor está acima do piso do segmento (PJ)', async () => {
@@ -559,100 +563,13 @@ describe('dispatchInboundToAiReply — piso de valor', () => {
     )
   })
 
-  // Reforço 01/09/2026 (caso Rogério, R$450 sem segmento nunca perguntado):
-  // sem segmento gravado, um valor claramente baixo (abaixo de QUALQUER piso
-  // real) ainda trava — isso não mudou.
-  it('sem segmento gravado ainda, um valor abaixo de qualquer piso real ainda trava', async () => {
-    h.generateReply.mockResolvedValue({
-      text: 'Entendi, você tem R$9.000 em aberto. Tenho horário amanhã às 14h.',
-      handoff: false,
-      move: null,
-      agendar: null,
-      segmento: null,
-      valor: 9000,
-      desmarcar: false,
-      portaAberta: false,
-      usage: null,
-    })
-    await dispatchInboundToAiReply(ARGS)
-    const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
-    expect(enviado).toBe(VALOR_ABAIXO_DO_PISO)
-  })
-
-  // 18/09/2026, caso Babi Blumer: PF com R$70.000 (funcionária pública, acima
-  // do piso PF de R$50k) foi recusada porque, sem segmento ainda confirmado,
-  // o default usava o piso PJ (R$100k) — mais alto que o dela. Trocado o
-  // default pro piso mais BAIXO (PF): um falso positivo (recusar um PF bom)
-  // perde o lead sem ninguém ver; um falso negativo (deixar passar um PJ
-  // pequeno) um humano barra na reunião — o segundo erro é sempre mais barato.
-  it('sem segmento gravado ainda, um valor na faixa PF (entre R$50k e R$100k) NÃO trava mais', async () => {
-    const textoIa = 'Entendi, obrigada por compartilhar. Tenho horário amanhã às 14h.'
-    h.generateReply.mockResolvedValue({
-      text: textoIa,
-      handoff: false,
-      move: null,
-      agendar: null,
-      segmento: null,
-      valor: 70000,
-      desmarcar: false,
-      portaAberta: false,
-      usage: null,
-    })
-    await dispatchInboundToAiReply(ARGS)
-    expect(h.engineSendText).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: 'conv-1', text: textoIa }),
-    )
-  })
-
-  it('sem segmento gravado ainda, deixa passar um valor claramente acima do piso mais alto', async () => {
-    const textoIa = 'Perfeito, com esse valor faz sentido conversarmos. Tenho horário amanhã às 14h.'
-    h.generateReply.mockResolvedValue({
-      text: textoIa,
-      handoff: false,
-      move: null,
-      agendar: null,
-      segmento: null,
-      valor: 200000,
-      desmarcar: false,
-      portaAberta: false,
-      usage: null,
-    })
-    await dispatchInboundToAiReply(ARGS)
-    expect(h.engineSendText).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: 'conv-1', text: textoIa }),
-    )
-  })
-
-  // Caso Rogério de verdade: a IA nunca emitiu [[VALOR:N]] (nunca "concluiu"
-  // nada), mas o cliente disse "R$450,00" na própria mensagem. A rede de
-  // regex pega isso independente da IA cooperar.
-  it('sem marcador da IA, extrai o valor que o PRÓPRIO CLIENTE escreveu e trava mesmo assim', async () => {
+  it('sem segmento gravado, um valor patologicamente baixo (ex.: caso Rogério, R$450) também não trava mais', async () => {
     h.buildConversationContext.mockResolvedValue([
       { role: 'user', content: 'Vim do site de Direito Bancário e gostaria de mais informações' },
       { role: 'assistant', content: 'Pode me contar um pouco do seu caso?' },
       { role: 'user', content: 'R$ 450,00 na época, mas já faz mais de 10 anos.' },
     ])
-    h.generateReply.mockResolvedValue({
-      text: 'Entendo. Se quiser, posso oferecer alguns horários para essa conversa.',
-      handoff: false,
-      move: null,
-      agendar: null,
-      segmento: null,
-      valor: null,
-      desmarcar: false,
-      portaAberta: false,
-      usage: null,
-    })
-    await dispatchInboundToAiReply(ARGS)
-    const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
-    expect(enviado).toBe(VALOR_ABAIXO_DO_PISO)
-  })
-
-  it('a rede de regex ignora número solto sem contexto de moeda (não é telefone/data/parcela)', async () => {
-    h.buildConversationContext.mockResolvedValue([
-      { role: 'user', content: 'Meu processo é o 48 parcelas, terminou em 2023' },
-    ])
-    const textoIa = 'Entendido. Pode me contar mais sobre a dívida?'
+    const textoIa = 'Entendo. Se quiser, posso oferecer alguns horários para essa conversa.'
     h.generateReply.mockResolvedValue({
       text: textoIa,
       handoff: false,
@@ -670,34 +587,10 @@ describe('dispatchInboundToAiReply — piso de valor', () => {
     )
   })
 
-  it('o marcador da IA tem prioridade sobre a regex quando os dois aparecem', async () => {
-    // Cliente escreveu um número pequeno (parcela), mas a IA já somou e
-    // determinou o valor de verdade, mais alto — o marcador dela vale mais
-    // que a extração cega de texto.
-    h.buildConversationContext.mockResolvedValue([
-      { role: 'user', content: '48 parcelas de R$ 1.320,00, ainda faltam pagar 9' },
-    ])
-    const textoIa = 'Perfeito, com esse valor faz sentido conversarmos.'
+  it('lê o segmento confirmado neste turno, mas mesmo assim não troca a resposta', async () => {
+    const textoIa = 'Entendi, pessoa física com R$9.000. Tenho horário amanhã às 14h.'
     h.generateReply.mockResolvedValue({
       text: textoIa,
-      handoff: false,
-      move: null,
-      agendar: null,
-      segmento: 'PF',
-      valor: 80000,
-      desmarcar: false,
-      portaAberta: false,
-      usage: null,
-    })
-    await dispatchInboundToAiReply(ARGS)
-    expect(h.engineSendText).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: 'conv-1', text: textoIa }),
-    )
-  })
-
-  it('lê o segmento confirmado NESTE MESMO turno, sem precisar da tag já persistida', async () => {
-    h.generateReply.mockResolvedValue({
-      text: 'Entendi, pessoa física com R$9.000. Tenho horário amanhã às 14h.',
       handoff: false,
       move: null,
       agendar: null,
@@ -708,29 +601,13 @@ describe('dispatchInboundToAiReply — piso de valor', () => {
       usage: null,
     })
     await dispatchInboundToAiReply(ARGS)
-    const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
-    expect(enviado).toBe(VALOR_ABAIXO_DO_PISO)
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-1', text: textoIa }),
+    )
   })
-})
 
-
-// Trava PERSISTENTE do piso de valor (11/09/2026, caso rafinhamoreiradebarros):
-// o marcador [[VALOR:N]] só é emitido uma vez (instrução do prompt), e a rede
-// de regex exige contexto de moeda explícito. Um valor declarado sem "R$" (ex.:
-// cliente só digita "9614.69") passa pela trava só no turno em que a IA
-// reconhece e recusa — no turno seguinte, se o lead insiste sem repetir o
-// valor, valorEfetivo voltava a null pra sempre e a trava parava de agir.
-// Foi assim que ele ouviu a recusa certa e, insistindo, conseguiu agendar de
-// verdade. Estes testes provam que a trava agora continua valendo mesmo sem
-// o valor se repetir, e que ainda destrava se um valor novo e válido aparecer.
-describe('dispatchInboundToAiReply — piso de valor persiste entre turnos', () => {
-  const TAG_ABAIXO_PISO = '72923bee-2b12-4093-9aa9-cb773aae3928'
-  const TAG_PF = '9f870fd7-1155-4ede-9da8-8678360c0ae9'
-  const VALOR_ABAIXO_DO_PISO =
-    'Entendi. Pelas informações que você me passou, infelizmente o seu caso não se enquadra no perfil de atendimento que estamos trabalhando neste momento.\n\nComo trabalhamos com processos judiciais, precisamos considerar os custos envolvidos em relação aos benefícios que podem ser obtidos. No seu caso, esses custos podem não compensar, tornando a medida judicial economicamente inviável.\n\nMas agradecemos muito o seu contato. Estaremos sempre de portas abertas caso futuramente precise nos procurar novamente.\n\nMas você não fica sem nada: no nosso blog e nos materiais gratuitos tem bastante coisa que ajuda. Blog: https://simionatoadvogados.com.br/blog/ · Materiais: https://simionatoadvogados.com.br/materiais-gratuitos/'
-
-  it('grava a trava quando o valor abaixo do piso é confirmado (turno com marcador)', async () => {
-    h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PF }]
+  it('não grava mais a trava persistente (TAG_ABAIXO_PISO) mesmo com valor baixo', async () => {
+    const TAG_ABAIXO_PISO = '72923bee-2b12-4093-9aa9-cb773aae3928'
     h.generateReply.mockResolvedValue({
       text: 'Entendi, R$9.614,69 em aberto. Quer que eu agende uma reunião?',
       handoff: false,
@@ -746,53 +623,7 @@ describe('dispatchInboundToAiReply — piso de valor persiste entre turnos', () 
     const gravado = (h.state.porTabela['contact_tags'] ?? []).some(
       (l) => (l as { tag_id?: string }).tag_id === TAG_ABAIXO_PISO,
     )
-    expect(gravado).toBe(true)
-  })
-
-  it('sem valor novo neste turno, usa a trava gravada num turno anterior e continua recusando — mesmo que o lead insista', async () => {
-    // Simula o estado depois do turno que já confirmou e gravou a trava.
-    h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PF }, { tag_id: TAG_ABAIXO_PISO }]
-    // O lead insiste ("quanto fica pra pagar") sem repetir nenhum valor —
-    // exatamente o padrão do caso real — e a IA, sem a trava, ofereceria
-    // reunião de novo.
-    h.generateReply.mockResolvedValue({
-      text: 'Como cada caso é diferente, só um advogado pode avaliar. Quer que eu marque uma reunião?',
-      handoff: false,
-      move: null,
-      agendar: 1,
-      segmento: null,
-      valor: null,
-      desmarcar: false,
-      portaAberta: false,
-      usage: null,
-    })
-    await dispatchInboundToAiReply(ARGS)
-    const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
-    expect(enviado).toBe(VALOR_ABAIXO_DO_PISO)
-  })
-
-  it('destrava sozinha quando o lead declara depois um valor novo igual/acima do piso', async () => {
-    h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PF }, { tag_id: TAG_ABAIXO_PISO }]
-    const textoIa = 'Perfeito, com esse valor faz sentido conversarmos. Tenho horário amanhã às 14h.'
-    h.generateReply.mockResolvedValue({
-      text: textoIa,
-      handoff: false,
-      move: null,
-      agendar: null,
-      segmento: null,
-      valor: 60000,
-      desmarcar: false,
-      portaAberta: false,
-      usage: null,
-    })
-    await dispatchInboundToAiReply(ARGS)
-    expect(h.engineSendText).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: 'conv-1', text: textoIa }),
-    )
-    const aindaTravado = (h.state.porTabela['contact_tags'] ?? []).some(
-      (l) => (l as { tag_id?: string }).tag_id === TAG_ABAIXO_PISO,
-    )
-    expect(aindaTravado).toBe(false)
+    expect(gravado).toBe(false)
   })
 })
 
