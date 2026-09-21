@@ -199,6 +199,8 @@ const h = vi.hoisted(() => ({
   retrieveKnowledge: vi.fn(),
   generateReply: vi.fn(),
   engineSendText: vi.fn(),
+  enviarPeloSegundoNumero: vi.fn(),
+  registrarEnvioSegundoNumero: vi.fn(),
   state: {
     conv: null as Record<string, unknown> | null,
     autoResponders: [] as { id: string }[],
@@ -217,7 +219,11 @@ vi.mock('./config', () => ({ loadAiConfig: h.loadAiConfig }))
 vi.mock('./context', () => ({ buildConversationContext: h.buildConversationContext }))
 vi.mock('./knowledge', () => ({ retrieveKnowledge: h.retrieveKnowledge }))
 vi.mock('./generate', () => ({ generateReply: h.generateReply }))
-vi.mock('@/lib/flows/meta-send', () => ({ engineSendText: h.engineSendText }))
+vi.mock('@/lib/flows/meta-send', () => ({ engineSendText: h.engineSendText, engineSendCtaUrl: vi.fn() }))
+vi.mock('@/lib/whatsapp/segundo-numero', () => ({
+  enviarPeloSegundoNumero: h.enviarPeloSegundoNumero,
+  registrarEnvioSegundoNumero: h.registrarEnvioSegundoNumero,
+}))
 vi.mock('./admin-client', () => ({
   supabaseAdmin: () => ({
     // Encadeador GENERICO. Antes havia um ramo por tabela, e qualquer consulta
@@ -304,6 +310,7 @@ const ARGS = {
   conversationId: 'conv-1',
   contactId: 'contact-1',
   configOwnerUserId: 'user-1',
+  channel: 'api' as const,
 }
 
 function aiConfig(overrides: Partial<AiConfig> = {}): AiConfig {
@@ -340,6 +347,8 @@ beforeEach(() => {
   h.retrieveKnowledge.mockResolvedValue([])
   h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false })
   h.engineSendText.mockResolvedValue({ whatsapp_message_id: 'm1' })
+  h.enviarPeloSegundoNumero.mockResolvedValue(true)
+  h.registrarEnvioSegundoNumero.mockResolvedValue(undefined)
 })
 
 describe('dispatchInboundToAiReply — eligibility gates', () => {
@@ -354,6 +363,32 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
     expect(h.engineSendText).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: 'conv-1', text: 'Hello!' }),
     )
+  })
+
+  // 20/09/2026: o canal de resposta usava `conversations.last_channel`, um
+  // campo "grudento" só escrito pelo caminho do segundo número — um lead que
+  // volta a escrever pelo número OFICIAL depois de ter usado o segundo
+  // número antes ainda lia `last_channel: 'web'` (obsoleto), e a resposta
+  // saía pelo canal errado (caso real: titular testando, resposta chegou
+  // por outro número). Corrigido: o chamador (webhook oficial vs
+  // segundo-número) passa o próprio canal explicitamente — sem depender de
+  // nenhuma leitura de banco.
+  it('channel "api" always replies via the official Meta channel (engineSendText)', async () => {
+    await dispatchInboundToAiReply({ ...ARGS, channel: 'api' })
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-1', text: 'Hello!' }),
+    )
+    expect(h.enviarPeloSegundoNumero).not.toHaveBeenCalled()
+  })
+
+  it('channel "web" always replies via the segundo número, never engineSendText — regardless of last_channel', async () => {
+    // last_channel deliberadamente OMITIDO/errado aqui: a decisão tem que
+    // vir só do parâmetro `channel`, nunca do banco.
+    h.state.porTabela.contacts = [{ phone: '+5511999999999', name: 'Lead Teste' }]
+    await dispatchInboundToAiReply({ ...ARGS, channel: 'web' })
+    expect(h.enviarPeloSegundoNumero).toHaveBeenCalledWith('+5511999999999', 'Hello!')
+    expect(h.registrarEnvioSegundoNumero).toHaveBeenCalledWith(expect.anything(), 'conv-1', 'Hello!')
+    expect(h.engineSendText).not.toHaveBeenCalled()
   })
 
   it('grounds the reply in retrieved knowledge', async () => {

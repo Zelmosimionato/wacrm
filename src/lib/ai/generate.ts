@@ -11,6 +11,7 @@ import {
   SUPER_SENTINEL,
   REAGENDAR_SENTINEL,
   AGENDAR_SENTINEL_RE,
+  HORARIO_ESCOLHIDO_SENTINEL_RE,
   DESMARCAR_SENTINEL,
   PERDIDO_SENTINEL,
   PORTA_ABERTA_SENTINEL,
@@ -97,6 +98,11 @@ export function parseGeneration(
   // lista morre ali — o modelo nunca escreve a data.
   const mAgendar = raw.match(AGENDAR_SENTINEL_RE)
   const agendar = mAgendar ? Number(mAgendar[1]) : null
+  // `[[HORARIO_ESCOLHIDO:2]]` → o lead escolheu esse horário NESTE turno,
+  // mesmo que a IA ainda não tenha o que falta pra fechar com AGENDAR.
+  // Mesmo padrão do AGENDAR: guardamos só o número.
+  const mHorarioEscolhido = raw.match(HORARIO_ESCOLHIDO_SENTINEL_RE)
+  const horarioEscolhido = mHorarioEscolhido ? Number(mHorarioEscolhido[1]) : null
   // Segmento: PF/PJ confirmado NESTE turno. PJ ganha se, por algum motivo, os
   // dois vierem juntos (não deveria acontecer, mas a resposta não pode virar
   // "nenhum dos dois" por causa disso).
@@ -122,7 +128,8 @@ export function parseGeneration(
   ]
     .reduce((acc, s) => acc.split(s).join(''), raw)
     .replace(new RegExp(AGENDAR_SENTINEL_RE.source, 'gi'), '')
+    .replace(new RegExp(HORARIO_ESCOLHIDO_SENTINEL_RE.source, 'gi'), '')
     .replace(new RegExp(VALOR_SENTINEL_RE.source, 'gi'), '')
     .trim()
-  return { text, handoff, move, agendar, segmento, valor, desmarcar, portaAberta, usage }
+  return { text, handoff, move, agendar, horarioEscolhido, segmento, valor, desmarcar, portaAberta, usage }
 }

@@ -133,6 +133,7 @@ export async function POST(request: Request) {
     conversationId,
     contactId,
     configOwnerUserId: userId,
+    channel: 'web',
   })
 
   return NextResponse.json({ ok: true, aiTriggered: true })

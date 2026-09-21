@@ -71,6 +71,15 @@ export interface GenerateResult {
    *  mostrada nesta resposta), ou null. É índice, nunca data: o modelo escolhe
    *  da lista lida do Cal.com e assim não tem como inventar horário. */
   agendar: number | null
+  /** 20/09/2026 (caso Douglas Santos): a pessoa acabou de ESCOLHER um horário
+   *  da lista, nesta mesma resposta, mas a IA ainda não tem o resto (e-mail,
+   *  nome) pra fechar com `[[AGENDAR:N]]` na mesma mensagem — ou null se
+   *  este turno não tratou disso. Mesmo índice do campo `agendar` acima,
+   *  mas capturado MAIS CEDO: quem chama grava o horário resolvido
+   *  (`conversations.horario_escolhido_iso`) na hora, pra nunca depender da
+   *  IA lembrar a escolha num turno seguinte — mesma razão de `segmento`/
+   *  `valor` existirem. */
+  horarioEscolhido: number | null
   /** A pessoa acabou de confirmar se a dívida é pessoa física ou jurídica,
    *  nesta mesma resposta — ou null se este turno não tratou disso. Quem
    *  chama persiste a tag na hora; a trava de agendamento (auto-reply.ts)

@@ -992,6 +992,7 @@ async function processMessage(
       conversationId: conversation.id,
       contactId: contactRecord.id,
       configOwnerUserId,
+      channel: 'api',
     })
   } else if (contentType === 'audio' && !textoParaIa) {
     // Áudio que não deu para transcrever. ⛔ NUNCA ficar mudo: quem gravou um

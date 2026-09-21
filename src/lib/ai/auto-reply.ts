@@ -530,6 +530,15 @@ interface DispatchArgs {
   /** The account's WhatsApp config owner, used for the outbound send's
    *  audit columns (mirrors how the flow runner passes it through). */
   configOwnerUserId: string
+  /** Which webhook is calling ('api' = official Meta Cloud API, 'web' =
+   *  segundo número/Evolution). 20/09/2026: this used to be inferred from
+   *  `conversations.last_channel`, but that column is only ever written by
+   *  the segundo-número send path — a lead who messages the OFFICIAL
+   *  number after having used the segundo número earlier still reads
+   *  `last_channel: 'web'` (stale), so the reply went out the wrong
+   *  number. The caller always knows its own channel with certainty;
+   *  passing it explicitly removes the stale-read entirely. */
+  channel: 'api' | 'web'
 }
 
 const CLIENT_MODE_BLOCK =
@@ -1191,7 +1200,7 @@ function splitBubbles(text: string): string[] {
 export async function dispatchInboundToAiReply(
   args: DispatchArgs,
 ): Promise<void> {
-  const { accountId, conversationId, contactId, configOwnerUserId } = args
+  const { accountId, conversationId, contactId, configOwnerUserId, channel } = args
 
   try {
     const db = supabaseAdmin()
@@ -1213,7 +1222,7 @@ export async function dispatchInboundToAiReply(
     const { data: conv, error: convErr } = await db
       .from('conversations')
       .select(
-        'assigned_agent_id, ai_autoreply_disabled, ai_reply_count, ai_handoff_summary, updated_at, last_channel',
+        'assigned_agent_id, ai_autoreply_disabled, ai_reply_count, ai_handoff_summary, updated_at, last_channel, horario_escolhido_iso, horario_escolhido_rotulo',
       )
       .eq('id', conversationId)
       .maybeSingle()
@@ -1430,11 +1439,12 @@ export async function dispatchInboundToAiReply(
       return
     }
 
-    const { text, handoff, move, agendar, segmento, valor, desmarcar, portaAberta, usage } = await generateReply({
-      config,
-      systemPrompt,
-      messages,
-    })
+    const { text, handoff, move, agendar, horarioEscolhido, segmento, valor, desmarcar, portaAberta, usage } =
+      await generateReply({
+        config,
+        systemPrompt,
+        messages,
+      })
 
     // Grava a tag PF/PJ na hora que o marcador aparece — não espera o resto
     // do turno. É o que a trava de agendamento (abaixo) vai ler depois,
@@ -1447,6 +1457,33 @@ export async function dispatchInboundToAiReply(
         .upsert({ contact_id: contactId, tag_id: tagId }, { onConflict: 'contact_id,tag_id', ignoreDuplicates: true })
       if (segErr) {
         console.warn(`[ia-segmento] não consegui gravar tag ${segmento} (contact ${contactId}): ${segErr.message}`)
+      }
+    }
+
+    // ⭐ Trava de HORÁRIO ESCOLHIDO (20/09/2026, caso Douglas Santos): grava
+    // o horário resolvido no INSTANTE em que o lead escolhe — mesmo padrão
+    // do segmento acima. `slots` é a MESMA lista que a IA acabou de ler
+    // nesta resposta, então o índice bate. Sobrescreve qualquer escolha
+    // anterior de propósito: se ele mudou de ideia, o mais recente vale.
+    if (horarioEscolhido) {
+      const slotEscolhido = slots[horarioEscolhido - 1]
+      if (slotEscolhido) {
+        const { error: horarioErr } = await db
+          .from('conversations')
+          .update({
+            horario_escolhido_iso: slotEscolhido.iso,
+            horario_escolhido_rotulo: slotEscolhido.rotulo,
+          })
+          .eq('id', conversationId)
+        if (horarioErr) {
+          console.warn(
+            `[ia-agenda] não consegui gravar horário escolhido (conversa ${conversationId}): ${horarioErr.message}`,
+          )
+        }
+      } else {
+        console.warn(
+          `[ia-agenda] índice ${horarioEscolhido} fora da agenda (${slots.length} horários) — não gravei escolha`,
+        )
       }
     }
 
@@ -1659,7 +1696,45 @@ export async function dispatchInboundToAiReply(
         console.error(
           `[ia-agenda] ⛔ resposta afirmava reunião marcada sem reserva nenhuma — substituída. Original: ${textoFinal.slice(0, 200)}`,
         )
-        textoFinal = email ? NAO_CONFIRMADO : FALTA_EMAIL
+        // ⭐ 20/09/2026 (caso Douglas Santos): antes de cair no "confirme de
+        // novo qual horário", tenta completar sozinho com o horário que o
+        // lead já ESCOLHEU num turno anterior (gravado pelo marcador
+        // HORARIO_ESCOLHIDO, acima). Resolve o sintoma real: a IA tinha
+        // tudo que precisava (horário + e-mail), só não reemitiu o
+        // AGENDAR — o sistema não pode depender dela lembrar sozinha.
+        const horarioPersistidoIso = conv.horario_escolhido_iso
+        const horarioPersistidoRotulo = conv.horario_escolhido_rotulo
+        if (email && horarioPersistidoIso) {
+          const nomeCompleto = legibleFirstName(contactRow?.name, contactRow?.phone)
+            ? (contactRow?.name?.trim() ?? null)
+            : null
+          const r = await reservarHorario({
+            db,
+            contactId,
+            indice: 1,
+            slots: [{ iso: horarioPersistidoIso, rotulo: horarioPersistidoRotulo ?? '' }],
+            nome: nomeCompleto,
+            email,
+            telefone: contactRow?.phone ?? null,
+            hasMeeting: desmarcar ? false : await temReuniaoAgora(db, contactId),
+            textoDaIa: `Prontinho! Já deixei reservado: ${horarioPersistidoRotulo ?? 'o horário combinado'}. Você vai receber os detalhes por e-mail e por aqui também.`,
+          })
+          if (r.ok) {
+            console.log(`[ia-agenda] completou sozinha com o horário escolhido num turno anterior (contact ${contactId})`)
+          }
+          textoFinal = r.texto
+          reservaFeita = r.ok
+          if (r.reagendar) moveFinal = 'reagendar'
+          // Limpa a trava depois de tentar, sucesso ou falha — nunca fica
+          // tentando pra sempre o mesmo horário, que pode ter saído do ar.
+          await db
+            .from('conversations')
+            .update({ horario_escolhido_iso: null, horario_escolhido_rotulo: null })
+            .eq('id', conversationId)
+        }
+        if (!reservaFeita) {
+          textoFinal = email ? NAO_CONFIRMADO : FALTA_EMAIL
+        }
       }
     }
 
@@ -1703,7 +1778,7 @@ export async function dispatchInboundToAiReply(
     // `status: 'failed'`, [131047] "mais de 24h" — o contato tinha, sim,
     // acabado de escrever, só que pro número errado).
     const bubbles = splitBubbles(textoFinal)
-    const viaSegundoNumero = conv.last_channel === 'web'
+    const viaSegundoNumero = channel === 'web'
     for (let i = 0; i < bubbles.length; i++) {
       if (viaSegundoNumero) {
         const telefone = contactRow?.phone ?? null

@@ -58,6 +58,20 @@ export const VALOR_SENTINEL_RE = /\[\[VALOR:\s*(\d+)\s*\]\]/i
 export const AGENDAR_SENTINEL_RE = /\[\[AGENDAR:\s*(\d{1,2})\s*\]\]/i
 
 /**
+ * Marcador de HORÁRIO ESCOLHIDO: 20/09/2026, caso Douglas Santos — a pessoa
+ * escolheu um horário ("21") e deu o e-mail em turnos separados; no turno
+ * seguinte, já com tudo em mãos, a IA "esqueceu" a escolha e perguntou de
+ * novo qual horário ele preferia. Mesma classe de falha que PF/PJ e VALOR já
+ * tiveram (01/09/2026) — texto sozinho não basta pra a IA lembrar entre
+ * turnos. Igual ao `AGENDAR_SENTINEL_RE`, mas emitido MAIS CEDO: no instante
+ * em que o lead escolhe, mesmo que falte e-mail/nome pra fechar agora. O
+ * sistema grava o horário resolvido (`conversations.horario_escolhido_iso`)
+ * e completa a reserva sozinho assim que o resto chegar — nunca depende da
+ * IA reemitir a escolha depois.
+ */
+export const HORARIO_ESCOLHIDO_SENTINEL_RE = /\[\[HORARIO_ESCOLHIDO:\s*(\d{1,2})\s*\]\]/i
+
+/**
  * Marcador de DESMARCAR: a pessoa não vem no horário que está reservado. Cancela
  * no Cal.com, libera o horário e — o que ninguém via — DESLIGA os lembretes de
  * véspera e de 1h antes, que hoje continuariam perseguindo quem já cancelou.
@@ -214,6 +228,11 @@ Never mention or explain these markers to the customer.`,
           'parece — na mensagem seguinte você lê a sua própria frase no histórico, acha ' +
           'que já marcou e nunca marca. Não deu para marcar agora? Diga o que FALTA ' +
           '("me passa seu e-mail que eu já confirmo"), nunca que está feito.\n' +
+          '- ⭐ SEMPRE que o lead disser QUAL horário prefere (mesmo sem e-mail/nome ainda), ' +
+          `feche essa mesma resposta com ${'[[HORARIO_ESCOLHIDO:N]]'} (mesmo número da lista, ` +
+          'pode vir junto com o pedido do que falta). Isso grava a escolha — você NUNCA ' +
+          'precisa lembrar sozinha num turno seguinte qual horário foi. Se ele mudar de ' +
+          'ideia depois, emita de novo com o número novo: o mais recente vale.\n' +
           '- ⛔ PRECISA DO E-MAIL: sem e-mail o sistema de agenda recusa a reserva. Se você ' +
           'ainda não tem o e-mail, ofereça os horários e peça o e-mail NA MESMA mensagem ' +
           '("qual desses fica melhor pra você? e me passa seu e-mail que eu já confirmo") — ' +
