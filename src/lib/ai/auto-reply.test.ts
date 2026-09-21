@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { AiConfig } from './types'
 import {
   AFIRMA_QUE_AGENDOU,
@@ -201,6 +201,8 @@ const h = vi.hoisted(() => ({
   engineSendText: vi.fn(),
   enviarPeloSegundoNumero: vi.fn(),
   registrarEnvioSegundoNumero: vi.fn(),
+  horariosLivres: vi.fn(),
+  criarReserva: vi.fn(),
   state: {
     conv: null as Record<string, unknown> | null,
     autoResponders: [] as { id: string }[],
@@ -224,6 +226,8 @@ vi.mock('@/lib/whatsapp/segundo-numero', () => ({
   enviarPeloSegundoNumero: h.enviarPeloSegundoNumero,
   registrarEnvioSegundoNumero: h.registrarEnvioSegundoNumero,
 }))
+vi.mock('@/lib/appointments/calcom-slots', () => ({ horariosLivres: h.horariosLivres }))
+vi.mock('@/lib/appointments/calcom-book', () => ({ criarReserva: h.criarReserva }))
 vi.mock('./admin-client', () => ({
   supabaseAdmin: () => ({
     // Encadeador GENERICO. Antes havia um ramo por tabela, e qualquer consulta
@@ -349,6 +353,12 @@ beforeEach(() => {
   h.engineSendText.mockResolvedValue({ whatsapp_message_id: 'm1' })
   h.enviarPeloSegundoNumero.mockResolvedValue(true)
   h.registrarEnvioSegundoNumero.mockResolvedValue(undefined)
+  h.horariosLivres.mockResolvedValue([])
+  h.criarReserva.mockResolvedValue({ ok: false, motivo: 'recusado' })
+})
+
+afterEach(() => {
+  vi.unstubAllEnvs()
 })
 
 describe('dispatchInboundToAiReply — eligibility gates', () => {
@@ -783,5 +793,170 @@ describe('dispatchInboundToAiReply — piso de valor persiste entre turnos', () 
       (l) => (l as { tag_id?: string }).tag_id === TAG_ABAIXO_PISO,
     )
     expect(aindaTravado).toBe(false)
+  })
+})
+
+// Marcador HORARIO_ESCOLHIDO (20/09/2026, caso Douglas Santos): o lead
+// escolheu horário, deu o e-mail num turno seguinte, e a IA não reemitiu
+// [[AGENDAR:N]] — só afirmou "agendei". A trava AFIRMA_QUE_AGENDOU pegou a
+// mentira, mas só sabia reperguntar o horário sem saber qual já tinha sido
+// escolhido. Estes testes provam: 1) o índice é gravado assim que a IA fala
+// dele, mesmo sem fechar nada ainda; 2) a trava completa o agendamento de
+// verdade com o que já tem, em vez de só reperguntar; 3) se a reserva falhar
+// mesmo assim, ainda cai no reperguntar honesto — nunca finge que marcou.
+describe('dispatchInboundToAiReply — HORARIO_ESCOLHIDO', () => {
+  const SLOT = { iso: '2026-09-25T14:00:00-03:00', rotulo: 'quinta, 25/09 às 14h' }
+
+  beforeEach(() => {
+    vi.stubEnv('IA_AGENDA_ATIVA', '1')
+    vi.stubEnv('CALCOM_API_KEY', 'chave-teste')
+    vi.stubEnv('CALCOM_EVENT_TYPE_ID', 'evento-teste')
+    h.horariosLivres.mockResolvedValue([SLOT])
+  })
+
+  it('grava o horário no instante em que a IA fala dele, mesmo sem fechar o agendamento ainda', async () => {
+    h.generateReply.mockResolvedValue({
+      text: 'Show, esse horário funciona! Só preciso do seu e-mail pra deixar reservado.',
+      handoff: false,
+      move: null,
+      agendar: null,
+      horarioEscolhido: 1,
+      segmento: null,
+      valor: null,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.state.updatePayload).toEqual({
+      horario_escolhido_iso: SLOT.iso,
+      horario_escolhido_rotulo: SLOT.rotulo,
+    })
+    // Sem AGENDAR nenhum, o próprio texto da IA sai normalmente.
+    const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
+    expect(enviado).toBe(
+      'Show, esse horário funciona! Só preciso do seu e-mail pra deixar reservado.',
+    )
+  })
+
+  it('reescolher um horário novo sobrescreve o anterior', async () => {
+    const SLOT2 = { iso: '2026-09-26T10:00:00-03:00', rotulo: 'sexta, 26/09 às 10h' }
+    h.horariosLivres.mockResolvedValue([SLOT, SLOT2])
+    h.generateReply.mockResolvedValue({
+      text: 'Combinado, sexta às 10h então!',
+      handoff: false,
+      move: null,
+      agendar: null,
+      horarioEscolhido: 2,
+      segmento: null,
+      valor: null,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.state.updatePayload).toEqual({
+      horario_escolhido_iso: SLOT2.iso,
+      horario_escolhido_rotulo: SLOT2.rotulo,
+    })
+  })
+
+  it('trava AFIRMA_QUE_AGENDOU completa o agendamento de verdade com o horário já escolhido + e-mail que já tem', async () => {
+    h.state.conv = {
+      ...h.state.conv,
+      horario_escolhido_iso: SLOT.iso,
+      horario_escolhido_rotulo: SLOT.rotulo,
+    }
+    h.state.porTabela.contacts = [
+      { name: 'Douglas Santos', phone: '+5511988887777', email: 'douglas@example.com' },
+    ]
+    // A IA não reemitiu [[AGENDAR:N]] neste turno — só afirmou que agendou.
+    h.generateReply.mockResolvedValue({
+      text: 'Prontinho, Douglas! Agendei pra você.',
+      handoff: false,
+      move: null,
+      agendar: null,
+      horarioEscolhido: null,
+      segmento: null,
+      valor: null,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    h.criarReserva.mockResolvedValue({ ok: true, uid: 'uid-douglas', inicio: SLOT.iso })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.criarReserva).toHaveBeenCalledWith(
+      expect.objectContaining({ iso: SLOT.iso, email: 'douglas@example.com', nome: 'Douglas Santos' }),
+    )
+    const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
+    expect(enviado).toContain(SLOT.rotulo)
+    expect(enviado).not.toBe('Prontinho, Douglas! Agendei pra você.')
+    // A trava só serve para UM turno: sucesso ou falha, some depois de usada.
+    expect(h.state.updatePayload).toEqual({
+      horario_escolhido_iso: null,
+      horario_escolhido_rotulo: null,
+    })
+  })
+
+  it('se a reserva automática falhar mesmo assim, cai no reperguntar honesto — nunca finge que marcou', async () => {
+    h.state.conv = {
+      ...h.state.conv,
+      horario_escolhido_iso: SLOT.iso,
+      horario_escolhido_rotulo: SLOT.rotulo,
+    }
+    h.state.porTabela.contacts = [
+      { name: 'Douglas Santos', phone: '+5511988887777', email: 'douglas@example.com' },
+    ]
+    h.generateReply.mockResolvedValue({
+      text: 'Prontinho, Douglas! Agendei pra você.',
+      handoff: false,
+      move: null,
+      agendar: null,
+      horarioEscolhido: null,
+      segmento: null,
+      valor: null,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    // Horário caiu sob o pé entre os dois turnos.
+    h.criarReserva.mockResolvedValue({ ok: false, motivo: 'indisponivel' })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
+    expect(enviado).toBe(
+      'Só para eu não errar: me confirma qual horário você prefere que eu já deixo reservado?',
+    )
+    expect(h.state.updatePayload).toEqual({
+      horario_escolhido_iso: null,
+      horario_escolhido_rotulo: null,
+    })
+  })
+
+  it('sem horário persistido de turno anterior, a trava cai direto no reperguntar (comportamento antigo preservado)', async () => {
+    h.state.porTabela.contacts = [
+      { name: 'Douglas Santos', phone: '+5511988887777', email: 'douglas@example.com' },
+    ]
+    h.generateReply.mockResolvedValue({
+      text: 'Prontinho, agendei pra você!',
+      handoff: false,
+      move: null,
+      agendar: null,
+      horarioEscolhido: null,
+      segmento: null,
+      valor: null,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.criarReserva).not.toHaveBeenCalled()
+    const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
+    expect(enviado).toBe(
+      'Só para eu não errar: me confirma qual horário você prefere que eu já deixo reservado?',
+    )
   })
 })
