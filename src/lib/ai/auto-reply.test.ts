@@ -517,7 +517,7 @@ describe('dispatchInboundToAiReply — piso de valor', () => {
   const TAG_PF = '9f870fd7-1155-4ede-9da8-8678360c0ae9'
   const TAG_PJ = 'ea69a90c-407b-411c-953c-2d9920ef6a5e'
   const VALOR_ABAIXO_DO_PISO =
-    'Vou ser honesta: pela nossa experiência, para valores nessa faixa o custo de uma ação acaba não compensando — prefiro te dizer isso a te levar por um caminho que não vale a pena.\n\nMas você não fica sem nada: no nosso blog e nos materiais gratuitos tem bastante coisa que ajuda. Blog: https://simionatoadvogados.com.br/blog/ · Materiais: https://simionatoadvogados.com.br/materiais-gratuitos/'
+    'Entendi. Pelas informações que você me passou, infelizmente o seu caso não se enquadra no perfil de atendimento que estamos trabalhando neste momento.\n\nComo trabalhamos com processos judiciais, precisamos considerar os custos envolvidos em relação aos benefícios que podem ser obtidos. No seu caso, esses custos podem não compensar, tornando a medida judicial economicamente inviável.\n\nMas agradecemos muito o seu contato. Estaremos sempre de portas abertas caso futuramente precise nos procurar novamente.\n\nMas você não fica sem nada: no nosso blog e nos materiais gratuitos tem bastante coisa que ajuda. Blog: https://simionatoadvogados.com.br/blog/ · Materiais: https://simionatoadvogados.com.br/materiais-gratuitos/'
 
   it('troca a resposta inteira quando o valor declarado vem abaixo do piso do segmento (PF)', async () => {
     h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PF }]
@@ -727,7 +727,7 @@ describe('dispatchInboundToAiReply — piso de valor persiste entre turnos', () 
   const TAG_ABAIXO_PISO = '72923bee-2b12-4093-9aa9-cb773aae3928'
   const TAG_PF = '9f870fd7-1155-4ede-9da8-8678360c0ae9'
   const VALOR_ABAIXO_DO_PISO =
-    'Vou ser honesta: pela nossa experiência, para valores nessa faixa o custo de uma ação acaba não compensando — prefiro te dizer isso a te levar por um caminho que não vale a pena.\n\nMas você não fica sem nada: no nosso blog e nos materiais gratuitos tem bastante coisa que ajuda. Blog: https://simionatoadvogados.com.br/blog/ · Materiais: https://simionatoadvogados.com.br/materiais-gratuitos/'
+    'Entendi. Pelas informações que você me passou, infelizmente o seu caso não se enquadra no perfil de atendimento que estamos trabalhando neste momento.\n\nComo trabalhamos com processos judiciais, precisamos considerar os custos envolvidos em relação aos benefícios que podem ser obtidos. No seu caso, esses custos podem não compensar, tornando a medida judicial economicamente inviável.\n\nMas agradecemos muito o seu contato. Estaremos sempre de portas abertas caso futuramente precise nos procurar novamente.\n\nMas você não fica sem nada: no nosso blog e nos materiais gratuitos tem bastante coisa que ajuda. Blog: https://simionatoadvogados.com.br/blog/ · Materiais: https://simionatoadvogados.com.br/materiais-gratuitos/'
 
   it('grava a trava quando o valor abaixo do piso é confirmado (turno com marcador)', async () => {
     h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PF }]

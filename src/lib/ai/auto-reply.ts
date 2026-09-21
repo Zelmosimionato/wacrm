@@ -70,8 +70,20 @@ const PISO_PJ = 100_000
  * porta fica aberta — se a pessoa insistir na resposta seguinte, o próximo
  * turno não carrega o marcador de valor de novo e segue o fluxo normal.
  */
-const VALOR_ABAIXO_DO_PISO =
+/** Texto original desta trava, antes da unificação de 21/09/2026 (achado:
+ *  quem desqualifica pela trava de código PF/PJ ouvia uma despedida
+ *  diferente de quem é desqualificado pela própria Márcia nos produtos
+ *  DEF/DBC/GPIX/GPASS, cujo texto vem do Agent da plataforma). Mantido como
+ *  fallback documentado — não apagar. */
+export const VALOR_ABAIXO_DO_PISO_FALLBACK =
   'Vou ser honesta: pela nossa experiência, para valores nessa faixa o custo de uma ação acaba não compensando — prefiro te dizer isso a te levar por um caminho que não vale a pena.\n\nMas você não fica sem nada: no nosso blog e nos materiais gratuitos tem bastante coisa que ajuda. Blog: https://simionatoadvogados.com.br/blog/ · Materiais: https://simionatoadvogados.com.br/materiais-gratuitos/'
+/** Mensagem oficial (21/09/2026): o MESMO texto programado no Agent da
+ *  plataforma para "DESQUALIFICAÇÃO POR VIABILIDADE ECONÔMICA", com os
+ *  mesmos links de blog/materiais gratuitos que a trava de código já
+ *  oferecia. Unifica a despedida — não importa se quem desqualificou foi
+ *  esta trava (PF/PJ) ou a própria Márcia nos produtos DEF/DBC/GPIX/GPASS. */
+const VALOR_ABAIXO_DO_PISO =
+  'Entendi. Pelas informações que você me passou, infelizmente o seu caso não se enquadra no perfil de atendimento que estamos trabalhando neste momento.\n\nComo trabalhamos com processos judiciais, precisamos considerar os custos envolvidos em relação aos benefícios que podem ser obtidos. No seu caso, esses custos podem não compensar, tornando a medida judicial economicamente inviável.\n\nMas agradecemos muito o seu contato. Estaremos sempre de portas abertas caso futuramente precise nos procurar novamente.\n\nMas você não fica sem nada: no nosso blog e nos materiais gratuitos tem bastante coisa que ajuda. Blog: https://simionatoadvogados.com.br/blog/ · Materiais: https://simionatoadvogados.com.br/materiais-gratuitos/'
 const EMAIL_NAO_RECEBE =
   'Esse e-mail não está recebendo mensagens — deve ter escapado um errinho de digitação.\n\nPode conferir e me mandar de novo? É para lá que vai o convite da videochamada.'
 const HORARIO_TOMADO =
