@@ -4,6 +4,7 @@ import {
   AFIRMA_QUE_AGENDOU,
   PESSOA_AFIRMA_REUNIAO,
   emailNaConversa,
+  VALOR_ABAIXO_DO_PISO,
   valorDeclaradoPeloCliente,
 } from './auto-reply'
 
@@ -508,26 +509,24 @@ describe('dispatchInboundToAiReply — handoff', () => {
 })
 
 // Trava GENÉRICA de PISO DE VALOR — histórico: criada 01/09/2026 (caso
-// Andreia: revelou valor e ofereceu horário na MESMA resposta) e reforçada
-// no mesmo dia (caso Rogério) e em 11/09 (rafinhamoreiradebarros) e 18/09
-// (Babi Blumer). Ficou provado 21/09/2026, na auditoria do prompt mestre,
-// que essa trava genérica (só sabe PF=R$50k/PJ=R$100k) não sabe qual
-// PRODUTO está em jogo — ela interceptava por engano leads de DBC (corte
-// real R$5k) e GPIX (R$10k) que a própria Márcia já teria qualificado
-// certo pela tabela do catálogo dela. Decisão do titular: desativada
-// (`PISO_GENERICO_ATIVO = false`) — por ora é ELA quem decide, consultando
-// a tabela no prompt. Mecanismo mantido no código, só desligado. Estes
-// testes agora provam o INVERSO do que provavam antes: a resposta da IA
-// passa sempre, mesmo com valores baixos — a trava está inerte.
-describe('dispatchInboundToAiReply — piso de valor (trava genérica DESATIVADA em 21/09/2026)', () => {
+// Andreia), reforçada em 01/09 (Rogério), 11/09 (rafinhamoreiradebarros) e
+// 18/09 (Babi Blumer). Desativada em 21/09 (auditoria do prompt mestre: não
+// sabia diferenciar produto, barrava DBC/GPIX com corte errado). RELIGADA em
+// 23/09/2026 (caso Claudete: a IA "concluiu" acima do critério com valores
+// reais abaixo do piso, sem checagem nenhuma) — agora consultando a tag de
+// PRODUTO gravada por automação do CRM (produtoPersistido) antes de cair no
+// genérico PF/PJ, pra não repetir o erro de 21/09.
+describe('dispatchInboundToAiReply — piso de valor por produto (religada em 23/09/2026)', () => {
   const TAG_PF = '9f870fd7-1155-4ede-9da8-8678360c0ae9'
   const TAG_PJ = 'ea69a90c-407b-411c-953c-2d9920ef6a5e'
+  const TAG_PRODUTO_RCPCC = '6b2df561-a2fd-497b-91b9-4eaede9ad917'
+  const TAG_PRODUTO_DBC = '8a749c20-e504-46d0-8e56-92c8abc10de0'
+  const TAG_PRODUTO_GPIX = 'd2b4ae5e-874d-4553-9fc1-b64fdb6a381d'
 
-  it('não troca mais a resposta quando o valor declarado vem abaixo do piso genérico (PF)', async () => {
+  it('sem tag de produto, cai no genérico PF e trava valor abaixo do piso (R$50k)', async () => {
     h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PF }]
-    const textoIa = 'Entendi, você tem R$9.000 em aberto. Tenho horário amanhã às 14h ou quinta às 15h — qual prefere?'
     h.generateReply.mockResolvedValue({
-      text: textoIa,
+      text: 'Entendi, você tem R$9.000 em aberto. Tenho horário amanhã às 14h ou quinta às 15h — qual prefere?',
       handoff: false,
       move: 'qualified',
       agendar: null,
@@ -539,11 +538,14 @@ describe('dispatchInboundToAiReply — piso de valor (trava genérica DESATIVADA
     })
     await dispatchInboundToAiReply(ARGS)
     expect(h.engineSendText).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: 'conv-1', text: textoIa }),
+      expect.objectContaining({
+        conversationId: 'conv-1',
+        text: expect.stringContaining('não se enquadra no perfil de atendimento'),
+      }),
     )
   })
 
-  it('deixa a resposta da IA passar quando o valor está acima do piso do segmento (PJ)', async () => {
+  it('sem tag de produto, cai no genérico PJ e deixa passar valor acima do piso (R$100k)', async () => {
     h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PJ }]
     const textoIa = 'Perfeito, com esse valor faz sentido conversarmos. Tenho horário amanhã às 14h.'
     h.generateReply.mockResolvedValue({
@@ -563,15 +565,15 @@ describe('dispatchInboundToAiReply — piso de valor (trava genérica DESATIVADA
     )
   })
 
-  it('sem segmento gravado, um valor patologicamente baixo (ex.: caso Rogério, R$450) também não trava mais', async () => {
+  it('caso Claudete: tag de produto RCPCC, valor real do texto do cliente (regex, sem marcador) abaixo do piso R$50k trava mesmo a IA achando que está acima', async () => {
+    h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PRODUTO_RCPCC }]
     h.buildConversationContext.mockResolvedValue([
       { role: 'user', content: 'Vim do site de Direito Bancário e gostaria de mais informações' },
       { role: 'assistant', content: 'Pode me contar um pouco do seu caso?' },
-      { role: 'user', content: 'R$ 450,00 na época, mas já faz mais de 10 anos.' },
+      { role: 'user', content: 'Acredito que mais perto de 20 mil' },
     ])
-    const textoIa = 'Entendo. Se quiser, posso oferecer alguns horários para essa conversa.'
     h.generateReply.mockResolvedValue({
-      text: textoIa,
+      text: 'Pelo que você me explicou, os valores somam acima do critério interno de qualificação — posso te encaminhar pra uma reunião.',
       handoff: false,
       move: null,
       agendar: null,
@@ -583,18 +585,22 @@ describe('dispatchInboundToAiReply — piso de valor (trava genérica DESATIVADA
     })
     await dispatchInboundToAiReply(ARGS)
     expect(h.engineSendText).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: 'conv-1', text: textoIa }),
+      expect.objectContaining({
+        conversationId: 'conv-1',
+        text: expect.stringContaining('não se enquadra no perfil de atendimento'),
+      }),
     )
   })
 
-  it('lê o segmento confirmado neste turno, mas mesmo assim não troca a resposta', async () => {
-    const textoIa = 'Entendi, pessoa física com R$9.000. Tenho horário amanhã às 14h.'
+  it('tag de produto DBC: R$9.000 fica ACIMA do piso real (R$5k) mesmo estando abaixo do genérico PF (R$50k)', async () => {
+    h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PRODUTO_DBC }, { tag_id: TAG_PF }]
+    const textoIa = 'Entendi, R$9.000 bloqueado. Isso já dá pra seguir — posso te passar horários.'
     h.generateReply.mockResolvedValue({
       text: textoIa,
       handoff: false,
-      move: null,
+      move: 'qualified',
       agendar: null,
-      segmento: 'PF',
+      segmento: null,
       valor: 9000,
       desmarcar: false,
       portaAberta: false,
@@ -606,7 +612,29 @@ describe('dispatchInboundToAiReply — piso de valor (trava genérica DESATIVADA
     )
   })
 
-  it('não grava mais a trava persistente (TAG_ABAIXO_PISO) mesmo com valor baixo', async () => {
+  it('tag de produto GPIX: R$3.000 fica ABAIXO do piso real (R$10k) e trava, mesmo a IA tentando seguir', async () => {
+    h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PRODUTO_GPIX }]
+    h.generateReply.mockResolvedValue({
+      text: 'Entendi, R$3.000 de prejuízo no golpe. Posso te passar horários pra conversarmos.',
+      handoff: false,
+      move: 'qualified',
+      agendar: null,
+      segmento: null,
+      valor: 3000,
+      desmarcar: false,
+      portaAberta: false,
+      usage: null,
+    })
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conv-1',
+        text: expect.stringContaining('não se enquadra no perfil de atendimento'),
+      }),
+    )
+  })
+
+  it('grava a trava persistente (TAG_ABAIXO_PISO) quando o valor vem abaixo do piso', async () => {
     const TAG_ABAIXO_PISO = '72923bee-2b12-4093-9aa9-cb773aae3928'
     h.generateReply.mockResolvedValue({
       text: 'Entendi, R$9.614,69 em aberto. Quer que eu agende uma reunião?',
@@ -623,7 +651,7 @@ describe('dispatchInboundToAiReply — piso de valor (trava genérica DESATIVADA
     const gravado = (h.state.porTabela['contact_tags'] ?? []).some(
       (l) => (l as { tag_id?: string }).tag_id === TAG_ABAIXO_PISO,
     )
-    expect(gravado).toBe(false)
+    expect(gravado).toBe(true)
   })
 })
 

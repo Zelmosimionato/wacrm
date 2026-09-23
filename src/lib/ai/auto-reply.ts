@@ -82,7 +82,7 @@ export const VALOR_ABAIXO_DO_PISO_FALLBACK =
  *  mesmos links de blog/materiais gratuitos que a trava de código já
  *  oferecia. Unifica a despedida — não importa se quem desqualificou foi
  *  esta trava (PF/PJ) ou a própria Márcia nos produtos DEF/DBC/GPIX/GPASS. */
-const VALOR_ABAIXO_DO_PISO =
+export const VALOR_ABAIXO_DO_PISO =
   'Entendi. Pelas informações que você me passou, infelizmente o seu caso não se enquadra no perfil de atendimento que estamos trabalhando neste momento.\n\nComo trabalhamos com processos judiciais, precisamos considerar os custos envolvidos em relação aos benefícios que podem ser obtidos. No seu caso, esses custos podem não compensar, tornando a medida judicial economicamente inviável.\n\nMas agradecemos muito o seu contato. Estaremos sempre de portas abertas caso futuramente precise nos procurar novamente.\n\nMas você não fica sem nada: no nosso blog e nos materiais gratuitos tem bastante coisa que ajuda. Blog: https://simionatoadvogados.com.br/blog/ · Materiais: https://simionatoadvogados.com.br/materiais-gratuitos/'
 const EMAIL_NAO_RECEBE =
   'Esse e-mail não está recebendo mensagens — deve ter escapado um errinho de digitação.\n\nPode conferir e me mandar de novo? É para lá que vai o convite da videochamada.'
@@ -238,6 +238,30 @@ const CF_CAL_UID = '9a4af810-d6d3-4201-b39d-9ed46648b5d9'
 const TAG_AGENDOU = 'c0278b4c-8f17-416e-a7e4-b66b6e78315a'
 const TAG_PF = '9f870fd7-1155-4ede-9da8-8678360c0ae9'
 const TAG_PJ = 'ea69a90c-407b-411c-953c-2d9920ef6a5e'
+/** Tags de PRODUTO (23/09/2026, caso Claudete): a trava generica de piso so
+ *  sabia PF/PJ e foi desligada em 21/09 por nao saber diferenciar produtos
+ *  com corte proprio (DBC R$5k, GPIX R$10k) do bancario geral (R$50k). Em
+ *  vez de inventar um marcador novo que a IA precisaria lembrar de emitir,
+ *  reusamos o motor de automacao que ja existe no CRM: 4 automacoes
+ *  keyword_match (1a mensagem) gravam uma destas tags via add_tag, o mesmo
+ *  padrao que ja gravava "Bancario"/"Tributario". Fonte da verdade das
+ *  palavras-chave fica na tela de Automacoes do CRM, nao aqui. */
+const TAG_PRODUTO_RCPCC = '6b2df561-a2fd-497b-91b9-4eaede9ad917'
+const TAG_PRODUTO_DBC = '8a749c20-e504-46d0-8e56-92c8abc10de0'
+const TAG_PRODUTO_GPIX = 'd2b4ae5e-874d-4553-9fc1-b64fdb6a381d'
+const TAG_PRODUTO_GPASS = '2cc91bd9-0903-48dc-a384-f2d82c138bf5'
+const TAG_PRODUTO_DEF = '8cbb4baa-f220-425d-9812-46300b7e94c8'
+/** Corte de valor por produto (23/09/2026) — mesmos numeros do material de
+ *  treinamento comercial (14_Treinamento_IA_Marcia/MARCIA_2_BASE_COMERCIAL).
+ *  RCPCC e DEF confirmados com o titular (R$50k cada, mesmo numero por
+ *  coincidencia — nao e o generico PISO_PF, e o corte real de cada um). */
+const PISO_POR_PRODUTO: Record<string, number> = {
+  RCPCC: 50_000,
+  DBC: 5_000,
+  GPIX: 10_000,
+  GPASS: 100_000,
+  DEF: 50_000,
+}
 /** Trava PERSISTENTE do piso de valor (11/09/2026, caso rafinhamoreiradebarros):
  *  o marcador [[VALOR:N]] só é emitido UMA vez por instrução do prompt, e a
  *  rede de regex (valorDeclaradoPeloCliente) exige contexto de moeda
@@ -268,6 +292,31 @@ async function segmentoPersistido(
     .in('tag_id', [TAG_PF, TAG_PJ])
   if (!data?.length) return null
   return data.some((t) => t.tag_id === TAG_PJ) ? 'PJ' : 'PF'
+}
+
+/** Le a tag de PRODUTO ja gravada (automacao do CRM, ver TAG_PRODUTO_* acima)
+ *  pra trava de piso escolher o corte certo em vez do generico PF/PJ.
+ *  Se mais de uma tag de produto existir (nao deveria, mas a automacao roda
+ *  fora do controle desta funcao), pega a de menor corte — falso positivo de
+ *  barrar de mais e mais barato que deixar passar um lead ruim. */
+async function produtoPersistido(
+  db: ReturnType<typeof supabaseAdmin>,
+  contactId: string,
+): Promise<keyof typeof PISO_POR_PRODUTO | null> {
+  const { data } = await db
+    .from('contact_tags')
+    .select('tag_id')
+    .eq('contact_id', contactId)
+    .in('tag_id', [TAG_PRODUTO_RCPCC, TAG_PRODUTO_DBC, TAG_PRODUTO_GPIX, TAG_PRODUTO_GPASS, TAG_PRODUTO_DEF])
+  if (!data?.length) return null
+  const encontrados = data.map((t) => {
+    if (t.tag_id === TAG_PRODUTO_DBC) return 'DBC' as const
+    if (t.tag_id === TAG_PRODUTO_GPIX) return 'GPIX' as const
+    if (t.tag_id === TAG_PRODUTO_GPASS) return 'GPASS' as const
+    if (t.tag_id === TAG_PRODUTO_DEF) return 'DEF' as const
+    return 'RCPCC' as const
+  })
+  return encontrados.sort((a, b) => PISO_POR_PRODUTO[a] - PISO_POR_PRODUTO[b])[0]
 }
 
 /** Lê se este contato já foi confirmado abaixo do piso em QUALQUER turno
@@ -1522,14 +1571,15 @@ export async function dispatchInboundToAiReply(
     // da IA lembrar de emitir tem esse limite; por isso a trava agora usa
     // DUAS fontes independentes.
     //
-    // ⛔ DESATIVADA em 21/09/2026 (auditoria do prompt mestre): este piso é
-    // genérico (só sabe PF=R$50k / PJ=R$100k) e não sabe qual PRODUTO está em
-    // jogo — descoberto interceptando por engano leads de DBC (corte real
-    // R$5k) e GPIX (R$10k) que a própria Márcia já teria qualificado
-    // corretamente pela tabela do catálogo dela. Decisão do titular: por ora
-    // é ELA quem decide (consultando a tabela no prompt), não esta trava
-    // genérica — mecanismo mantido no código, só desligado, não apagado.
-    const PISO_GENERICO_ATIVO = false
+    // ✅ RELIGADA em 23/09/2026 (caso Claudete): a trava generica foi
+    // desativada em 21/09 porque nao sabia diferenciar produto (barrava DBC/
+    // GPIX com o corte errado de R$50k). Agora ela primeiro consulta a tag de
+    // PRODUTO (produtoPersistido, gravada por automacao do CRM) e so cai no
+    // generico PF/PJ quando nenhuma tag de produto foi gravada ainda — ver
+    // PISO_POR_PRODUTO acima. O caso Claudete (RCPCC, ~R$20-34k, a IA
+    // "concluiu" acima do criterio sem checagem nenhuma) e a prova de que
+    // deixar so a IA decidir nao segura sozinho.
+    const PISO_GENERICO_ATIVO = true
     let valorOverride: string | null = null
     // Fonte 1 (preferida): o marcador que a IA emitiu — pode ser uma
     // ESTIMATIVA mais inteligente (ex.: somar parcelas), não só o número cru.
@@ -1542,6 +1592,9 @@ export async function dispatchInboundToAiReply(
     const veioPersistido = valorFresco === null && (await abaixoPisoPersistido(db, contactId))
     const valorEfetivo = valorFresco ?? (veioPersistido ? -1 : null)
     if (PISO_GENERICO_ATIVO && valorEfetivo !== null) {
+      // Fonte 1 (preferida, 23/09/2026): tag de PRODUTO gravada por
+      // automacao do CRM — corte especifico e correto por produto.
+      const produto = await produtoPersistido(db, contactId)
       const seg = segmento ?? (await segmentoPersistido(db, contactId))
       // Segmento ainda não confirmado → usa o piso mais BAIXO (PF) como
       // padrão de segurança (18/09/2026, caso Babi Blumer: PF com R$70k foi
@@ -1550,11 +1603,13 @@ export async function dispatchInboundToAiReply(
       // negativo de qualificar um PJ pequeno — o segundo um humano barra na
       // reunião; o primeiro já perdeu o lead antes de alguém ver. Substitui o
       // default de 01/09 (Rogério), que priorizava o risco oposto.
-      const piso = seg === 'PJ' ? PISO_PJ : PISO_PF
+      // Sem tag de produto (lead antigo, ou automação ainda não pegou):
+      // cai no genérico PF/PJ de sempre, como rede de segurança.
+      const piso = produto ? PISO_POR_PRODUTO[produto] : seg === 'PJ' ? PISO_PJ : PISO_PF
       const abaixo = valorEfetivo < piso
       if (abaixo) {
         console.warn(
-          `[ia-valor] resposta travada — valor R${valorEfetivo} (${veioPersistido ? 'trava persistente de turno anterior' : valor !== null ? 'marcador' : 'regex no texto do cliente'}) abaixo do piso ${seg ?? 'PF (padrão)'} (contact ${contactId})`,
+          `[ia-valor] resposta travada — valor R${valorEfetivo} (${veioPersistido ? 'trava persistente de turno anterior' : valor !== null ? 'marcador' : 'regex no texto do cliente'}) abaixo do piso ${produto ?? seg ?? 'PF (padrão)'} (contact ${contactId})`,
         )
         valorOverride = VALOR_ABAIXO_DO_PISO
       }
