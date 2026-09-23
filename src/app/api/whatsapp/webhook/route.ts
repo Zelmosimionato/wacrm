@@ -8,7 +8,7 @@ import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger, automacaoVaiResponder } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
-import { dispatchInboundToAiReply, alertarPorWhatsapp } from '@/lib/ai/auto-reply'
+import { scheduleAiReply, alertarPorWhatsapp } from '@/lib/ai/auto-reply'
 import { loadAiConfig } from '@/lib/ai/config'
 import { transcreverAudioDoWhatsApp } from '@/lib/ai/transcreve'
 import { sendMessageToConversation } from '@/lib/whatsapp/send-message'
@@ -987,13 +987,22 @@ async function processMessage(
 
   if (!flowConsumed && !automacaoResponde && textoParaIa &&
       (!interactiveReplyId || iaPedidaPeloBotao)) {
-    await dispatchInboundToAiReply({
-      accountId,
-      conversationId: conversation.id,
-      contactId: contactRecord.id,
-      configOwnerUserId,
-      channel: 'api',
-    })
+    // Debounce por conversa (23/09/2026, caso Claudete): nao chama
+    // dispatchInboundToAiReply direto -- rajadas de mensagens em webhooks
+    // separados rodavam geracoes concorrentes e mandavam respostas quase
+    // duplicadas. isFirstInboundMessage ja esta calculado acima (sincrono,
+    // sem round-trip extra no banco) -- 1o toque responde na hora, os
+    // demais esperam o cliente parar de escrever. Ver scheduleAiReply.
+    scheduleAiReply(
+      {
+        accountId,
+        conversationId: conversation.id,
+        contactId: contactRecord.id,
+        configOwnerUserId,
+        channel: 'api',
+      },
+      isFirstInboundMessage,
+    )
   } else if (contentType === 'audio' && !textoParaIa) {
     // Áudio que não deu para transcrever. ⛔ NUNCA ficar mudo: quem gravou um
     // áudio contando o problema e não recebe nada conclui que ninguém ouviu.

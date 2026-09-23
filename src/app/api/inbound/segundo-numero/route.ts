@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { runAutomationsForTrigger, automacaoVaiResponder } from '@/lib/automations/engine'
-import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
+import { scheduleAiReply } from '@/lib/ai/auto-reply'
 import { loadAiConfig } from '@/lib/ai/config'
 import { transcreverAudioBuffer } from '@/lib/ai/transcreve'
 import { sendMessageToConversation } from '@/lib/whatsapp/send-message'
@@ -128,13 +128,21 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, aiTriggered: false, reason: 'automação já responde' })
   }
 
-  await dispatchInboundToAiReply({
-    accountId,
-    conversationId,
-    contactId,
-    configOwnerUserId: userId,
-    channel: 'web',
-  })
+  // Debounce (23/09/2026, mesmo mecanismo do webhook oficial da Meta): este
+  // canal nao tem um sinal sincrono de "1a mensagem da conversa" pronto como
+  // o webhook oficial tem -- passa false por segurana (sempre debounce). E um
+  // canal de menor volume, o custo de latencia extra no 1o toque e aceitavel
+  // frente ao risco de resposta duplicada.
+  scheduleAiReply(
+    {
+      accountId,
+      conversationId,
+      contactId,
+      configOwnerUserId: userId,
+      channel: 'web',
+    },
+    false,
+  )
 
   return NextResponse.json({ ok: true, aiTriggered: true })
 }

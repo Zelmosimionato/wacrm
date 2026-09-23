@@ -657,19 +657,25 @@ export function emailNaConversa(messages: ChatMessage[]): string | null {
 }
 
 /**
- * Espera a rajada terminar antes de responder.
+ * Espera residual antes de responder — SEGUNDA linha de defesa, nao a
+ * principal (23/09/2026). A principal agora e `scheduleAiReply`: ela
+ * debounca ANTES desta funcao ser chamada, entao quando chega aqui ja
+ * passaram uns bons segundos de silencio do contato. Esta espera curta so
+ * cobre a corrida residual entre duas chamadas praticamente simultaneas
+ * (ex.: duas mensagens no mesmissimo instante, texto+audio juntos).
  *
- * Ninguém escreve no WhatsApp em uma mensagem só: manda "Oi tudo bem?" e, sete
- * segundos depois, "Como funciona?". Cada uma dispara uma resposta, e a segunda
- * é gerada antes de a primeira ficar gravada — então ela cumprimenta duas vezes
- * e a pergunta de verdade fica sem resposta. Foi o que aconteceu em 08/08/2026
- * às 14:42.
- *
- * O conserto é o que uma pessoa faz: esperar o outro terminar de digitar.
+ * Historico (08/08/2026, antes do scheduleAiReply existir): esta era a UNICA
+ * defesa, com 6-10s -- funcionava pra rajada rapida mas nao pra mensagens
+ * com mais de 10s de intervalo entre si (caso Claudete, 23/09/2026: gaps de
+ * 12-15s, cada mensagem "parecia a ultima" na hora da propria checagem, duas
+ * respostas quase identicas saiam pro cliente). Ninguém escreve no WhatsApp
+ * numa mensagem só: manda "Oi tudo bem?" e, alguns segundos depois, "Como
+ * funciona?". `scheduleAiReply` resolve isso na raiz agora; esta espera
+ * aqui é só o resto residual.
  */
 /** Lido no uso, nao no carregamento do modulo: assim o teste zera a espera
  *  e a operacao ajusta sem rebuild. */
-const esperaRajadaMs = () => Number(process.env.AI_ESPERA_RAJADA_MS ?? 6000)
+const esperaRajadaMs = () => Number(process.env.AI_ESPERA_RAJADA_MS ?? 1500)
 
 /** Resumos escritos pelas TRAVAS — desligamentos automáticos, não decisão humana. */
 const FOI_TRAVA_DO_SISTEMA =
@@ -1983,3 +1989,46 @@ export async function dispatchInboundToAiReply(
     console.error('[ai auto-reply] dispatch failed:', err)
   }
 }
+
+/** Fila de debounce por conversa (23/09/2026, caso Claudete): mensagens em
+ *  rajada chegam em webhooks SEPARADOS (a Meta manda 1 POST por mensagem
+ *  quando elas nao sao simultaneas de verdade) e cada requisicao do Next.js
+ *  roda concorrente as outras -- sem fila, duas geracoes da IA rodavam em
+ *  paralelo, cada uma cega da mensagem que a outra tinha acabado de
+ *  processar, e as duas respostas (quase identicas, so reformuladas) saiam
+ *  para o cliente. `dispatchInboundToAiReply` sempre le o historico fresco
+ *  do banco, entao nao precisa bufferizar mensagem nenhuma aqui -- so atrasar
+ *  a CHAMADA ate o silencio do cliente. Processo unico do PM2 (fork, 1
+ *  instancia) -- Map em memoria e seguro; um deploy raro perde os timers
+ *  pendentes, pior caso e 1 resposta saindo na hora em vez de esperar. */
+const DEBOUNCE_MS = 20_000
+const filaDebounceIa = new Map<string, ReturnType<typeof setTimeout>>()
+
+/**
+ * Agenda a resposta da IA com debounce por conversa. 1o toque de uma
+ * conversa nova responde na hora (sensacao de atendimento imediato -- o
+ * sinal vem sincrono do webhook, `isFirstInboundMessage`, sem round-trip no
+ * banco: evita a mesma race que o debounce existe pra evitar). A partir do
+ * 2o toque, espera DEBOUNCE_MS de silencio antes de gerar; se chegar
+ * mensagem nova da mesma conversa antes disso, cancela o timer anterior e
+ * reagenda -- a IA so fala depois que a pessoa parece ter terminado de
+ * escrever/mandar audio.
+ */
+export function scheduleAiReply(args: DispatchArgs, isFirstTouch: boolean): void {
+  const { conversationId } = args
+  const timerAnterior = filaDebounceIa.get(conversationId)
+  if (timerAnterior) clearTimeout(timerAnterior)
+
+  const disparar = () => {
+    filaDebounceIa.delete(conversationId)
+    void dispatchInboundToAiReply(args)
+  }
+
+  if (isFirstTouch) {
+    disparar()
+    return
+  }
+
+  filaDebounceIa.set(conversationId, setTimeout(disparar, DEBOUNCE_MS))
+}
+

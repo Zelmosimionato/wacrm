@@ -308,7 +308,7 @@ vi.mock('./admin-client', () => ({
   }),
 }))
 
-import { dispatchInboundToAiReply } from './auto-reply'
+import { dispatchInboundToAiReply, scheduleAiReply } from './auto-reply'
 
 const ARGS = {
   accountId: 'acct-1',
@@ -817,5 +817,56 @@ describe('dispatchInboundToAiReply — HORARIO_ESCOLHIDO', () => {
     expect(enviado).toBe(
       'Só para eu não errar: me confirma qual horário você prefere que eu já deixo reservado?',
     )
+  })
+})
+
+
+// scheduleAiReply — debounce por conversa (23/09/2026, caso Claudete: rajada
+// de mensagens em webhooks separados disparava gerações concorrentes, cada
+// uma cega da mensagem que a outra tinha processado — resultado, respostas
+// quase duplicadas). 1º toque responde na hora; demais esperam DEBOUNCE_MS
+// (20s) de silêncio, cancelando e reagendando a cada mensagem nova.
+describe('scheduleAiReply — debounce por conversa', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('1º toque (isFirstTouch=true) dispara na hora, sem esperar', async () => {
+    scheduleAiReply(ARGS, true)
+    // sem avançar o timer nenhum — já deve ter chamado
+    await vi.waitFor(() => expect(h.generateReply).toHaveBeenCalledTimes(1))
+  })
+
+  it('toque seguinte (isFirstTouch=false) espera 20s antes de gerar', async () => {
+    scheduleAiReply(ARGS, false)
+    expect(h.generateReply).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(19_999)
+    expect(h.generateReply).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    await vi.waitFor(() => expect(h.generateReply).toHaveBeenCalledTimes(1))
+  })
+
+  it('mensagem nova antes dos 20s cancela e reagenda — só UMA geração no fim', async () => {
+    scheduleAiReply(ARGS, false)
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(h.generateReply).not.toHaveBeenCalled()
+    // segunda mensagem chega, reagenda os 20s a partir de agora
+    scheduleAiReply(ARGS, false)
+    await vi.advanceTimersByTimeAsync(15_000)
+    // já passaram 30s desde a 1ª chamada, mas só 15s desde a 2ª — ainda não disparou
+    expect(h.generateReply).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(5_000)
+    await vi.waitFor(() => expect(h.generateReply).toHaveBeenCalledTimes(1))
+  })
+
+  it('duas conversas diferentes não interferem uma na outra', async () => {
+    scheduleAiReply(ARGS, false)
+    scheduleAiReply({ ...ARGS, conversationId: 'conv-2', contactId: 'contact-2' }, false)
+    await vi.advanceTimersByTimeAsync(20_000)
+    await vi.waitFor(() => expect(h.generateReply).toHaveBeenCalledTimes(2))
   })
 })
