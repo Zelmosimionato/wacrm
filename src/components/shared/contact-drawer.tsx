@@ -984,6 +984,7 @@ export function ContactDrawer({
         setDealFormOpen(false);
         if (contactId) invalidateContactDrawerCache(contactId);
         fetchDeals();
+        onUpdated();
       }}
     />
     <TemplatePicker
