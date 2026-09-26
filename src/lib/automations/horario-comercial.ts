@@ -12,7 +12,8 @@
  * expediente e o intervalo do almoço.
  *
  * O horário vem do Manual do Cliente, que promete resposta em até 1 dia útil:
- * seg–sex, 09h–17h, intervalo 12h–13h.
+ * seg–sex, 09h–18h, intervalo 12h–13h. O limite é exclusivo: automações
+ * nunca enviam lembretes ou nutrição depois das 18h.
  */
 
 const MS_MIN = 60_000
@@ -21,7 +22,7 @@ const BRT_OFFSET_MIN = -180 // UTC−3, fixo
 /** Faixas de expediente, em minutos desde a meia-noite (BRT). */
 export const EXPEDIENTE: ReadonlyArray<readonly [number, number]> = [
   [9 * 60, 12 * 60],
-  [13 * 60, 17 * 60],
+  [13 * 60, 18 * 60],
 ]
 
 /** Minuto do dia (BRT) de um instante. */
@@ -110,16 +111,16 @@ export function proximoInstanteDeExpediente(t: number): number {
 }
 
 /**
- * Fim (epoch ms) do EXPEDIENTE DO DIA — 17h do dia útil relevante:
+ * Fim (epoch ms) do EXPEDIENTE DO DIA — 18h do dia útil relevante:
  * se `t` cai dentro de um bloco de expediente, o fim desse bloco (só
  * bate com "fim do dia" quando `t` já está no bloco da tarde); se `t`
- * está fora de todo bloco mas ainda é hoje e antes das 17h (antes de
- * abrir, ou no almoço), o fim do ÚLTIMO bloco de HOJE (17h); se já
- * passou das 17h ou não é dia útil, o fim do último bloco do PRÓXIMO
+ * está fora de todo bloco mas ainda é hoje e antes das 18h (antes de
+ * abrir, ou no almoço), o fim do ÚLTIMO bloco de HOJE (18h); se já
+ * passou das 18h ou não é dia útil, o fim do último bloco do PRÓXIMO
  * dia útil.
  */
 export function fimDoExpedienteAPartir(t: number): number {
-  const ULTIMO_FIM = EXPEDIENTE[EXPEDIENTE.length - 1][1] // 17*60
+  const ULTIMO_FIM = EXPEDIENTE[EXPEDIENTE.length - 1][1] // 18*60
   if (dentroDoExpediente(t)) {
     const dia = meiaNoiteBrt(t)
     const minuto = minutoDoDiaBrt(t)

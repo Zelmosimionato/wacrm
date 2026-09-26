@@ -44,6 +44,7 @@ import {
 } from '@/lib/whatsapp/phone-utils';
 import type { MessageTemplate } from '@/types';
 import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard';
+import { enviarPeloSegundoNumero, janelaAberta } from '@/lib/whatsapp/segundo-numero'
 
 export const MEDIA_KINDS = ['image', 'video', 'document', 'audio'] as const;
 export const VALID_MESSAGE_TYPES = [
@@ -400,12 +401,27 @@ export async function sendMessageToConversation(
     return result.messageId;
   };
 
-  // Send via Meta — retry across phone-number variants if Meta rejects
+  // Mensagem livre fora da janela oficial segue automaticamente pelo segundo
+  // número. Templates continuam na Meta, pois são o canal oficial aprovado.
   // with "recipient not in allowed list"; persist a working variant
   // back to the contact so the next send goes straight through.
   let waMessageId = '';
   let workingPhone = sanitizedPhone;
-  try {
+  let sentViaSecondNumber = false;
+  const useSecondNumber =
+    messageType === 'text' && !(await janelaAberta(db, conversationId));
+
+  if (useSecondNumber) {
+    const ok = await enviarPeloSegundoNumero(sanitizedPhone, contentText!);
+    if (!ok) {
+      throw new SendMessageError(
+        'second_number_error',
+        'Official WhatsApp window is closed and the second number could not send the message.',
+        502,
+      );
+    }
+    sentViaSecondNumber = true;
+  } else try {
     const variants = phoneVariants(sanitizedPhone);
     let lastError: unknown = null;
 
@@ -464,8 +480,9 @@ export async function sendMessageToConversation(
       template_name: templateName || null,
       interactive_payload:
         messageType === 'interactive' ? interactivePayload : null,
-      message_id: waMessageId,
+      message_id: waMessageId || null,
       status: 'sent',
+      channel: sentViaSecondNumber ? 'web' : 'api',
       reply_to_message_id: replyToMessageId || null,
     })
     .select()
@@ -495,7 +512,7 @@ export async function sendMessageToConversation(
       // Only the second number was writing this field, so one message
       // through WhatsApp Web left the thread marked 'web' for good — and
       // it would reopen on the wrong number every time after that.
-      last_channel: 'api',
+      last_channel: sentViaSecondNumber ? 'web' : 'api',
     })
     .eq('id', conversationId);
 

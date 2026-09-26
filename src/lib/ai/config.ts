@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import type { AiConfig } from './types'
-import { fetchAgentConfig } from './agent-config'
+// The hosted agent is executed through the OpenAI Agents API by the provider.
 
 interface AiConfigRow {
   provider: 'openai' | 'anthropic'
@@ -80,21 +80,11 @@ export async function loadAiConfig(
   // marcadores (`[[QUALIFICADO]]`, `[[AGENDAR:N]]` etc.), a agenda real do
   // Cal.com e o contexto do contato. Sem isso a Márcia perde a capacidade
   // de agendar/qualificar/mover card — achado real, 20/09/2026.
-  let systemPrompt = row.system_prompt
-  let model = row.model
-  if (row.provider === 'openai') {
-    const agentConfig = await fetchAgentConfig(apiKey)
-    if (agentConfig) {
-      systemPrompt = agentConfig.instructions
-      model = agentConfig.model
-    }
-  }
-
   return {
     provider: row.provider,
-    model,
+    model: row.model,
     apiKey,
-    systemPrompt,
+    systemPrompt: row.system_prompt,
     isActive: row.is_active,
     autoReplyEnabled: row.auto_reply_enabled,
     autoReplyMaxPerConversation: row.auto_reply_max_per_conversation,

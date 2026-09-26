@@ -214,7 +214,11 @@ export function MessageComposer({
   //
   // Everything downstream reads this instead of `sessionExpired`, so
   // switching the channel switches the rule with it.
-  const janelaBloqueia = sessionExpired && canal === "api";
+  // A janela da Meta deixa de ser um bloqueio: o servidor roteia mensagens
+  // livres automaticamente pelo segundo número quando ela está fechada.
+  // Assim o operador não fica impedido de falar com um cliente justamente
+  // no cenário em que o segundo número existe para garantir a entrega.
+  const janelaBloqueia = false;
 
   // Media (like free-form text) is only allowed inside the 24h window.
   const inputsDisabled = readOnly || janelaBloqueia;

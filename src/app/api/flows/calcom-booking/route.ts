@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
+import { markBookingCancelled, markBookingRescheduled, upsertBookingState } from '@/lib/appointments/booking-state'
 
 /**
  * O intake.js (script EXTERNO, webhook do Cal.com) já resolveu o
@@ -54,6 +55,11 @@ export async function POST(request: Request) {
     // padrão que o resto do projeto já usa quando a automação completa
     // não é segura de construir na hora.
     if (event === 'cancelled' || event === 'rescheduled') {
+      if (event === 'cancelled') {
+        await markBookingCancelled(db, accountId, contactId, bookingUid, 'calcom_cancelled')
+      } else {
+        await markBookingRescheduled(db, accountId, contactId, bookingUid)
+      }
       const { data: perfis } = await db.from('profiles').select('user_id').eq('account_id', accountId)
       const destinatarios = (perfis ?? []).map((p) => p.user_id as string)
       if (destinatarios.length > 0) {
@@ -76,6 +82,27 @@ export async function POST(request: Request) {
     event === 'cancelled' ? 'calcom_booking_cancelled' :
     event === 'rescheduled' ? 'calcom_booking_rescheduled' :
     'calcom_booking_created'
+
+  if (event === 'cancelled') {
+    await markBookingCancelled(db, accountId, contactId, bookingUid, 'calcom_cancelled')
+  } else if (event === 'created' || event === 'rescheduled') {
+    if (event === 'rescheduled') {
+      await markBookingRescheduled(db, accountId, contactId, null)
+    }
+    const stableBookingUid = bookingUid || (startIso ? `legacy:${contactId}:${startIso}` : null)
+    if (stableBookingUid) {
+    await upsertBookingState(db, {
+      accountId,
+      contactId,
+      bookingUid: stableBookingUid,
+      scheduledAt: startIso ?? null,
+      owner: 'legacy',
+      status: 'active',
+    })
+    } else {
+      console.error('[calcom-booking] reserva sem uid e sem horario; estado não registrado')
+    }
+  }
 
   await runAutomationsForTrigger({
     accountId,

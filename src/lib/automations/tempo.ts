@@ -1,7 +1,10 @@
 import { createClient } from '@supabase/supabase-js'
 import { executeAutomation } from './engine'
 import type { Automation, AwaitingReplyTriggerConfig } from '@/types'
-import { dentroDoExpediente, passaramHorasUteis } from './horario-comercial'
+import {
+  dentroDoExpediente,
+  passaramHorasUteis,
+} from './horario-comercial'
 import { esperandoDesde, type MsgResumo } from './aguardando-resposta'
 
 /**
@@ -138,7 +141,13 @@ export function naHoraRelativa(
 ): boolean {
   const alvo = Date.parse(dataISO)
   if (!Number.isFinite(alvo)) return false
-  const faltamHoras = (alvo - agora) / 3_600_000
+  const alvoTeorico = alvo - rel.horas_antes * 3_600_000
+  // Esta função calcula apenas a relação temporal. A trava de horário fica
+  // no disparador (`dispararPorTempo`), que não executa automações fora do
+  // expediente. Misturar as duas regras aqui fazia os testes e os lembretes
+  // relativos dependerem do horário em que o cron era consultado.
+  if (alvoTeorico > alvo) return false
+  const faltamHoras = (alvoTeorico - agora) / 3_600_000
   const tol = rel.janela_horas ?? 0.5
   return Math.abs(faltamHoras - rel.horas_antes) <= tol
 }
@@ -226,6 +235,76 @@ async function publicoPorData(
     .map((r) => r.contact_id as string)
 }
 
+/**
+ * O Fluxo de Agendamento já é dono dos lembretes e do cancelamento por falta
+ * de confirmação. Os relógios legados não podem mandar por fora dele.
+ * Depois que o fluxo cancela ou remarca, os marcadores permanecem como uma
+ * trava histórica, porque a data antiga ainda pode continuar gravada no
+ * campo personalizado por algum tempo.
+ */
+async function excluirContatosSobControleDoFluxo(
+  db: ReturnType<typeof admin>,
+  accountId: string,
+  contactIds: string[],
+): Promise<string[]> {
+  if (!contactIds.length) return []
+
+  const [runsRes, tagsRes, statesRes] = await Promise.all([
+    db
+      .from('flow_runs')
+      .select('contact_id')
+      .eq('account_id', accountId)
+      .eq('status', 'active')
+      .in('contact_id', contactIds),
+    db
+      .from('tags')
+      .select('id, name')
+      .in('name', ['Perdido via No-show', 'Remarcado via No-show']),
+    db
+      .from('booking_states')
+      .select('contact_id, status, owner, updated_at')
+      .eq('account_id', accountId)
+      .in('contact_id', contactIds)
+      .order('updated_at', { ascending: false }),
+  ])
+
+  if (runsRes.error || tagsRes.error || statesRes.error) {
+    console.error('[tempo] trava de dono do fluxo falhou — nada disparado:', runsRes.error?.message ?? tagsRes.error?.message ?? statesRes.error?.message)
+    return []
+  }
+
+  const idsSobFluxo = new Set((runsRes.data ?? []).map((r) => r.contact_id as string))
+  const estadoMaisRecente = new Map<string, { status: string; owner: string }>()
+  for (const state of statesRes.data ?? []) {
+    if (!estadoMaisRecente.has(state.contact_id as string)) {
+      estadoMaisRecente.set(state.contact_id as string, {
+        status: state.status as string,
+        owner: state.owner as string,
+      })
+    }
+  }
+  for (const [contactId, state] of estadoMaisRecente) {
+    if (state.status === 'cancelled' || state.status === 'rescheduled' || state.owner !== 'legacy') {
+      idsSobFluxo.add(contactId)
+    }
+  }
+  const idsTag = new Set((tagsRes.data ?? []).map((t) => t.id as string))
+  if (idsTag.size) {
+    const { data: marcados, error } = await db
+      .from('contact_tags')
+      .select('contact_id')
+      .in('contact_id', contactIds)
+      .in('tag_id', Array.from(idsTag))
+    if (error) {
+      console.error('[tempo] trava de no-show falhou — nada disparado:', error.message)
+      return []
+    }
+    for (const row of marcados ?? []) idsSobFluxo.add(row.contact_id as string)
+  }
+
+  return contactIds.filter((id) => !idsSobFluxo.has(id))
+}
+
 /** Quem entra no disparo desta automação. */
 async function resolverPublico(
   db: ReturnType<typeof admin>,
@@ -303,6 +382,9 @@ export async function dispararPorTempo(): Promise<ResultadoTempo[]> {
 
   for (const a of automacoes) {
     const cfg = (a.trigger_config ?? {}) as ConfigTempo
+    // Agenda fixa também é comunicação automática: nunca executar ciclo
+    // fora do expediente, mesmo que a configuração antiga diga 18:00.
+    if (!dentroDoExpediente(Date.now())) continue
     // Dois eixos de tempo, que podem se somar:
     //   - só schedule  -> todo dia às 12h, para o público da etapa
     //   - só relativo  -> 1h antes da reunião, a qualquer hora do dia
@@ -342,9 +424,15 @@ export async function dispararPorTempo(): Promise<ResultadoTempo[]> {
     }
 
     const ensaio = cfg.ensaio !== false // ⛔ só manda com `false` explícito
-    const contatos = cfg.relativo
+    let contatos = cfg.relativo
       ? await publicoPorData(db, cfg.relativo, Date.now())
       : await resolverPublico(db, a.account_id as string, cfg.publico)
+
+    contatos = await excluirContatosSobControleDoFluxo(
+      db,
+      a.account_id as string,
+      contatos,
+    )
 
     let alcancados = 0
     let pulados = 0

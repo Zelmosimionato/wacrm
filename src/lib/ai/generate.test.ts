@@ -35,6 +35,7 @@ function errResponse(status: number, json: unknown): Response {
 
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn())
+  vi.stubEnv('OPENAI_AGENT_ID', 'agent-test')
 })
 afterEach(() => vi.unstubAllGlobals())
 
@@ -181,13 +182,14 @@ describe('parseGeneration', () => {
 })
 
 describe('generateReply — OpenAI', () => {
-  it('calls Responses with File Search and returns the reply', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      okResponse({
-        output_text: 'Sure — happy to help!',
+  it('calls the hosted Agent session and returns the reply', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okResponse({ id: 'sess-test', status: 'in_progress' }))
+      .mockResolvedValueOnce(okResponse({ id: 'sess-test', status: 'idle' }))
+      .mockResolvedValueOnce(okResponse({
+        data: [{ role: 'assistant', content: [{ type: 'output_text', text: 'Sure — happy to help!' }] }],
         usage: { prompt_tokens: 42, completion_tokens: 8, total_tokens: 50 },
-      }),
-    )
+      }))
     vi.stubGlobal('fetch', fetchMock)
 
     const res = await generateReply({
@@ -209,19 +211,18 @@ describe('generateReply — OpenAI', () => {
       usage: { promptTokens: 42, completionTokens: 8, totalTokens: 50 },
     })
     const [url, opts] = fetchMock.mock.calls[0]
-    expect(url).toContain('api.openai.com/v1/responses')
+    expect(url).toContain('api.openai.com/v1/agents/sessions')
     expect(opts.headers.Authorization).toBe('Bearer sk-test')
     const body = JSON.parse(opts.body)
-    expect(body.instructions).toBe('sys')
-    expect(body.tools).toEqual([{ type: 'file_search', vector_store_ids: ['vs_6aadd769530081918605c3c6da360f30'] }])
+    expect(body.agent_id).toBe('agent-test')
+    expect(body.environment).toEqual({ type: 'none' })
+    expect(body.input[0].content[0].text).toContain('sys')
   })
 
   it('maps a 401 to an invalid_key AiError', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(
-        errResponse(401, { error: { message: 'Incorrect API key' } }),
-      ),
+      vi.fn().mockResolvedValue(errResponse(401, { error: { message: 'Incorrect API key' } })),
     )
 
     await expect(
@@ -236,7 +237,9 @@ describe('generateReply — OpenAI', () => {
   it('throws on an empty completion', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(okResponse({ choices: [{ message: { content: '' } }] })),
+      vi.fn()
+        .mockResolvedValueOnce(okResponse({ id: 'sess-test', status: 'idle' }))
+        .mockResolvedValueOnce(okResponse({ data: [] })),
     )
     await expect(
       generateReply({

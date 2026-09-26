@@ -42,8 +42,13 @@ import {
 import { horariosLivres, type SlotLivre } from "@/lib/appointments/calcom-slots";
 import { criarReserva } from "@/lib/appointments/calcom-book";
 import { cancelCalcomBooking } from "@/lib/appointments/calcom-cancel";
+import { markBookingCancelled, markBookingConfirmed, upsertBookingState } from "@/lib/appointments/booking-state";
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
-import { fimDoExpedienteAPartir } from "@/lib/automations/horario-comercial";
+import {
+  dentroDoExpediente,
+  fimDoExpedienteAPartir,
+  proximoInstanteDeExpediente,
+} from "@/lib/automations/horario-comercial";
 import {
   type BookMeetingNodeConfig,
   type CancelMeetingNodeConfig,
@@ -136,7 +141,10 @@ export function computeWaitRunAt(
   cfg: { unit: "minutes" | "hours" | "days"; amount: number; until?: WaitUntilConfig },
   vars: Record<string, unknown>,
 ): number {
-  if (!cfg.until) return Date.now() + waitMs(cfg);
+  const ajustarParaExpediente = (instante: number): number =>
+    dentroDoExpediente(instante) ? instante : proximoInstanteDeExpediente(instante)
+
+  if (!cfg.until) return ajustarParaExpediente(Date.now() + waitMs(cfg));
   if (cfg.until.mode === "end_of_business_day") {
     return fimDoExpedienteAPartir(Date.now());
   }
@@ -146,12 +154,12 @@ export function computeWaitRunAt(
     const varTs = typeof raw === "string" ? Date.parse(raw) : NaN;
     const marginMs = cfg.until.margin_minutes * 60_000;
     const byVar = Number.isNaN(varTs) ? byHours : varTs - marginMs;
-    return Math.max(Math.min(byHours, byVar), Date.now());
+    return ajustarParaExpediente(Math.max(Math.min(byHours, byVar), Date.now()));
   }
   const raw = vars[cfg.until.var_key];
   const varTs = typeof raw === "string" ? Date.parse(raw) : NaN;
-  if (Number.isNaN(varTs)) return Date.now();
-  return Math.max(varTs - cfg.until.hours_before * 3_600_000, Date.now());
+  if (Number.isNaN(varTs)) return proximoInstanteDeExpediente(Date.now());
+  return ajustarParaExpediente(Math.max(varTs - cfg.until.hours_before * 3_600_000, Date.now()));
 }
 
 /**
@@ -1035,6 +1043,20 @@ async function advanceFromNodeKey(
           } else {
             run.vars = newVars;
           }
+          const state = await upsertBookingState(db, {
+            accountId: run.account_id,
+            contactId: run.contact_id!,
+            bookingUid: reserva.uid,
+            scheduledAt: reserva.inicio,
+            owner: 'flow',
+            status: 'active',
+          });
+          if (!state.ok) {
+            await logEvent(db, run.id, "error", node.node_key, {
+              reason: "booking_state_upsert_failed",
+              detail: state.error,
+            });
+          }
           await logEvent(db, run.id, "node_entered", node.node_key, {
             node_type: "book_meeting",
             result: "sucesso",
@@ -1081,6 +1103,19 @@ async function advanceFromNodeKey(
             cancelado: ok,
           });
           if (ok) {
+            const state = await markBookingCancelled(
+              db,
+              run.account_id,
+              run.contact_id!,
+              uid,
+              'flow_cancel_meeting',
+            );
+            if (!state.ok) {
+              await logEvent(db, run.id, "error", node.node_key, {
+                reason: "booking_state_cancel_failed",
+                detail: state.error,
+              });
+            }
             // Confirmado no Cal.com — limpa as 3 chaves de reunião ativa
             // pra um condition node downstream não achar que ainda tem
             // reunião marcada. Só limpa em SUCESSO confirmado (best-effort
@@ -1515,6 +1550,24 @@ async function handleReplyForActiveRun(
   }
 
   if (matched) {
+    if (
+      message.kind === "interactive_reply" &&
+      currentNode.node_type === "send_buttons" &&
+      message.reply_id === "confirmar_presenca"
+    ) {
+      const state = await markBookingConfirmed(
+        db,
+        run.account_id,
+        run.contact_id!,
+        (run.vars.booking_uid as string | undefined) ?? null,
+      );
+      if (!state.ok) {
+        await logEvent(db, run.id, "error", currentNode.node_key, {
+          reason: "booking_state_confirm_failed",
+          detail: state.error,
+        });
+      }
+    }
     // Reset reprompt count on a successful match. Skip the write when
     // already 0 — the collect_input capture branch above already
     // zeroed it, and interactive-reply matches against a fresh run

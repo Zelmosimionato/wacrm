@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { dentroDoDegrau, naHoraRelativa } from './tempo';
 
 // A régua só é régua se cada degrau tiver começo E fim.
@@ -32,6 +32,12 @@ describe('dentroDoDegrau', () => {
 
 // Lembrete é contagem regressiva para uma data, não horário fixo.
 describe('naHoraRelativa', () => {
+  beforeAll(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-25T16:00:00-03:00'));
+  });
+  afterAll(() => vi.useRealTimers());
+
   const daqui = (horas: number) => new Date(Date.now() + horas * 3_600_000).toISOString();
 
   it('pega quando falta o tempo combinado', () => {

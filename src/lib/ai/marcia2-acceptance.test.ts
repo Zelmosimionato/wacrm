@@ -15,18 +15,17 @@ const cfg: AiConfig = {
   embeddingsApiKey: null,
 }
 
-beforeEach(() => vi.stubGlobal('fetch', vi.fn()))
+beforeEach(() => {
+  vi.stubGlobal('fetch', vi.fn())
+  vi.stubEnv('OPENAI_AGENT_ID', 'agent-test')
+})
 afterEach(() => vi.unstubAllGlobals())
 
 describe('Márcia 2.0 acceptance fixtures', () => {
-  it('sends Instructions and the exact Vector Store to File Search', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        output_text: 'A orientação encontrada no material indexado é atendimento especializado.',
-      }),
-    })
+  it('sends the CRM context to the hosted Márcia 2.0 Agent', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ id: 'sess-test', status: 'idle' }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: [{ role: 'assistant', content: [{ type: 'output_text', text: 'A orientação encontrada no material indexado é atendimento especializado.' }] }] }) })
     vi.stubGlobal('fetch', fetchMock)
     const result = await generateReply({
       config: cfg,
@@ -35,11 +34,9 @@ describe('Márcia 2.0 acceptance fixtures', () => {
     })
     expect(result.text).toContain('material indexado')
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
-    expect(body.instructions).toContain('nunca invente preço')
-    expect(body.tools[0]).toEqual({
-      type: 'file_search',
-      vector_store_ids: ['vs_6aadd769530081918605c3c6da360f30'],
-    })
+    expect(body.agent_id).toBe('agent-test')
+    expect(body.environment).toEqual({ type: 'none' })
+    expect(body.input[0].content[0].text).toContain('nunca invente preço')
   })
 
   it.each([
@@ -51,11 +48,9 @@ describe('Márcia 2.0 acceptance fixtures', () => {
     ['RCV', 'REUNIÃO', '[[PF]][[QUALIFICADO]]'],
     ['Recuperação de Créditos Tributários', 'REUNIÃO', '[[PJ]][[QUALIFICADO]]'],
   ])('parses the %s %s acceptance fixture without external actions', async (_area, _mode, markers) => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ output_text: 'Resposta controlada ' + markers }),
-    })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ id: 'sess-test', status: 'idle' }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: [{ role: 'assistant', content: [{ type: 'output_text', text: 'Resposta controlada ' + markers }] }] }) })
     vi.stubGlobal('fetch', fetchMock)
     const result = await generateReply({
       config: cfg,
@@ -63,7 +58,7 @@ describe('Márcia 2.0 acceptance fixtures', () => {
       messages: [{ role: 'user', content: 'mensagem simulada' }],
     })
     expect(result.text).toBe('Resposta controlada')
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('hands judicial-process cases to a human except explicit exception fixtures', () => {
