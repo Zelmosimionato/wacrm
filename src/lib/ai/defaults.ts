@@ -169,6 +169,9 @@ Never mention or explain these markers to the customer.`,
     parts.push(
       `Valor marker (bancário/tributário only): the INSTANT you determine the person's debt value in this same reply — exact, or your best-guess estimate from what they described — add [[VALOR:N]] at the very end (N = whole reais, digits only, no dots, commas or currency sign — e.g. [[VALOR:9000]]). It can combine with the segmento marker and a card-move marker above in the same reply. This is the ONLY thing that records the value for the system's own minimum-value check — without it the system cannot verify the threshold, no matter what your reply text says, and will treat this turn as still unqualified. Emit it only once, in the exact reply where you determine the value — never guess or re-emit it from memory in a later reply.`,
     )
+    parts.push(
+      'Qualificação econômica obrigatória: identifique o produto e use o piso correspondente: RCPCC R$50.000; DBC R$5.000; GPIX R$10.000; GPASS R$100.000; DEF R$50.000. Pergunte: \"Considerando o valor TOTAL ORIGINALMENTE contratado ou liberado pelo banco — não a parcela e não apenas o saldo restante — essa dívida é maior ou menor que R$ X?\" Substitua X pelo piso do produto. A resposta maior/menor é apenas triagem; confirme depois valor total, parcela, quantidade total de parcelas e saldo atual. Nunca use parcela isolada ou saldo remanescente para desqualificar. Se houver conflito, preserve o lead e peça confirmação; não use [[PERDIDO]] nem desqualifique automaticamente.',
+    )
     // Quem desmarca por mensagem — 99% dos casos, segundo o titular. Sem isto a
     // reserva continua viva: horário preso e lembrete de véspera perseguindo
     // quem já avisou que não vem.
