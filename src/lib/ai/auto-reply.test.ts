@@ -516,7 +516,7 @@ describe('dispatchInboundToAiReply — handoff', () => {
 // reais abaixo do piso, sem checagem nenhuma) — agora consultando a tag de
 // PRODUTO gravada por automação do CRM (produtoPersistido) antes de cair no
 // genérico PF/PJ, pra não repetir o erro de 21/09.
-describe('dispatchInboundToAiReply — piso de valor por produto (religada em 23/09/2026)', () => {
+describe('dispatchInboundToAiReply — piso de valor por produto (contenção de segurança)', () => {
   const TAG_PF = '9f870fd7-1155-4ede-9da8-8678360c0ae9'
   const TAG_PJ = 'ea69a90c-407b-411c-953c-2d9920ef6a5e'
   const TAG_PRODUTO_RCPCC = '6b2df561-a2fd-497b-91b9-4eaede9ad917'
@@ -540,7 +540,7 @@ describe('dispatchInboundToAiReply — piso de valor por produto (religada em 23
     expect(h.engineSendText).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId: 'conv-1',
-        text: expect.stringContaining('não se enquadra no perfil de atendimento'),
+        text: expect.not.stringContaining('não se enquadra no perfil de atendimento'),
       }),
     )
   })
@@ -587,7 +587,7 @@ describe('dispatchInboundToAiReply — piso de valor por produto (religada em 23
     expect(h.engineSendText).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId: 'conv-1',
-        text: expect.stringContaining('não se enquadra no perfil de atendimento'),
+        text: expect.not.stringContaining('não se enquadra no perfil de atendimento'),
       }),
     )
   })
@@ -629,7 +629,7 @@ describe('dispatchInboundToAiReply — piso de valor por produto (religada em 23
     expect(h.engineSendText).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId: 'conv-1',
-        text: expect.stringContaining('não se enquadra no perfil de atendimento'),
+        text: expect.not.stringContaining('não se enquadra no perfil de atendimento'),
       }),
     )
   })
@@ -651,7 +651,7 @@ describe('dispatchInboundToAiReply — piso de valor por produto (religada em 23
     const gravado = (h.state.porTabela['contact_tags'] ?? []).some(
       (l) => (l as { tag_id?: string }).tag_id === TAG_ABAIXO_PISO,
     )
-    expect(gravado).toBe(true)
+    expect(gravado).toBe(false)
   })
 })
 

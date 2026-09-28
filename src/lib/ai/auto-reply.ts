@@ -1585,7 +1585,8 @@ export async function dispatchInboundToAiReply(
     // PISO_POR_PRODUTO acima. O caso Claudete (RCPCC, ~R$20-34k, a IA
     // "concluiu" acima do criterio sem checagem nenhuma) e a prova de que
     // deixar so a IA decidir nao segura sozinho.
-    const PISO_GENERICO_ATIVO = true
+    // Contenção de segurança: a heurística confundiu parcela com dívida total no caso 5511941707154 (R$ 540 mil reconhecidos, R$ 2.000 capturados).
+    const PISO_GENERICO_ATIVO = false
     let valorOverride: string | null = null
     // Fonte 1 (preferida): o marcador que a IA emitiu — pode ser uma
     // ESTIMATIVA mais inteligente (ex.: somar parcelas), não só o número cru.
