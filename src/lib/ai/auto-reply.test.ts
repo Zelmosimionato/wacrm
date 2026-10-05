@@ -42,12 +42,14 @@ describe('emailNaConversa', () => {
   })
 })
 
-// Rede da trava de piso (01/09/2026, caso Rogério): quando a IA não emite
-// [[VALOR:N]], é isto que procura o valor direto na mensagem do cliente.
+// Fonte ÚNICA da trava de piso (desde 30/09/2026): o valor TOTAL que o próprio cliente
+// escreveu. Só conta número ligado a total/dívida/contrato/faixa; parcela, mensalidade e
+// saldo restante são ignorados, e entre vários valores vale o MAIOR (só trava se até o
+// maior estiver abaixo do piso). O marcador [[VALOR:N]] da IA não desqualifica sozinho.
 describe('valorDeclaradoPeloCliente', () => {
   it('lê valor com R$', () => {
     expect(
-      valorDeclaradoPeloCliente([{ role: 'user', content: 'R$ 450,00 na época' }]),
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'minha dívida é de R$ 450,00' }]),
     ).toBe(450)
   })
 
@@ -59,13 +61,13 @@ describe('valorDeclaradoPeloCliente', () => {
 
   it('lê valor com "reais"', () => {
     expect(
-      valorDeclaradoPeloCliente([{ role: 'user', content: 'são 9000 reais' }]),
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'a dívida total são 9000 reais' }]),
     ).toBe(9000)
   })
 
   it('normaliza ponto de milhar e vírgula decimal (padrão BR)', () => {
     expect(
-      valorDeclaradoPeloCliente([{ role: 'user', content: 'já paguei R$ 47.500,00' }]),
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'o contrato é de R$ 47.500,00' }]),
     ).toBe(47500)
   })
 
@@ -88,17 +90,46 @@ describe('valorDeclaradoPeloCliente', () => {
 
   it('"R$ X" sem "mil" continua lendo o valor literal (não multiplica à toa)', () => {
     expect(
-      valorDeclaradoPeloCliente([{ role: 'user', content: 'a parcela é de R$ 90' }]),
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'a dívida é de R$ 90' }]),
     ).toBe(90)
   })
 
-  it('vale o último valor que a pessoa mandou', () => {
+  it('entre vários valores totais vale o MAIOR (conservador: só trava se até o maior está abaixo do piso)', () => {
     expect(
       valorDeclaradoPeloCliente([
-        { role: 'user', content: 'acho que é uns R$ 30 mil' },
-        { role: 'user', content: 'na verdade conferi, são R$ 45.000,00' },
+        { role: 'user', content: 'a dívida é de uns R$ 30 mil' },
+        { role: 'user', content: 'na verdade conferi, o contrato é de R$ 45.000,00' },
       ]),
     ).toBe(45000)
+  })
+
+  // 28/09/2026, caso 5511941707154: contrato de R$ 540 mil, parcela de R$ 2.000. A heurística
+  // antiga leu o ÚLTIMO número (a parcela) e travou um lead de R$ 540 mil.
+  it('parcela e saldo restante NUNCA entram como valor total (caso contrato R$ 540 mil / parcela R$ 2 mil)', () => {
+    expect(
+      valorDeclaradoPeloCliente([
+        { role: 'user', content: 'o contrato é de R$ 540 mil.' },
+        { role: 'user', content: 'a parcela é de R$ 2.000' },
+      ]),
+    ).toBe(540000)
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'pago parcela de R$ 2.000 por mês' }]),
+    ).toBeNull()
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'falta pagar R$ 8 mil, o saldo restante' }]),
+    ).toBeNull()
+  })
+
+  it('número sem ligação com total/dívida/contrato/faixa não vira valor (ex.: "R$ 450,00 na época")', () => {
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'R$ 450,00 na época' }]),
+    ).toBeNull()
+  })
+
+  it('faixa ("entre 20 e 30 mil") usa o limite superior', () => {
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'a dívida fica entre 20 e 30 mil' }]),
+    ).toBe(30000)
   })
 
   it('ignora o que a própria IA escreveu', () => {
@@ -526,6 +557,9 @@ describe('dispatchInboundToAiReply — piso de valor por produto (contenção de
 
   it('sem tag de produto, cai no genérico PF e trava valor abaixo do piso (R$50k)', async () => {
     h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PF }]
+    h.buildConversationContext.mockResolvedValue([
+      { role: 'user', content: 'minha dívida total é de R$ 9.000' },
+    ])
     h.generateReply.mockResolvedValue({
       text: 'Entendi, você tem R$9.000 em aberto. Tenho horário amanhã às 14h ou quinta às 15h — qual prefere?',
       handoff: false,
@@ -541,13 +575,16 @@ describe('dispatchInboundToAiReply — piso de valor por produto (contenção de
     expect(h.engineSendText).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId: 'conv-1',
-        text: expect.not.stringContaining('não se enquadra no perfil de atendimento'),
+        text: expect.stringContaining('não se enquadra no perfil de atendimento'),
       }),
     )
   })
 
   it('sem tag de produto, cai no genérico PJ e deixa passar valor acima do piso (R$100k)', async () => {
     h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PJ }]
+    h.buildConversationContext.mockResolvedValue([
+      { role: 'user', content: 'a dívida total da empresa é de R$ 150 mil' },
+    ])
     const textoIa = 'Perfeito, com esse valor faz sentido conversarmos. Tenho horário amanhã às 14h.'
     h.generateReply.mockResolvedValue({
       text: textoIa,
@@ -588,13 +625,16 @@ describe('dispatchInboundToAiReply — piso de valor por produto (contenção de
     expect(h.engineSendText).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId: 'conv-1',
-        text: expect.not.stringContaining('não se enquadra no perfil de atendimento'),
+        text: expect.stringContaining('não se enquadra no perfil de atendimento'),
       }),
     )
   })
 
   it('tag de produto DBC: R$9.000 fica ACIMA do piso real (R$5k) mesmo estando abaixo do genérico PF (R$50k)', async () => {
     h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PRODUTO_DBC }, { tag_id: TAG_PF }]
+    h.buildConversationContext.mockResolvedValue([
+      { role: 'user', content: 'o valor bloqueado total é de R$ 9.000' },
+    ])
     const textoIa = 'Entendi, R$9.000 bloqueado. Isso já dá pra seguir — posso te passar horários.'
     h.generateReply.mockResolvedValue({
       text: textoIa,
@@ -615,6 +655,9 @@ describe('dispatchInboundToAiReply — piso de valor por produto (contenção de
 
   it('tag de produto GPIX: R$3.000 fica ABAIXO do piso real (R$10k) e trava, mesmo a IA tentando seguir', async () => {
     h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PRODUTO_GPIX }]
+    h.buildConversationContext.mockResolvedValue([
+      { role: 'user', content: 'o prejuízo total do golpe foi de R$ 3.000' },
+    ])
     h.generateReply.mockResolvedValue({
       text: 'Entendi, R$3.000 de prejuízo no golpe. Posso te passar horários pra conversarmos.',
       handoff: false,
@@ -630,7 +673,7 @@ describe('dispatchInboundToAiReply — piso de valor por produto (contenção de
     expect(h.engineSendText).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId: 'conv-1',
-        text: expect.not.stringContaining('não se enquadra no perfil de atendimento'),
+        text: expect.stringContaining('não se enquadra no perfil de atendimento'),
       }),
     )
   })
