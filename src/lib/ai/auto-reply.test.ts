@@ -6,6 +6,7 @@ import {
   emailNaConversa,
   VALOR_ABAIXO_DO_PISO,
   valorDeclaradoPeloCliente,
+  buildContactContextBlock,
 } from './auto-reply'
 
 describe('emailNaConversa', () => {
@@ -868,5 +869,60 @@ describe('scheduleAiReply — debounce por conversa', () => {
     scheduleAiReply({ ...ARGS, conversationId: 'conv-2', contactId: 'contact-2' }, false)
     await vi.advanceTimersByTimeAsync(20_000)
     await vi.waitFor(() => expect(h.generateReply).toHaveBeenCalledTimes(2))
+  })
+})
+
+describe('buildContactContextBlock — retorno x lead novo', () => {
+  // Caso Magali, 05/10/2026: lead NOVO do site, só com tag de origem, ouviu
+  // "Que bom te ver de novo". Tag de origem não é prova de conversa anterior.
+  const base = {
+    firstName: 'Magali',
+    email: null,
+    qualTags: ['Bancário'],
+    isClient: false,
+    hasMeeting: false,
+    isReturning: false,
+    formulario: null,
+    dataReuniao: null,
+    etapa: { nome: 'Novo Lead', conduta: 'começo do funil' },
+  }
+
+  it('lead novo só com tag de origem NÃO é tratado como retornante', () => {
+    const b = buildContactContextBlock(base) ?? ''
+    expect(b).toContain('PRIMEIRA conversa')
+    expect(b).not.toContain('reconhecer o retorno')
+    expect(b).not.toContain('Que bom te ver de novo')
+  })
+
+  it('PF + Bancário (qualificação feita nesta conversa) continua lead novo', () => {
+    const b = buildContactContextBlock({ ...base, qualTags: ['Bancário', 'PF'] }) ?? ''
+    expect(b).toContain('PRIMEIRA conversa')
+    expect(b).not.toContain('reconhecer o retorno')
+  })
+
+  it('isReturning (disparo ou intervalo entre sessões) continua reconhecendo o retorno', () => {
+    const b = buildContactContextBlock({ ...base, isReturning: true }) ?? ''
+    expect(b).toContain('reconhecer o retorno')
+    expect(b).not.toContain('PRIMEIRA conversa')
+  })
+
+  it('tag de qualificação de conversa anterior (Desqualificado) continua retornante', () => {
+    const b = buildContactContextBlock({ ...base, qualTags: ['Bancário', 'Desqualificado'] }) ?? ''
+    expect(b).toContain('reconhecer o retorno')
+  })
+
+  it('card fora de Novo Lead (FUP) continua retornante', () => {
+    const b =
+      buildContactContextBlock({
+        ...base,
+        etapa: { nome: 'FUP - Reativar Lead', conduta: 'esfriou' },
+      }) ?? ''
+    expect(b).toContain('reconhecer o retorno')
+  })
+
+  it('lead totalmente sem sinal (só nome) segue no ramo de primeira conversa', () => {
+    const b = buildContactContextBlock({ ...base, qualTags: [], etapa: null }) ?? ''
+    expect(b).toContain('apresente-se')
+    expect(b).not.toContain('reconhecer o retorno')
   })
 })

@@ -1226,6 +1226,18 @@ export function buildContactContextBlock(args: {
     )
   }
 
+  // Tags de ORIGEM (o intake as aplica ao criar o contato a partir do site) não são
+  // prova de conversa anterior. Em 05/10/2026 a Magali (lead novo, tag "Bancário" posta
+  // 3s depois de criada) ouviu "Que bom te ver de novo": QUAL_TAGS tornava o contato
+  // "conhecido" e o ramo final presumia retornante. Retorno só com sinal real:
+  // disparo anterior / intervalo entre sessões (isReturning), tag de qualificação feita
+  // em conversa anterior (Superqualificado/Desqualificado) ou card fora de Novo Lead.
+  const TAGS_DE_ORIGEM = new Set(['Bancário', 'Tributário', 'PF', 'PJ'])
+  const primeiraConversa =
+    !isReturning &&
+    qualTags.every((t) => TAGS_DE_ORIGEM.has(t)) &&
+    (!etapa || etapa.nome === 'Novo Lead')
+
   if (hasMeeting) {
     lines.push(
       dataReuniao
@@ -1247,7 +1259,9 @@ export function buildContactContextBlock(args: {
       '- ⛔ Não há REGISTRO de reunião para ele no sistema. Isso não é o mesmo que "ele não tem reunião": há reservas que chegam por canais que o sistema não vê. Se ele PERGUNTAR se tem algo marcado, diga que não há horário reservado e ofereça marcar agora. ⛔ Mas se ele AFIRMAR que tem reunião, ou disser data e hora, ou colar um convite: NÃO o contradiga, NÃO diga que o horário não existe e NÃO oferece outras datas — quem confere compromisso marcado é uma pessoa. ⛔ E não confirme reunião a partir do que foi falado antes: horário escolhido na conversa NÃO é horário reservado.',
     )
     lines.push(
-      `- Situação: já falou com o escritório antes e ainda não fechou. ⛔ A sua PRIMEIRA mensagem desta conversa TEM de reconhecer o retorno${firstName ? ` (ex.: "Que bom te ver de novo, ${firstName}!")` : ''} — cumprimentar como se fosse a primeira vez faz parecer que ninguém aqui lembra dele. Se já faz horas ou dias desde a última troca, vale se reapresentar em meia frase ("aqui é a Márcia, do Simionato Advogados") — ninguém guarda de cabeça com quem falou ontem. Só não recomece a coleta de dados nem a qualificação. ⛔ Responda PRIMEIRO o que ele acabou de dizer e descubra o que ele quer AGORA — o que ficou registrado aqui é do passado, e ele pode estar voltando por outro motivo. Conduza ao agendamento quando fizer sentido na conversa, ⛔ nunca já na primeira frase.`,
+      primeiraConversa
+        ? `- Situação: é a PRIMEIRA conversa dele com o escritório — as tags que constam (${qualTags.join(', ') || 'nenhuma'}) vêm da origem do lead no site, não de um contato anterior. ⛔ NÃO diga "de novo", "que bom te ver outra vez" nem nada que sugira que já conversaram, e não finja lembrar de nada: o que está registrado aqui veio do site, não de conversa. Na sua primeira mensagem apresente-se ("aqui é a Márcia, do Simionato Advogados") e diga de onde você fala${firstName ? `, tratando-o por ${firstName}` : ''}. ⛔ Responda PRIMEIRO o que ele acabou de dizer; use as tags para não repetir a qualificação que elas já cobrem e conduza o resto normalmente.`
+        : `- Situação: já falou com o escritório antes e ainda não fechou. ⛔ A sua PRIMEIRA mensagem desta conversa TEM de reconhecer o retorno${firstName ? ` (ex.: "Que bom te ver de novo, ${firstName}!")` : ''} — cumprimentar como se fosse a primeira vez faz parecer que ninguém aqui lembra dele. Se já faz horas ou dias desde a última troca, vale se reapresentar em meia frase ("aqui é a Márcia, do Simionato Advogados") — ninguém guarda de cabeça com quem falou ontem. Só não recomece a coleta de dados nem a qualificação. ⛔ Responda PRIMEIRO o que ele acabou de dizer e descubra o que ele quer AGORA — o que ficou registrado aqui é do passado, e ele pode estar voltando por outro motivo. Conduza ao agendamento quando fizer sentido na conversa, ⛔ nunca já na primeira frase.`,
     )
   }
 
