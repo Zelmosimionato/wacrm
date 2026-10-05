@@ -29,6 +29,8 @@ import {
   serializeContact,
   findOrCreateContact,
   setContactTags,
+  addContactTags,
+  setContactCustomFields,
   getContactById,
   resolveAuditUserId,
   ContactError,
@@ -138,6 +140,17 @@ export async function POST(request: Request) {
       }
     );
 
+    // Custom fields FIRST, tags after: a `tag_added` automation fires on the
+    // tag insert and must already find the answers on the contact.
+    if (body.custom_fields && typeof body.custom_fields === 'object' && !Array.isArray(body.custom_fields)) {
+      await setContactCustomFields(
+        ctx.supabase,
+        ctx.accountId,
+        id,
+        body.custom_fields as Record<string, unknown>
+      );
+    }
+
     if (Array.isArray(body.tags)) {
       await setContactTags(
         ctx.supabase,
@@ -145,6 +158,17 @@ export async function POST(request: Request) {
         auditUserId,
         id,
         body.tags.filter((t): t is string => typeof t === 'string')
+      );
+    }
+
+    // Additive (never removes existing tags) — use this from external lead sources.
+    if (Array.isArray(body.add_tags)) {
+      await addContactTags(
+        ctx.supabase,
+        ctx.accountId,
+        auditUserId,
+        id,
+        body.add_tags.filter((t): t is string => typeof t === 'string')
       );
     }
 

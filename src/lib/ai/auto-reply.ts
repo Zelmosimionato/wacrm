@@ -390,7 +390,13 @@ export function valorDeclaradoPeloCliente(messages: ChatMessage[]): number | nul
   // lead de R$90k caia "abaixo do piso" por engano -- mesmo ja com reuniao
   // sendo agendada. Agora o "mil" depois de um valor com R$ e capturado.
   const PADRAO = /R\$\s*([\d.,]+)\s*(mil)?\b|([\d.,]+)\s*mil\b|([\d.,]+)\s*reais\b/gi
-  let ultimo: number | null = null
+  // Não basta encontrar o último número. Em conversas bancárias é comum o
+  // cliente informar o contrato e, depois, a parcela ou o saldo restante.
+  // O valor da parcela nunca pode substituir o valor total para fins de piso.
+  const CONTEXTO_TOTAL = /\b(total|d[ií]vida|contrat[oa]|contratado|liberad[oa]|devo|montante|empr[eé]stimo)\b/i
+  const CONTEXTO_NAO_TOTAL = /\b(parcela|presta[cç][aã]o|mensalidade|mensal|saldo\s+(?:restante|devedor|atual)|resta(?:m|va[mn])?|falta(?:m|va[mn])?|j[aá]\s+paguei|paguei|pago)\b/i
+  const CONTEXTO_FAIXA = /\b(entre|de\s+\d|chega|chegar|fica|ficam|aproximad[oa]|cerca\s+de)\b/i
+  let candidatosTotais: number[] = []
   for (const m of messages) {
     if (m.role !== 'user') continue
     PADRAO.lastIndex = 0
@@ -411,10 +417,21 @@ export function valorDeclaradoPeloCliente(messages: ChatMessage[]): number | nul
       if (bruto === undefined) continue
       const numero = normalizaValorBr(bruto)
       if (numero === null) continue
-      ultimo = ehMil ? numero * 1000 : numero
+      const valor = ehMil ? numero * 1000 : numero
+      // Delimita a unidade da frase para não contaminar o contrato com uma
+      // palavra “parcela” que aparece em outra oração da mesma mensagem.
+      const partes = m.content.split(/[\n.;!?]+/)
+      const contexto = partes.find((parte) => parte.includes(match![0])) ?? m.content
+      // Aceita somente um valor associado ao total/dívida/contrato. Valores
+      // associados a parcela, mensalidade ou saldo remanescente são ignorados.
+      if ((CONTEXTO_TOTAL.test(contexto) || CONTEXTO_FAIXA.test(contexto)) && !CONTEXTO_NAO_TOTAL.test(contexto)) {
+        candidatosTotais.push(valor)
+      }
     }
   }
-  return ultimo
+  // Em uma faixa (“entre 20 e 30 mil”), o maior valor é o limite superior.
+  // Só haverá desqualificação se até esse limite estiver abaixo do piso.
+  return candidatosTotais.length > 0 ? Math.max(...candidatosTotais) : null
 }
 
 /** Assina o cancelamento feito daqui. O intake lê isto no webhook
@@ -1585,14 +1602,17 @@ export async function dispatchInboundToAiReply(
     // PISO_POR_PRODUTO acima. O caso Claudete (RCPCC, ~R$20-34k, a IA
     // "concluiu" acima do criterio sem checagem nenhuma) e a prova de que
     // deixar so a IA decidir nao segura sozinho.
-    // Contenção de segurança: a heurística confundiu parcela com dívida total no caso 5511941707154 (R$ 540 mil reconhecidos, R$ 2.000 capturados).
-    const PISO_GENERICO_ATIVO = false
+    // A extração textual agora só aceita valor contextualizado como total,
+    // dívida, contrato ou faixa; parcela e saldo remanescente são ignorados.
+    // O marcador da IA não é fonte suficiente para desqualificação: ele pode
+    // ter sido calculado a partir da parcela. Assim, o caso “contrato de
+    // R$540 mil / parcela de R$2 mil” permanece protegido.
+    const PISO_GENERICO_ATIVO = true
     let valorOverride: string | null = null
-    // Fonte 1 (preferida): o marcador que a IA emitiu — pode ser uma
-    // ESTIMATIVA mais inteligente (ex.: somar parcelas), não só o número cru.
-    // Fonte 2 (rede): quando a IA não deu nenhum valor, procura direto no que
-    // o PRÓPRIO CLIENTE escreveu — não depende da IA cooperar.
-    const valorFresco = valor ?? valorDeclaradoPeloCliente(messages)
+    // Fonte única para desqualificação: valor total contextualizado que o
+    // próprio cliente escreveu. O marcador “valor” continua disponível para
+    // a conversa, mas não pode sozinho derrubar um lead.
+    const valorFresco = valorDeclaradoPeloCliente(messages)
     // Fonte 3 (trava persistente, 11/09/2026): sem valor novo neste turno,
     // usa o veredito já gravado de um turno anterior — ver TAG_ABAIXO_PISO
     // acima. Sentinela bem abaixo de qualquer piso real, só pra comparar.
@@ -1616,7 +1636,7 @@ export async function dispatchInboundToAiReply(
       const abaixo = valorEfetivo < piso
       if (abaixo) {
         console.warn(
-          `[ia-valor] resposta travada — valor R${valorEfetivo} (${veioPersistido ? 'trava persistente de turno anterior' : valor !== null ? 'marcador' : 'regex no texto do cliente'}) abaixo do piso ${produto ?? seg ?? 'PF (padrão)'} (contact ${contactId})`,
+          `[ia-valor] resposta travada — valor R${valorEfetivo} (${veioPersistido ? 'trava persistente de turno anterior' : 'valor total contextualizado no texto do cliente'}) abaixo do piso ${produto ?? seg ?? 'PF (padrão)'} (contact ${contactId})`,
         )
         valorOverride = VALOR_ABAIXO_DO_PISO
       }

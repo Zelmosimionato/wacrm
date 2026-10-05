@@ -226,6 +226,85 @@ export async function setContactTags(
   }
 }
 
+/**
+ * ADD tags by name to a contact, never removing the ones it already has.
+ * `setContactTags` REPLACES the whole set, which is wrong for an external
+ * lead source (e.g. the Typebot bio link): if the contact already exists in
+ * the CRM, replacing would wipe its funnel tags. Missing tags are created.
+ */
+export async function addContactTags(
+  db: SupabaseClient,
+  accountId: string,
+  auditUserId: string,
+  contactId: string,
+  tagNames: string[]
+): Promise<void> {
+  if (tagNames.length === 0) return;
+  const { tagIdByKey } = await resolveImportTagIds(db, {
+    accountId,
+    userId: auditUserId,
+    tagNames,
+    canCreateTags: true,
+  });
+  const { data: current, error: readErr } = await db
+    .from('contact_tags')
+    .select('tag_id')
+    .eq('contact_id', contactId);
+  if (readErr) throw new ContactError('Failed to read contact tags', 500);
+  const existing = new Set((current ?? []).map((r) => r.tag_id as string));
+  const toAdd = [...new Set(tagIdByKey.values())].filter((id) => !existing.has(id));
+  if (toAdd.length === 0) return;
+  const { error } = await db
+    .from('contact_tags')
+    .insert(toAdd.map((tag_id) => ({ contact_id: contactId, tag_id })));
+  if (error) throw new ContactError('Failed to update contact tags', 500);
+}
+
+/**
+ * Write custom field values by FIELD NAME (e.g. "Valor da dívida"). Only
+ * fields that already exist in this account are written; an unknown name is
+ * rejected with 400 instead of being silently dropped, so a typo in the
+ * caller (the Typebot webhook) surfaces immediately. Upserts on the table's
+ * UNIQUE(contact_id, custom_field_id), same as the automation engine does.
+ * Call this BEFORE adding tags: `tag_added` automations fire on the tag insert.
+ */
+export async function setContactCustomFields(
+  db: SupabaseClient,
+  accountId: string,
+  contactId: string,
+  fields: Record<string, unknown>
+): Promise<void> {
+  const entries = Object.entries(fields).filter(
+    (e): e is [string, string] => typeof e[1] === 'string' && e[1].trim() !== ''
+  );
+  if (entries.length === 0) return;
+
+  const { data: defs, error: defErr } = await db
+    .from('custom_fields')
+    .select('id, field_name')
+    .eq('account_id', accountId)
+    .in('field_name', entries.map(([name]) => name));
+  if (defErr) throw new ContactError('Failed to read custom fields', 500);
+
+  const idByName = new Map(
+    (defs ?? []).map((d) => [d.field_name as string, d.id as string])
+  );
+  const unknown = entries.map(([name]) => name).filter((n) => !idByName.has(n));
+  if (unknown.length > 0) {
+    throw new ContactError(`Unknown custom field(s): ${unknown.join(', ')}`, 400);
+  }
+
+  const { error } = await db.from('contact_custom_values').upsert(
+    entries.map(([name, value]) => ({
+      contact_id: contactId,
+      custom_field_id: idByName.get(name) as string,
+      value,
+    })),
+    { onConflict: 'contact_id,custom_field_id' }
+  );
+  if (error) throw new ContactError('Failed to write custom fields', 500);
+}
+
 /** Fetch + serialize a single contact scoped to the account, or null. */
 export async function getContactById(
   db: SupabaseClient,
