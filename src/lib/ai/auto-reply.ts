@@ -221,7 +221,7 @@ export const AI_STAGE_PERDIDO = '0d0382a5-f15d-4e43-88aa-0c70337d94d4'
 const AI_STAGE_FUP = '8bd228cf-fba4-4b28-b704-068bdcfa7c8d'
 
 /**
- * De onde a IA pode AVANÇAR um card para Lead Qualificado.
+ * De onde a IA podia avançar um card (hoje a qualificação só grava tag e aviso).
  *
  * Novo Lead é o começo. FUP — Reativar Lead é lead DORMENTE, não lead
  * avançado: sair de lá é avanço, não é puxar ninguém para trás.
@@ -571,7 +571,7 @@ async function applyAiCardMove(
         headers: { 'Content-Type': 'application/json', 'x-engine-secret': notifySecret },
         body: JSON.stringify({
           subject: `Lead SUPERQUALIFICADO (IA): ${contact?.name ?? 'sem nome'}`,
-          body: `A IA identificou um lead SUPERQUALIFICADO (divida >= R$ 500 mil) na conversa. Nome: ${contact?.name ?? '-'} | WhatsApp: ${contact?.phone ?? '-'} | Card em Lead Qualificado + tag Superqualificado. Ver: https://crm.simionatoadvogados.com.br`,
+          body: `A IA identificou um lead SUPERQUALIFICADO (divida >= R$ 500 mil) na conversa. Nome: ${contact?.name ?? '-'} | WhatsApp: ${contact?.phone ?? '-'} | Card na etapa atual do funil + tag Superqualificado. Ver: https://crm.simionatoadvogados.com.br`,
         }),
       }).catch(() => {})
     }
@@ -579,8 +579,9 @@ async function applyAiCardMove(
 
   let target: string | null = null
   if (move === 'qualified' || move === 'super') {
-    // Avança do começo e do dormente; ⛔ nunca puxa de volta quem já avançou.
-    if (AI_ETAPAS_QUE_AVANCAM.has(deal.stage_id)) target = AI_STAGE_QUALIFICADO
+    // A qualificação NÃO move mais o card: a etapa 57bed09e é "Reunião Realizada",
+    // marcada à mão pelo titular depois da reunião. Aqui só ficam a tag e o aviso.
+    target = null
   } else if (move === 'reagendar') {
     // ⛔ Só reagenda quem TEM o que reagendar. A etapa "Reagendar reunião"
     // dispara o template "vi que você precisou cancelar o horário" — e em
@@ -1100,9 +1101,9 @@ const ETAPAS: Record<string, { nome: string; conduta: string }> = {
       'É o começo do funil e a conversa é sua. Pode conduzir a qualificação completa: entender o problema, o tipo e o valor.',
   },
   '57bed09e-bc01-4691-8272-dcd8c3c078df': {
-    nome: 'Lead Qualificado',
+    nome: 'Reunião Realizada',
     conduta:
-      'Já atingiu o critério. Pode conduzir normalmente e levar ao agendamento — sem refazer a qualificação que já foi feita.',
+      'A reunião com o Dr. Zelmo já aconteceu. Você acolhe e passa ao humano se o lead escrever. ⛔ Não requalifique nem marque nova reunião sem ele.',
   },
   'fd70e3b2-52e2-4f2c-b6e8-15450fe6c9d4': {
     nome: 'Reunião Agendada',

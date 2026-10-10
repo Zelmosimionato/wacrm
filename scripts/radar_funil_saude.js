@@ -85,7 +85,7 @@ const TAG_AGENDOU = "c0278b4c-8f17-416e-a7e4-b66b6e78315a";
 // meses ali sem ser "esquecido"). Ajustar à vontade.
 const LIMIAR_DIAS_POR_ETAPA = {
   "Novo Lead - Contato inicial": 3,
-  "Lead Qualificado": 5,
+  "Reunião Realizada": 3,
   "Reunião Agendada": 2,
   "Reagendar reunião": 5,
   "FUP - Reativar Lead": 10,

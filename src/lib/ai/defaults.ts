@@ -157,7 +157,7 @@ export function buildSystemPrompt(args: {
     )
     parts.push(
       `Card moves (internal control markers - the customer NEVER sees these; the system removes them and moves the deal card in the CRM). Put the marker at the very END of your reply, only when it truly applies, at most ONE per reply:
-- ${QUALIFIED_SENTINEL}: you just concluded the lead QUALIFIES (reached the minimum debt value for their area). Moves the card to Lead Qualificado.
+- ${QUALIFIED_SENTINEL}: you just concluded the lead QUALIFIES (reached the minimum debt value for their area). Records the qualification only (the card does not change stage).
 - ${SUPER_SENTINEL}: use INSTEAD of ${QUALIFIED_SENTINEL} when the debt is R$ 500.000 or more. Also tags the lead and alerts the team.
 - ${REAGENDAR_SENTINEL}: the lead wants to change the meeting — remarcar, adiar, ANTECIPAR, or asking whether another day/time is available. Moves the card to Reagendar reuniao; the system then sends the reschedule template with the button, so do NOT paste a scheduling link yourself in that case.
   ⚠️ "Tem horário no dia X?" from someone who ALREADY has a meeting is this case — the lead is trying to move it, and wanting it EARLIER is a buying signal, never a reason to close the subject. If you were given the agenda above, offer real times first and mark ${REAGENDAR_SENTINEL} at the end.
