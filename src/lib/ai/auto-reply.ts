@@ -19,6 +19,20 @@ import { horariosLivres, type SlotLivre } from '@/lib/appointments/calcom-slots'
 import { criarReserva } from '@/lib/appointments/calcom-book'
 import { cancelCalcomBooking } from '@/lib/appointments/calcom-cancel'
 import { iaAgendaAtiva } from './defaults'
+// Guardas puros: processo citado, validador de saída, piso, perdido.
+import {
+  ACOLHIMENTO_HANDOFF,
+  type OrigemDisparo,
+  TEXTO_SEGURO_FALLBACK,
+  debounceMs,
+  detectaProcesso,
+  esperaAntesDeGerarMs,
+  falhaParaPrompt,
+  motivoBloqueioPiso,
+  podeMarcarPerdido,
+  textoDoLeadNaRajada,
+  validarSaida,
+} from './sdr-guards'
 
 /** Horários livres do escritório (rótulo para a frase + ISO para reservar).
  *  Silencioso por desenho: sem chave, sem tipo de evento ou com a API fora,
@@ -690,9 +704,6 @@ export function emailNaConversa(messages: ChatMessage[]): string | null {
  * funciona?". `scheduleAiReply` resolve isso na raiz agora; esta espera
  * aqui é só o resto residual.
  */
-/** Lido no uso, nao no carregamento do modulo: assim o teste zera a espera
- *  e a operacao ajusta sem rebuild. */
-const esperaRajadaMs = () => Number(process.env.AI_ESPERA_RAJADA_MS ?? 1500)
 
 /** Resumos escritos pelas TRAVAS — desligamentos automáticos, não decisão humana. */
 const FOI_TRAVA_DO_SISTEMA =
@@ -747,7 +758,7 @@ async function wamidDaMensagem(
 
 /**
  * Liga "digitando..." no WhatsApp do contato antes da espera de
- * rajada — sem isso, os `AI_ESPERA_RAJADA_MS` (10s hoje) e o tempo de
+ * rajada — sem isso, a espera antes de gerar e o tempo de
  * geração da IA passam em silêncio total, sensação de bot mudo em vez
  * de alguém respondendo. Fire-and-forget de propósito: falha aqui
  * (conta sem WhatsApp configurado, wamid não encontrado, rejeição da
@@ -902,6 +913,129 @@ export async function alertarPorWhatsapp(
       `[ai auto-reply] alerta de handoff por WhatsApp falhou: ${err instanceof Error ? err.message : String(err)}`,
     )
   }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers de I/O dos guardas (lógica pura em ./sdr-guards)
+// ---------------------------------------------------------------------------
+
+/** Marca como gerada pela IA a linha gravada pelo envio via segundo número. Nunca lança. */
+async function marcarComoIa(
+  db: ReturnType<typeof supabaseAdmin>,
+  conversationId: string,
+  texto: string,
+): Promise<void> {
+  try {
+    const { data } = await db
+      .from('messages')
+      .select('id')
+      .eq('conversation_id', conversationId)
+      .eq('sender_type', 'agent')
+      .eq('ai_generated', false)
+      .eq('content_text', texto)
+      .order('created_at', { ascending: false })
+      .limit(1)
+    const id = (data as { id: string }[] | null)?.[0]?.id
+    if (id) await db.from('messages').update({ ai_generated: true }).eq('id', id)
+  } catch (err) {
+    console.warn(`[sdr] marcarComoIa falhou: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+/** Um humano (sender_type agent, não gerado pela IA) escreveu na conversa nos últimos 10 min? Erro de consulta conta como não. */
+async function humanoEscreveuRecente(
+  db: ReturnType<typeof supabaseAdmin>,
+  conversationId: string,
+): Promise<boolean> {
+  try {
+    const pausaMs = Number(process.env.AI_PAUSA_HUMANO_MS ?? 0)
+    if (!(pausaMs > 0)) return false
+    const desde = new Date(Date.now() - pausaMs).toISOString()
+    const { data } = await db
+      .from('messages')
+      .select('id')
+      .eq('conversation_id', conversationId)
+      .eq('sender_type', 'agent')
+      .eq('ai_generated', false)
+      .gte('created_at', desde)
+      .limit(1)
+    return !!(data && (data as unknown[]).length > 0)
+  } catch (err) {
+    console.warn(`[sdr] checagem de humano recente falhou (seguindo): ${err instanceof Error ? err.message : String(err)}`)
+    return false
+  }
+}
+
+/** O contato tem a tag Cliente? */
+async function contatoEhCliente(
+  db: ReturnType<typeof supabaseAdmin>,
+  contactId: string,
+): Promise<boolean> {
+  const { data: tagRows } = await db
+    .from('contact_tags')
+    .select('tags!inner(name)')
+    .eq('contact_id', contactId)
+  for (const r of tagRows ?? []) {
+    const t = (r as { tags?: { name?: string } | { name?: string }[] }).tags
+    if (Array.isArray(t) ? t.some((x) => x?.name === 'Cliente') : t?.name === 'Cliente') return true
+  }
+  return false
+}
+
+interface CanalDeEnvio {
+  accountId: string
+  userId: string
+  conversationId: string
+  contactId: string
+  channel: 'api' | 'web'
+}
+
+/** Envia um texto fixo ao lead pelo canal da conversa, marcado como da IA. Nunca lança. */
+async function enviarTextoDaIa(
+  db: ReturnType<typeof supabaseAdmin>,
+  c: CanalDeEnvio,
+  texto: string,
+): Promise<void> {
+  try {
+    if (c.channel === 'web') {
+      const { data } = await db.from('contacts').select('phone').eq('id', c.contactId).maybeSingle()
+      const telefone = (data as { phone: string | null } | null)?.phone ?? null
+      const ok = telefone ? await enviarPeloSegundoNumero(telefone, texto) : false
+      if (ok) {
+        await registrarEnvioSegundoNumero(db, c.conversationId, texto)
+        await marcarComoIa(db, c.conversationId, texto)
+      } else {
+        console.error(`[sdr] acolhimento não saiu pelo segundo número (conversa ${c.conversationId})`)
+      }
+    } else {
+      await engineSendText({
+        accountId: c.accountId,
+        userId: c.userId,
+        conversationId: c.conversationId,
+        contactId: c.contactId,
+        text: texto,
+        aiGenerated: true,
+      })
+    }
+  } catch (err) {
+    console.error(`[sdr] envio de texto fixo falhou (conversa ${c.conversationId}): ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+/**
+ * Grava o handoff (desliga a IA, notifica; o resumo leva `[ATENÇÃO]`) e depois
+ * envia o acolhimento fixo ao lead.
+ */
+async function handoffComAcolhimento(
+  db: ReturnType<typeof supabaseAdmin>,
+  c: CanalDeEnvio,
+  resumo: string,
+  handoffAgentId: string | null,
+  jaTemDono: boolean,
+): Promise<void> {
+  const marcado = resumo.includes(MARCA_ATENCAO) ? resumo : `${MARCA_ATENCAO} ${resumo}`
+  await passarParaHumano(db, c.accountId, c.contactId, c.conversationId, marcado, handoffAgentId, jaTemDono)
+  await enviarTextoDaIa(db, c, ACOLHIMENTO_HANDOFF)
 }
 
 /**
@@ -1306,6 +1440,7 @@ function splitBubbles(text: string): string[] {
  */
 export async function dispatchInboundToAiReply(
   args: DispatchArgs,
+  origem: OrigemDisparo = 'debounce',
 ): Promise<void> {
   const { accountId, conversationId, contactId, configOwnerUserId, channel } = args
 
@@ -1314,6 +1449,13 @@ export async function dispatchInboundToAiReply(
 
     const config = await loadAiConfig(db, accountId)
     if (!config || !config.autoReplyEnabled) return
+    const canal: CanalDeEnvio = {
+      accountId,
+      userId: configOwnerUserId,
+      conversationId,
+      contactId,
+      channel,
+    }
 
     // ⛔ NAO volte a perguntar aqui se EXISTE automacao de mensagem ativa.
     // Essa pergunta esteve neste ponto e calava a IA para TODA mensagem da
@@ -1349,7 +1491,7 @@ export async function dispatchInboundToAiReply(
       )
       await db
         .from('conversations')
-        .update({ ai_autoreply_disabled: false, ai_reply_count: 0 })
+        .update({ ai_autoreply_disabled: false, ai_reply_count: 0, ai_handoff_summary: null })
         .eq('id', conversationId)
     }
     // Teto de respostas desta conversa. ⛔ Antes isto era um `return` mudo — o
@@ -1359,15 +1501,19 @@ export async function dispatchInboundToAiReply(
       console.warn(
         `[ai auto-reply] conversa ${conversationId} bateu o teto de ${config.autoReplyMaxPerConversation} respostas — passando para humano.`,
       )
-      await passarParaHumano(
+      await handoffComAcolhimento(
         db,
-        accountId,
-        contactId,
-        conversationId,
+        canal,
         `A IA atingiu o limite de ${config.autoReplyMaxPerConversation} respostas automáticas nesta conversa e parou. O lead segue esperando resposta — assuma daqui.`,
         config.handoffAgentId,
         !!conv.assigned_agent_id,
       )
+      return
+    }
+
+    // Humano escreveu há pouco: a IA não responde.
+    if (await humanoEscreveuRecente(db, conversationId)) {
+      console.log(`[sdr] conversa ${conversationId}: humano escreveu nos últimos 10 min — IA em pausa`)
       return
     }
 
@@ -1376,11 +1522,29 @@ export async function dispatchInboundToAiReply(
     // última — com a conversa inteira em contexto.
     const gatilho = await ultimaEntrada(db, conversationId)
     void ligarDigitando(db, accountId, gatilho)
-    await sleep(esperaRajadaMs())
+    await sleep(esperaAntesDeGerarMs(origem, process.env))
     if ((await ultimaEntrada(db, conversationId)) !== gatilho) return
 
     const messages = await buildConversationContext(db, conversationId)
     if (messages.length === 0) return
+
+    // Lead que cita processo/penhora/etc. (e não é Cliente): a IA não gera
+    // resposta; acolhe com texto fixo e passa para o humano.
+    const textoLeadRajada = textoDoLeadNaRajada(messages)
+    const deteccao = detectaProcesso(textoLeadRajada)
+    if (deteccao.gatilho && !(await contatoEhCliente(db, contactId))) {
+      console.warn(
+        `[sdr] conversa ${conversationId}: lead citou processo (${deteccao.termos.join(', ')}) — handoff com acolhimento`,
+      )
+      await handoffComAcolhimento(
+        db,
+        canal,
+        `Lead citou processo judicial (${deteccao.termos.join(', ')}${deteccao.cnj ? `, CNJ ${deteccao.cnj}` : ''}). A IA parou sem qualificar e enviou acolhimento — assuma daqui. ${buildHandoffSummary({ messages, replyCount: conv.ai_reply_count ?? 0 })}`,
+        config.handoffAgentId,
+        !!conv.assigned_agent_id,
+      )
+      return
+    }
 
     // Account-wide throttle on the shared BYO key. The per-conversation
     // cap bounds one thread; this bounds a burst across many threads (a
@@ -1504,6 +1668,7 @@ export async function dispatchInboundToAiReply(
       hasMeeting ? dataDaReuniao(db, contactId) : Promise.resolve(null),
       isClient ? Promise.resolve(null) : etapaDoCard(db, contactId),
     ])
+    const etapaSensivelAgora = !!(etapa && ETAPAS_SENSIVEIS.has(etapa.id))
 
     const contextBlock = buildContactContextBlock({
       firstName,
@@ -1546,12 +1711,74 @@ export async function dispatchInboundToAiReply(
       return
     }
 
-    const { text, handoff, move, agendar, horarioEscolhido, segmento, valor, desmarcar, portaAberta, usage } =
-      await generateReply({
-        config,
-        systemPrompt,
-        messages,
+    const registrarUso = (u: Awaited<ReturnType<typeof generateReply>>['usage']) =>
+      void logAiUsage(db, {
+        accountId,
+        conversationId,
+        mode: 'auto_reply',
+        provider: config.provider,
+        model: config.model,
+        usage: u,
       })
+
+    let gerado = await generateReply({
+      config,
+      systemPrompt,
+      messages,
+    })
+
+    // Validador de saída: reprova valor de corte, marcador sobrando e excesso
+    // de perguntas. Regenera uma vez com a falha anexada; se reprovar de novo,
+    // falha grave vira handoff e falha leve vira texto seguro.
+    if (gerado.text && !gerado.handoff) {
+      const v1 = validarSaida(gerado.text, { textoLead: textoLeadRajada })
+      if (!v1.ok) {
+        console.warn(`[sdr] conversa ${conversationId}: resposta reprovada (${v1.falhas.map((f) => f.detalhe).join('; ')}) — regenerando`)
+        registrarUso(gerado.usage)
+        gerado = await generateReply({
+          config,
+          systemPrompt: systemPrompt + '\n\n' + falhaParaPrompt(v1),
+          messages,
+        })
+        const v2 = gerado.text && !gerado.handoff ? validarSaida(gerado.text, { textoLead: textoLeadRajada }) : null
+        if (v2 && !v2.ok) {
+          console.error(`[sdr] conversa ${conversationId}: reprovada de novo (${v2.falhas.map((f) => f.detalhe).join('; ')})`)
+          if (v2.gravidade === 'grave') {
+            registrarUso(gerado.usage)
+            await handoffComAcolhimento(
+              db,
+              canal,
+              `A resposta da IA foi reprovada duas vezes pelo validador de saída (${v2.falhas.map((f) => f.detalhe).join('; ')}). Assuma daqui.`,
+              config.handoffAgentId,
+              !!conv.assigned_agent_id,
+            )
+            return
+          }
+          gerado = {
+            ...gerado,
+            text: TEXTO_SEGURO_FALLBACK,
+            move: null,
+            agendar: null,
+            horarioEscolhido: null,
+            desmarcar: false,
+            portaAberta: false,
+          }
+        }
+      }
+    }
+
+    // Chegou mensagem nova do lead (ou um humano escreveu) durante a geração:
+    // esta resposta é descartada; responde o disparo da última mensagem.
+    if (
+      (await ultimaEntrada(db, conversationId)) !== gatilho ||
+      (await humanoEscreveuRecente(db, conversationId))
+    ) {
+      console.log(`[sdr] conversa ${conversationId}: resposta descartada (mensagem nova ou humano ativo)`)
+      registrarUso(gerado.usage)
+      return
+    }
+
+    const { text, handoff, move, agendar, horarioEscolhido, segmento, valor, desmarcar, portaAberta, usage } = gerado
 
     // Grava a tag PF/PJ na hora que o marcador aparece — não espera o resto
     // do turno. É o que a trava de agendamento (abaixo) vai ler depois,
@@ -1632,7 +1859,17 @@ export async function dispatchInboundToAiReply(
     // acima. Sentinela bem abaixo de qualquer piso real, só pra comparar.
     const veioPersistido = valorFresco === null && (await abaixoPisoPersistido(db, contactId))
     const valorEfetivo = valorFresco ?? (veioPersistido ? -1 : null)
-    if (PISO_GENERICO_ATIVO && valorEfetivo !== null) {
+    // A trava não vale para Cliente, etapa sensível, reunião marcada ou horário já escolhido.
+    const bloqueioPiso = motivoBloqueioPiso({
+      isClient,
+      etapaSensivel: etapaSensivelAgora,
+      hasMeeting,
+      horarioEscolhido: !!(conv.horario_escolhido_iso || conv.horario_escolhido_rotulo || horarioEscolhido),
+    })
+    if (bloqueioPiso && valorEfetivo !== null) {
+      console.log(`[ia-valor] trava de piso não aplicada: ${bloqueioPiso} (contact ${contactId})`)
+    }
+    if (PISO_GENERICO_ATIVO && valorEfetivo !== null && !bloqueioPiso) {
       // Fonte 1 (preferida, 23/09/2026): tag de PRODUTO gravada por
       // automacao do CRM — corte especifico e correto por produto.
       const produto = await produtoPersistido(db, contactId)
@@ -1690,11 +1927,9 @@ export async function dispatchInboundToAiReply(
         messages,
         replyCount: conv.ai_reply_count ?? 0,
       })
-      await passarParaHumano(
+      await handoffComAcolhimento(
         db,
-        accountId,
-        contactId,
-        conversationId,
+        canal,
         summary,
         config.handoffAgentId,
         !!conv.assigned_agent_id,
@@ -1734,6 +1969,11 @@ export async function dispatchInboundToAiReply(
     // acima.
     let textoFinal = valorOverride ?? text
     let moveFinal = valorOverride ? null : move
+    // PERDIDO não é aplicado em etapa sensível.
+    if (moveFinal === 'perdido' && !podeMarcarPerdido({ etapaSensivel: etapaSensivelAgora })) {
+      console.warn(`[sdr] conversa ${conversationId}: PERDIDO ignorado em etapa sensível`)
+      moveFinal = null
+    }
     let reservaFeita = false
     if (!isClient && iaAgendaAtiva()) {
       // 1) DESFAZER primeiro. O que a pessoa avisou por mensagem — "não vou
@@ -1911,6 +2151,7 @@ export async function dispatchInboundToAiReply(
         const ok = telefone ? await enviarPeloSegundoNumero(telefone, bubbles[i]) : false
         if (ok) {
           await registrarEnvioSegundoNumero(db, conversationId, bubbles[i])
+          await marcarComoIa(db, conversationId, bubbles[i])
         } else {
           console.error(
             `[ai auto-reply] falha ao enviar pelo segundo número (conversa ${conversationId}, telefone ${telefone ?? 'ausente'}) — resposta ficou só no CRM`,
@@ -1947,7 +2188,10 @@ export async function dispatchInboundToAiReply(
           const telefone = contactRow?.phone ?? null
           const textoLink = `Se mudar de ideia, é só acessar o link abaixo e escolher o melhor horário. Fico à disposição! 😊\n${AGENDA_LINK}`
           const ok = telefone ? await enviarPeloSegundoNumero(telefone, textoLink) : false
-          if (ok) await registrarEnvioSegundoNumero(db, conversationId, textoLink)
+          if (ok) {
+            await registrarEnvioSegundoNumero(db, conversationId, textoLink)
+            await marcarComoIa(db, conversationId, textoLink)
+          }
           else console.error(`[ia-agenda] link de porta aberta falhou pelo segundo número (conversa ${conversationId})`)
         } else {
           await engineSendCtaUrl({
@@ -2036,18 +2280,15 @@ export async function dispatchInboundToAiReply(
  *  a CHAMADA ate o silencio do cliente. Processo unico do PM2 (fork, 1
  *  instancia) -- Map em memoria e seguro; um deploy raro perde os timers
  *  pendentes, pior caso e 1 resposta saindo na hora em vez de esperar. */
-const DEBOUNCE_MS = 20_000
+// Silêncio exigido após a última mensagem do lead nos toques seguintes (AI_DEBOUNCE_MS).
+const debounceDaFilaMs = () => debounceMs(process.env)
 const filaDebounceIa = new Map<string, ReturnType<typeof setTimeout>>()
 
 /**
- * Agenda a resposta da IA com debounce por conversa. 1o toque de uma
- * conversa nova responde na hora (sensacao de atendimento imediato -- o
- * sinal vem sincrono do webhook, `isFirstInboundMessage`, sem round-trip no
- * banco: evita a mesma race que o debounce existe pra evitar). A partir do
- * 2o toque, espera DEBOUNCE_MS de silencio antes de gerar; se chegar
- * mensagem nova da mesma conversa antes disso, cancela o timer anterior e
- * reagenda -- a IA so fala depois que a pessoa parece ter terminado de
- * escrever/mandar audio.
+ * Agenda a resposta da IA por conversa. 1o toque: dispara na hora e o disparo
+ * espera AI_ESPERA_PRIMEIRO_TOQUE_MS antes de gerar. Demais toques: espera
+ * AI_DEBOUNCE_MS de silencio (reiniciado a cada mensagem nova) e o disparo
+ * espera so o residual AI_ESPERA_RAJADA_MS antes de gerar.
  */
 export function scheduleAiReply(args: DispatchArgs, isFirstTouch: boolean): void {
   const { conversationId } = args
@@ -2056,7 +2297,7 @@ export function scheduleAiReply(args: DispatchArgs, isFirstTouch: boolean): void
 
   const disparar = () => {
     filaDebounceIa.delete(conversationId)
-    void dispatchInboundToAiReply(args)
+    void dispatchInboundToAiReply(args, isFirstTouch ? 'primeiro_toque' : 'debounce')
   }
 
   if (isFirstTouch) {
@@ -2064,6 +2305,6 @@ export function scheduleAiReply(args: DispatchArgs, isFirstTouch: boolean): void
     return
   }
 
-  filaDebounceIa.set(conversationId, setTimeout(disparar, DEBOUNCE_MS))
+  filaDebounceIa.set(conversationId, setTimeout(disparar, debounceDaFilaMs()))
 }
 

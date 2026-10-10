@@ -368,6 +368,7 @@ function aiConfig(overrides: Partial<AiConfig> = {}): AiConfig {
 beforeEach(() => {
   // Zera a espera da rajada: o teste nao precisa dos 6s reais de produção.
   vi.stubEnv('AI_ESPERA_RAJADA_MS', '0')
+  vi.stubEnv('AI_ESPERA_PRIMEIRO_TOQUE_MS', '0')
   h.state.conv = {
     assigned_agent_id: null,
     ai_autoreply_disabled: false,
@@ -504,7 +505,10 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
       ai_reply_count: 3,
     }
     await dispatchInboundToAiReply(ARGS)
-    expect(h.engineSendText).not.toHaveBeenCalled()
+    // teto atingido: não gera resposta da IA, só o aviso fixo de passagem ao Dr. Zelmo
+    expect(h.generateReply).not.toHaveBeenCalled()
+    expect(h.engineSendText).toHaveBeenCalledTimes(1)
+    expect(h.engineSendText.mock.calls[0][0].text).toContain('Dr. Zelmo')
   })
 
   it('skips when there is nothing to reply to', async () => {
@@ -516,10 +520,11 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
 })
 
 describe('dispatchInboundToAiReply — handoff', () => {
-  it('disables auto-reply, writes a summary, and does not send on handoff', async () => {
+  it('disables auto-reply, writes a summary, and sends only the fixed acolhimento on handoff', async () => {
     h.generateReply.mockResolvedValue({ text: '', handoff: true })
     await dispatchInboundToAiReply(ARGS)
-    expect(h.engineSendText).not.toHaveBeenCalled()
+    expect(h.engineSendText).toHaveBeenCalledTimes(1)
+    expect(h.engineSendText.mock.calls[0][0].text).toContain('Dr. Zelmo')
     expect(h.state.rpcCalls).toHaveLength(0)
     expect(h.state.updatePayload).toMatchObject({ ai_autoreply_disabled: true })
     expect(h.state.updatePayload?.ai_handoff_summary).toContain(
@@ -885,32 +890,32 @@ describe('scheduleAiReply — debounce por conversa', () => {
     await vi.waitFor(() => expect(h.generateReply).toHaveBeenCalledTimes(1))
   })
 
-  it('toque seguinte (isFirstTouch=false) espera 20s antes de gerar', async () => {
+  it('toque seguinte (isFirstTouch=false) espera 12s antes de gerar', async () => {
     scheduleAiReply(ARGS, false)
     expect(h.generateReply).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(19_999)
+    await vi.advanceTimersByTimeAsync(11_999)
     expect(h.generateReply).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1)
     await vi.waitFor(() => expect(h.generateReply).toHaveBeenCalledTimes(1))
   })
 
-  it('mensagem nova antes dos 20s cancela e reagenda — só UMA geração no fim', async () => {
+  it('mensagem nova antes dos 12s cancela e reagenda — só UMA geração no fim', async () => {
     scheduleAiReply(ARGS, false)
-    await vi.advanceTimersByTimeAsync(15_000)
+    await vi.advanceTimersByTimeAsync(8_000)
     expect(h.generateReply).not.toHaveBeenCalled()
-    // segunda mensagem chega, reagenda os 20s a partir de agora
+    // segunda mensagem chega, reagenda os 12s a partir de agora
     scheduleAiReply(ARGS, false)
-    await vi.advanceTimersByTimeAsync(15_000)
-    // já passaram 30s desde a 1ª chamada, mas só 15s desde a 2ª — ainda não disparou
+    await vi.advanceTimersByTimeAsync(8_000)
+    // já passaram 16s desde a 1ª chamada, mas só 8s desde a 2ª — ainda não disparou
     expect(h.generateReply).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(5_000)
+    await vi.advanceTimersByTimeAsync(4_000)
     await vi.waitFor(() => expect(h.generateReply).toHaveBeenCalledTimes(1))
   })
 
   it('duas conversas diferentes não interferem uma na outra', async () => {
     scheduleAiReply(ARGS, false)
     scheduleAiReply({ ...ARGS, conversationId: 'conv-2', contactId: 'contact-2' }, false)
-    await vi.advanceTimersByTimeAsync(20_000)
+    await vi.advanceTimersByTimeAsync(12_000)
     await vi.waitFor(() => expect(h.generateReply).toHaveBeenCalledTimes(2))
   })
 })
