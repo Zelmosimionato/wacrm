@@ -10,17 +10,17 @@
 
 /** Mensagem fixa enviada ao lead quando a IA para e passa para o humano. */
 export const ACOLHIMENTO_HANDOFF =
-  'Entendi. Vou chamar o Dr. Zelmo para falar com você pessoalmente por aqui, só um instante.'
+  'Entendi. Vou chamar alguém da nossa equipe para continuar o atendimento por aqui, só um instante.'
 
 /** Texto seguro quando a regeneração do validador de saída ainda reprova só
  *  por excesso de perguntas (falha "leve"). Uma única pergunta, sem cifra. */
 export const TEXTO_SEGURO_FALLBACK =
   'Só para eu te ajudar do jeito certo: pode me contar, com suas palavras, o que está acontecendo?'
 
-/** Valores de corte (PISO_POR_PRODUTO + genérico PF/PJ) que NUNCA podem sair
- *  em mensagem ao lead. 500 mil (limite de "super") NÃO é corte de
+/** Valores de corte (PISO_POR_PRODUTO + genérico PF/PJ + faixa DBC de 3 mil) que
+ *  NUNCA podem sair em mensagem ao lead. 500 mil (limite de "super") NÃO é corte de
  *  qualificação e não entra aqui. */
-export const VALORES_DE_CORTE: number[] = [5_000, 10_000, 50_000, 100_000]
+export const VALORES_DE_CORTE: number[] = [3_000, 5_000, 10_000, 50_000, 100_000]
 
 /** Palavras que denunciam o critério interno de qualificação. Comparadas sem
  *  acento e sem caixa. */
@@ -217,7 +217,7 @@ export interface ContextoValidacao {
   textoLead?: string
 }
 
-export type CodigoFalha = 'corte' | 'palavra_proibida' | 'marcador' | 'perguntas'
+export type CodigoFalha = 'corte' | 'palavra_proibida' | 'marcador' | 'narracao' | 'perguntas'
 
 export interface ResultadoValidacao {
   ok: boolean
@@ -235,6 +235,7 @@ interface CitacaoValor {
 }
 
 const MIL_POR_EXTENSO: Record<string, number> = {
+  tres: 3_000,
   cinco: 5_000,
   dez: 10_000,
   cinquenta: 50_000,
@@ -252,19 +253,19 @@ export function citacoesDeCorte(texto: string): CitacaoValor[] {
   let m: RegExpExecArray | null
 
   // "50 mil", "50k", "R$ 50 mil"  (não pega 150 mil, 2,5 mil)
-  const reMil = /(?<![\d.,])(5|10|50|100)\s*(?:mil|k)\b/g
+  const reMil = /(?<![\d.,])(3|5|10|50|100)\s*(?:mil|k)\b/g
   while ((m = reMil.exec(norm))) add(Number(m[1]) * 1000, m.index, m[0])
 
   // "50.000", "50.000,00"  (não pega 500.000 nem 5.000.000)
-  const rePonto = /(?<![\d.,])(5|10|50|100)\.000(?:,\d{1,2})?(?!\d|\.\d)/g
+  const rePonto = /(?<![\d.,])(3|5|10|50|100)\.000(?:,\d{1,2})?(?!\d|\.\d)/g
   while ((m = rePonto.exec(norm))) add(Number(m[1]) * 1000, m.index, m[0])
 
   // "R$ 50000", "50000"
-  const reCru = /(?<![\d.,])(5000|10000|50000|100000)(?![\d])/g
+  const reCru = /(?<![\d.,])(3000|5000|10000|50000|100000)(?![\d])/g
   while ((m = reCru.exec(norm))) add(Number(m[1]), m.index, m[0])
 
   // "cinquenta mil", "cem mil"
-  const reExt = /\b(cinco|dez|cinquenta|cem)\s+mil\b/g
+  const reExt = /\b(tres|cinco|dez|cinquenta|cem)\s+mil\b/g
   while ((m = reExt.exec(norm))) add(MIL_POR_EXTENSO[m[1]], m.index, m[0])
 
   return achados
@@ -273,6 +274,47 @@ export function citacoesDeCorte(texto: string): CitacaoValor[] {
 /** Tom de critério ao redor de um valor: aí nem o eco do lead é permitido. */
 const RE_TOM_CRITERIO =
   /(minim|piso|corte|criterio|a partir de|acima de|abaixo de|maior que|menor que|superior a|inferior a|limite|atendemos)/
+
+/** Narração do processo interno do agente ("já tenho o suficiente, vou fechar a
+ *  qualificação", "vou ajustar o próximo passo da conversa, sem mexer nas regras").
+ *  É pensamento em voz alta, nunca fala ao lead. Em vez de listar frases já vazadas,
+ *  pega a CATEGORIA: (A) o agente anunciando o próprio trabalho — verbo de processo
+ *  + objeto interno —, (B) o agente falando das próprias regras/instruções e
+ *  (C) vocabulário de ferramenta/sistema. Comparado sobre texto normalizado
+ *  (sem acento, minúsculas). */
+const NARRA_AUXILIAR = '(?:vou|irei|vamos|preciso|so preciso|estou|to|deixa eu|deixe-me|deixe me)'
+const NARRA_FOLGA = '(?:(?:so|apenas|somente|agora|rapidamente|um pouco) )*'
+const NARRA_VERBO =
+  '(?:(?:ajust|alinh|reorganiz|organiz|revis|reformul|recalcul|reavali|defin|decid|escolh|mont|chec|consult|verific|confer|segu|fech|encerr|finaliz|conclu)\\w*|ver|ler)'
+// objeto interno; "regras/instruções/fluxo/roteiro..." seguidos de "do/da/de/no/na"
+// são assunto do cliente (ex.: "as regras do contrato") e não narração.
+const NARRA_OBJETO =
+  '(?:(?:o )?proximo passo|(?:a )?proxima etapa|(?:a )?proxima pergunta|(?:o )?rumo da conversa|(?:o )?andamento da conversa|' +
+  '(?:a |o |as |os )?(?:regras|instrucoes|fluxo|roteiro|script|prompt|qualificacao|abordagem|estrategia)(?! (?:d[oae]s?|n[oa]s?)\\b)|' +
+  'minha (?:resposta|mensagem|abordagem|estrategia))'
+
+const RE_NARRACAO: RegExp[] = [
+  // (A) "vou/estou + verbo de processo + objeto interno"
+  new RegExp(`\\b${NARRA_AUXILIAR} ${NARRA_FOLGA}${NARRA_VERBO} ${NARRA_OBJETO}`),
+  /\bja tenho o suficiente\b/,
+  /\b(?:sem|para nao|pra nao) repetir o que (?:ja|a gente) (?:sabemos|sabe|temos|tem)\b/,
+  // "roteiro" só reprova quando é o roteiro INTERNO do produto ou quando o agente diz
+  // que o está seguindo/consultando; "o roteiro da reunião" dito ao lead é fala normal.
+  /\broteiro d[oae]s? (?:rcpcc|dbc|def|gpix|rcv|gpass|produto|nicho|atendimento|qualificacao)\b/,
+  /\b(?:seguindo|segundo|conforme|consultando|consultei|conferi|pelo) (?:o )?roteiro\b/,
+  // (B) o agente falando das próprias regras e instruções
+  /\b(?:sem|para nao|pra nao) (?:mexer|alterar|mudar|modificar|quebrar|violar|burlar|ferir) (?:n?as?|em) (?:minhas |suas )?(?:regras|instrucoes|diretrizes)\b/,
+  /\bminhas (?:regras|instrucoes|diretrizes|configuracoes)\b/,
+  /\bmeu (?:prompt|roteiro|script|fluxo)\b/,
+  // (C) vocabulário de ferramenta/sistema
+  /\b(?:system ?prompt|prompt do sistema|vector ?store|file[ _]?search|function ?call)\b/,
+  // (D) falar SOBRE o lead em 3ª pessoa ou dar instrução a um operador
+  /\bquando (?:ela|ele|a lead|o lead) (?:mandar|enviar|responder|informar|disser|falar|passar|escrever|retornar|voltar)\b/,
+  /\b(?:aguardar|esperar|aguarde|espere) (?:a|o) (?:resposta|retorno|mensagem|valor|contato) (?:dela|dele|da lead|do lead)\b/,
+  /\b(?:a|o|essa|esse|esta|este) lead\b/,
+  /\b(?:siga|continue|prossiga|mantenha|retome) (?:com )?(?:uma|1) pergunta por vez\b/,
+  /\bsem repetir a (?:saudacao|apresentacao)\b/,
+]
 
 function dividirBaloes(texto: string): string[] {
   const parts = texto
@@ -314,6 +356,14 @@ export function validarSaida(texto: string, contexto: ContextoValidacao = {}): R
   if (/\[\[|\]\]/.test(bruto)) {
     falhas.push({ codigo: 'marcador', detalhe: 'marcador interno [[...]] sobrando na resposta' })
   }
+  // 3b) narração do processo interno vazada na fala ao lead
+  for (const re of RE_NARRACAO) {
+    const mm = re.exec(norm)
+    if (mm) {
+      falhas.push({ codigo: 'narracao', detalhe: `narração de processo interno: "${mm[0]}"` })
+      break
+    }
+  }
 
   // 4) no máximo 1 pergunta (saudação "Tudo bem?" não conta)
   const semSaudacao = norm.replace(
@@ -347,8 +397,31 @@ export function falhaParaPrompt(res: ResultadoValidacao): string {
     itens +
     '\nReescreva a resposta corrigindo isso: ⛔ nunca cite valor de corte, piso, mínimo ou critério de atendimento ' +
     '(peça apenas o valor total aproximado da dívida, sem dizer qual número qualifica); ⛔ no máximo UMA pergunta; ' +
-    '⛔ sem marcadores entre colchetes duplos além dos permitidos no final; balões curtos.'
+    '⛔ sem marcadores entre colchetes duplos além dos permitidos no final; balões curtos. ' +
+    'Se a pessoa acabou de escolher um horário da lista ou de confirmar a reserva, mantenha no final o marcador ' +
+    'de agenda correspondente ([[HORARIO_ESCOLHIDO:N]] ou [[AGENDAR:N]]).'
   )
+}
+
+/**
+ * Marcadores de agenda que a 1ª resposta trouxe e a regeneração perdeu.
+ * Caso Lead J (19/10/2026): a resposta com [[HORARIO_ESCOLHIDO:N]]/[[AGENDAR:N]] foi
+ * reprovada pelo validador de saída; o modelo não vê a resposta reprovada, então a
+ * regeneração saiu sem o marcador e a reunião nunca foi reservada. A decisão do
+ * lead (qual horário) não muda porque o TEXTO foi reprovado — por isso o marcador
+ * da 1ª resposta vale quando a 2ª não trouxe o seu. O marcador da 2ª, se existir,
+ * sempre prevalece. A reserva continua passando pelas travas de sempre (PF/PJ,
+ * e-mail, piso de valor), que ficam a jusante.
+ */
+export function herdarMarcadoresDeAgenda<T extends { agendar: number | null; horarioEscolhido: number | null }>(
+  anterior: T,
+  novo: T,
+): T {
+  return {
+    ...novo,
+    agendar: novo.agendar ?? anterior.agendar,
+    horarioEscolhido: novo.horarioEscolhido ?? anterior.horarioEscolhido,
+  }
 }
 
 // ---------------------------------------------------------------------------

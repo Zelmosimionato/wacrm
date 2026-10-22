@@ -19,6 +19,7 @@ import { horariosLivres, type SlotLivre } from '@/lib/appointments/calcom-slots'
 import { criarReserva } from '@/lib/appointments/calcom-book'
 import { cancelCalcomBooking } from '@/lib/appointments/calcom-cancel'
 import { iaAgendaAtiva } from './defaults'
+import { respostaConfirmaHorario } from './horario-confirmado'
 // Guardas puros: processo citado, validador de saída, piso, perdido.
 import {
   ACOLHIMENTO_HANDOFF,
@@ -28,11 +29,23 @@ import {
   detectaProcesso,
   esperaAntesDeGerarMs,
   falhaParaPrompt,
+  herdarMarcadoresDeAgenda,
   motivoBloqueioPiso,
   podeMarcarPerdido,
   textoDoLeadNaRajada,
   validarSaida,
 } from './sdr-guards'
+// Desbloqueio de Conta: faixas de valor bloqueado (regra de 15/10/2026).
+import {
+  DBC_CORTE_RECUSA,
+  PERGUNTA_VALOR_EXATO_DBC,
+  VALOR_ABAIXO_DBC,
+  blocoPromptDbc,
+  deveEncaminharFaixaDbc,
+  estadoDbcDaConversa,
+  proximaPerguntaFaixaDbc,
+  textoIncompativelComFaixaDbc,
+} from './dbc-faixas'
 
 /** Horários livres do escritório (rótulo para a frase + ISO para reservar).
  *  Silencioso por desenho: sem chave, sem tipo de evento ou com a API fora,
@@ -75,7 +88,7 @@ const FALTA_SEGMENTO =
 const PISO_PF = 50_000
 const PISO_PJ = 100_000
 /**
- * Trava de verdade pro PISO DE VALOR (01/09/2026, caso Andreia): a IA tinha a
+ * Trava de verdade pro PISO DE VALOR (01/09/2026, caso Lead A): a IA tinha a
  * regra escrita ("diga que pode não compensar EM VEZ DE oferecer horário") e,
  * na mesma resposta em que revelou o valor, também ofereceu horário — texto
  * sozinho não bastou, mesma classe de falha do PF/PJ. Troca a resposta
@@ -252,7 +265,7 @@ const CF_CAL_UID = '9a4af810-d6d3-4201-b39d-9ed46648b5d9'
 const TAG_AGENDOU = 'c0278b4c-8f17-416e-a7e4-b66b6e78315a'
 const TAG_PF = '9f870fd7-1155-4ede-9da8-8678360c0ae9'
 const TAG_PJ = 'ea69a90c-407b-411c-953c-2d9920ef6a5e'
-/** Tags de PRODUTO (23/09/2026, caso Claudete): a trava generica de piso so
+/** Tags de PRODUTO (23/09/2026, caso Lead L): a trava generica de piso so
  *  sabia PF/PJ e foi desligada em 21/09 por nao saber diferenciar produtos
  *  com corte proprio (DBC R$5k, GPIX R$10k) do bancario geral (R$50k). Em
  *  vez de inventar um marcador novo que a IA precisaria lembrar de emitir,
@@ -271,12 +284,12 @@ const TAG_PRODUTO_DEF = '8cbb4baa-f220-425d-9812-46300b7e94c8'
  *  coincidencia — nao e o generico PISO_PF, e o corte real de cada um). */
 const PISO_POR_PRODUTO: Record<string, number> = {
   RCPCC: 50_000,
-  DBC: 5_000,
+  DBC: DBC_CORTE_RECUSA, // abaixo disto recusa; de 3 a 5 mil vai ao titular (dbc-faixas.ts)
   GPIX: 10_000,
   GPASS: 100_000,
   DEF: 50_000,
 }
-/** Trava PERSISTENTE do piso de valor (11/09/2026, caso rafinhamoreiradebarros):
+/** Trava PERSISTENTE do piso de valor (11/09/2026, caso Lead R2):
  *  o marcador [[VALOR:N]] só é emitido UMA vez por instrução do prompt, e a
  *  rede de regex (valorDeclaradoPeloCliente) exige contexto de moeda
  *  explícito no texto do cliente. Um valor declarado sem "R$"/"mil"/"reais"
@@ -284,7 +297,7 @@ const PISO_POR_PRODUTO: Record<string, number> = {
  *  que a IA reconhece e recusa — a partir do turno seguinte valorEfetivo
  *  volta a ser null pra sempre, e a trava de piso (abaixo) para de agir,
  *  mesmo a pessoa nunca tendo dado um valor novo. Foi assim que o
- *  rafinhamoreiradebarros (R$9.614,69 PF, piso R$50k) ouviu a recusa certa e,
+ *  Lead R2 (R$9.614,69 PF, piso R$50k) ouviu a recusa certa e,
  *  insistindo no turno seguinte sem repetir o valor, conseguiu agendar de
  *  verdade. Esta tag grava o veredito assim que ele é calculado, pra
  *  continuar valendo em turnos futuros sem depender de a IA repetir nada. */
@@ -292,7 +305,7 @@ const TAG_ABAIXO_PISO = '72923bee-2b12-4093-9aa9-cb773aae3928'
 
 /** Lê o segmento PF/PJ já GRAVADO (tag persistida) — não o desta resposta,
  *  porque a confirmação de PF/PJ pode ter vindo num turno anterior ao que
- *  revela o valor (foi exatamente o caso da Andreia, 01/09/2026). PJ ganha
+ *  revela o valor (foi exatamente o caso da Lead A, 01/09/2026). PJ ganha
  *  se, por algum motivo, as duas tags existirem — mesmo desempate do
  *  `parseGeneration`. */
 async function segmentoPersistido(
@@ -383,10 +396,10 @@ function normalizaValorBr(bruto: string): number | null {
 }
 
 /**
- * Rede da trava de piso (01/09/2026, caso Rogério): extrai o ÚLTIMO valor em
+ * Rede da trava de piso (01/09/2026, caso Lead R): extrai o ÚLTIMO valor em
  * reais que o PRÓPRIO CLIENTE escreveu — nunca o que a IA escreveu. Existe
  * porque o marcador `[[VALOR:N]]` depende da IA lembrar de emitir, e no caso
- * do Rogério ela reconheceu "R$450,00" na conversa e foi direto pra oferecer
+ * do Lead R ela reconheceu "R$450,00" na conversa e foi direto pra oferecer
  * horário sem nunca emitir nada. Isto NÃO substitui o marcador — só entra
  * quando `valor` (do turno) veio null, como último recurso.
  * ⚠️ Heurística de texto, não entendimento: uma conversa com vários números
@@ -397,22 +410,39 @@ function normalizaValorBr(bruto: string): number | null {
  * recusa (`VALOR_ABAIXO_DO_PISO`) sempre deixa a porta aberta pra insistir.
  */
 export function valorDeclaradoPeloCliente(messages: ChatMessage[]): number | null {
-  // 18/09/2026, caso Tata: "R$ 90 mil" caia inteiro no 1o ramo (R$ + numero)
-  // e capturava so "90", perdendo o "mil" -- sem o \s*(mil)? aqui, o numero
-  // depois de R$ nunca casava com o 2o ramo (que exige o "mil" colado nele
-  // mesmo, sem R$ na frente). Resultado: R$90 mil virava 90, nao 90000, e um
-  // lead de R$90k caia "abaixo do piso" por engano -- mesmo ja com reuniao
-  // sendo agendada. Agora o "mil" depois de um valor com R$ e capturado.
-  const PADRAO = /R\$\s*([\d.,]+)\s*(mil)?\b|([\d.,]+)\s*mil\b|([\d.,]+)\s*reais\b/gi
+  // 18/09/2026, caso Lead P: "R$ 90 mil" caia inteiro no 1o ramo (R$ + numero)
+  // e capturava so "90", perdendo o "mil". Agora o "mil" depois de um valor
+  // com R$ e capturado.
+  // 13/10/2026, caso Lead C ("Valor aproximado / 52.000,00 / Entrada
+  // de 10k + 60 x R$1.458,00"): o 52.000,00 solto nao era lido, o "10k" nao
+  // era lido, e a frase era cortada no ponto do milhar ("R$1" / "458,00"), o
+  // que deixava a PARCELA de R$ 1.458 passar como valor total e desqualificava
+  // um contrato de ~R$ 87 mil. Agora: (1) numero solto em formato BR ("52.000,00")
+  // e "52k" tambem contam, desde que haja contexto de total; (2) o ponto de
+  // milhar nao quebra a frase; (3) a linha-rotulo anterior ("Valor aproximado")
+  // vale de contexto para o numero da linha seguinte; (4) "N x R$ valor" e
+  // "entrada de ..." nunca sao total. Na duvida (so parcela, sem total claro)
+  // devolve null: a trava nao dispara e a IA pergunta o valor do contrato.
+  const PADRAO =
+    /R\$\s*([\d.,]+)\s*(mil)?\b|([\d.,]+)\s*mil\b|([\d.,]+)\s*reais\b|(?<![\d.,])(\d{1,3}(?:\.\d{3})+(?:,\d{2})?)(?![\d.,])|(?<![\d.,])(\d{1,3})\s*k\b/gi
   // Não basta encontrar o último número. Em conversas bancárias é comum o
   // cliente informar o contrato e, depois, a parcela ou o saldo restante.
   // O valor da parcela nunca pode substituir o valor total para fins de piso.
-  const CONTEXTO_TOTAL = /\b(total|d[ií]vida|contrat[oa]|contratado|liberad[oa]|devo|montante|empr[eé]stimo)\b/i
+  const CONTEXTO_TOTAL = /\b(total|d[ií]vida|contrat[oa]|contratado|liberad[oa]|devo|montante|empr[eé]stimo|financ\w*)\b/i
   const CONTEXTO_NAO_TOTAL = /\b(parcela|presta[cç][aã]o|mensalidade|mensal|saldo\s+(?:restante|devedor|atual)|resta(?:m|va[mn])?|falta(?:m|va[mn])?|j[aá]\s+paguei|paguei|pago)\b/i
   const CONTEXTO_FAIXA = /\b(entre|de\s+\d|chega|chegar|fica|ficam|aproximad[oa]|cerca\s+de)\b/i
-  let candidatosTotais: number[] = []
+  const candidatosTotais: number[] = []
+  const estimadosPorParcela: number[] = []
   for (const m of messages) {
     if (m.role !== 'user') continue
+    // "60 x R$ 1.458": prazo x parcela. Serve só de ALTA (nunca de piso).
+    const NX = /(\d{1,3})\s*[xX]\s*(?:de\s*)?R\$\s*([\d.,]+)/g
+    let nx: RegExpExecArray | null
+    while ((nx = NX.exec(m.content))) {
+      const n = Number(nx[1])
+      const p = normalizaValorBr(nx[2])
+      if (p !== null && n >= 6 && n <= 120) estimadosPorParcela.push(n * p)
+    }
     PADRAO.lastIndex = 0
     let match: RegExpExecArray | null
     while ((match = PADRAO.exec(m.content))) {
@@ -427,15 +457,32 @@ export function valorDeclaradoPeloCliente(messages: ChatMessage[]): number | nul
       } else if (match[4] !== undefined) {
         bruto = match[4]
         ehMil = false
+      } else if (match[5] !== undefined) {
+        bruto = match[5]
+        ehMil = false
+      } else if (match[6] !== undefined) {
+        bruto = match[6]
+        ehMil = true
       }
       if (bruto === undefined) continue
       const numero = normalizaValorBr(bruto)
       if (numero === null) continue
       const valor = ehMil ? numero * 1000 : numero
+      // "60 x R$ 1.458" (parcela) e "entrada de 10k" nunca são o valor total.
+      const antes = m.content.slice(Math.max(0, match.index - 25), match.index)
+      if (/\d+\s*[xX]\s*(?:de\s*)?$/.test(antes)) continue
+      if (/entrada(?:\s+(?:de|foi|:))?\s*$/i.test(antes)) continue
       // Delimita a unidade da frase para não contaminar o contrato com uma
       // palavra “parcela” que aparece em outra oração da mesma mensagem.
-      const partes = m.content.split(/[\n.;!?]+/)
-      const contexto = partes.find((parte) => parte.includes(match![0])) ?? m.content
+      // O ponto só encerra a frase se vier espaço/fim depois (não no milhar).
+      const partes = m.content.split(/[\n;!?]+|\.(?=\s|$)/)
+      const idx = partes.findIndex((parte) => parte.includes(match![0]))
+      let contexto = idx >= 0 ? partes[idx] : m.content
+      // Número sozinho na linha: a linha-rótulo anterior ("Valor aproximado")
+      // é o contexto dele.
+      if (idx > 0 && !(CONTEXTO_TOTAL.test(contexto) || CONTEXTO_FAIXA.test(contexto) || CONTEXTO_NAO_TOTAL.test(contexto))) {
+        contexto = `${partes[idx - 1]} ${contexto}`
+      }
       // Aceita somente um valor associado ao total/dívida/contrato. Valores
       // associados a parcela, mensalidade ou saldo remanescente são ignorados.
       if ((CONTEXTO_TOTAL.test(contexto) || CONTEXTO_FAIXA.test(contexto)) && !CONTEXTO_NAO_TOTAL.test(contexto)) {
@@ -443,9 +490,11 @@ export function valorDeclaradoPeloCliente(messages: ChatMessage[]): number | nul
       }
     }
   }
+  if (candidatosTotais.length === 0) return null
   // Em uma faixa (“entre 20 e 30 mil”), o maior valor é o limite superior.
-  // Só haverá desqualificação se até esse limite estiver abaixo do piso.
-  return candidatosTotais.length > 0 ? Math.max(...candidatosTotais) : null
+  // Só haverá desqualificação se até esse limite estiver abaixo do piso. O total
+  // estimado por prazo x parcela só pode SUBIR o valor, nunca criar um sozinho.
+  return Math.max(...candidatosTotais, ...estimadosPorParcela)
 }
 
 /** Assina o cancelamento feito daqui. O intake lê isto no webhook
@@ -634,20 +683,9 @@ interface DispatchArgs {
   channel: 'api' | 'web'
 }
 
-const CLIENT_MODE_BLOCK =
-  'ATENCAO - MODO CLIENTE (prioridade maxima, sobrepoe QUALQUER instrucao de qualificacao acima): este contato JA E CLIENTE do escritorio, nao e um lead novo. NUNCA faca qualificacao com ele: nao pergunte o nome, nao pergunte o valor da divida, nao peca dados, nao aplique criterio de valor e nao envie link de agendamento. Trate como atendimento de cliente: acolha com empatia, confirme que recebemos a mensagem e informe que a equipe/o advogado responsavel vai verificar o andamento do caso dele e retornar em breve. Responda em no maximo 2 frases curtas e cordiais. Nao prometa prazos nem resultados, nao invente nada sobre o processo. Mesmo que o cliente esteja aflito ou reclamando, RESPONDA com esse acolhimento - NAO use o protocolo de transferencia ([[HANDOFF]]); o encaminhamento para um humano e feito automaticamente pelo sistema depois da sua resposta.'
-
-// Achado 25/08/2026 (caso Mislene, 5511983013062): lead mencionou um
-// processo judicial de 10 anos, ja em fase de execucao, e a Marcia seguiu
-// o roteiro padrao de qualificacao (perguntou valor, PF/PJ) em vez de
-// reconhecer que isso e diferente de uma consulta comum. O titular teve
-// que perceber sozinho e assumir a conversa na mao. Combinado com ele:
-// nao da pra pegar isso com regex (a frase varia demais - numero de
-// processo, "ja entrei com acao", "fase de execucao", etc), tem que ser
-// julgamento do modelo. E ele foi claro: ela precisa dar alguma satisfacao
-// na conversa ANTES de passar — nao pode simplesmente sumir.
-const PROCESSO_EM_ANDAMENTO_BLOCK =
-  'ATENCAO - LEAD COM PROCESSO JUDICIAL JA EM ANDAMENTO: se em algum momento da conversa o lead deixar claro que ja existe um processo judicial em curso sobre o assunto (cita numero de processo, diz que "ja entrou com acao", que esta em "fase de execucao", que ja foi executado, diz que "ja foi pro juiz"/"ja esta na justica", ou menciona bloqueio judicial/penhora/conta ou salario ja bloqueado -- ou relato equivalente) - isto e diferente de alguem so buscando avaliar se tem direito a algo, e merece atencao imediata de um advogado, nao o fluxo padrao de qualificacao. O gatilho e o RELATO em si, nao esperar a pessoa mandar o numero do processo -- assim que o lead disser algo como "ja foi pro juiz" ou "conta bloqueada por penhora", pare NAQUELE MOMENTO, mesmo no meio da qualificacao (mesmo se voce ja tiver perguntado tipo de divida ou valor). Assim que perceber isso, PARE de fazer perguntas de qualificacao (nao continue pedindo valor, PF/PJ etc) e NUNCA peca nem convide a pessoa a mandar o numero do processo -- isso nao e da sua alcada, quem pede isso e o advogado depois. Responda em no maximo 2 frases curtas e cordiais confirmando que entendeu que ha um processo em andamento e que vai passar o caso para um dos advogados do escritorio entrar em contato diretamente - nunca desapareca sem dar essa satisfacao. Nao prometa prazos, valores ou resultados sobre o processo. Depois dessa resposta, use o protocolo de transferencia ([[HANDOFF]]) para encerrar e passar para um humano. Exemplo real do que NAO fazer (caso Randerson, 09/09/2026): o lead disse "Como ja foi pro juiz... e o meu salario tbm esta bloqueado" e a IA continuou perguntando valor/PF-PJ e, no fim, ainda convidou "Pode enviar o numero do processo, Randerson" em vez de parar ali e acionar [[HANDOFF]].'
+// Comportamento com cliente e com lead que cita processo em andamento: instruções do Agent da plataforma
+// (OpenAI). O código só informa o FATO (buildContactContextBlock) e mantém as travas (detector de processo,
+// PESSOA_AFIRMA_REUNIAO).
 
 /**
  * A contact counts as "returning" if their newest-but-one message in the
@@ -698,7 +736,7 @@ export function emailNaConversa(messages: ChatMessage[]): string | null {
  *
  * Historico (08/08/2026, antes do scheduleAiReply existir): esta era a UNICA
  * defesa, com 6-10s -- funcionava pra rajada rapida mas nao pra mensagens
- * com mais de 10s de intervalo entre si (caso Claudete, 23/09/2026: gaps de
+ * com mais de 10s de intervalo entre si (caso Lead L, 23/09/2026: gaps de
  * 12-15s, cada mensagem "parecia a ultima" na hora da propria checagem, duas
  * respostas quase identicas saiam pro cliente). Ninguém escreve no WhatsApp
  * numa mensagem só: manda "Oi tudo bem?" e, alguns segundos depois, "Como
@@ -1103,7 +1141,7 @@ const ETAPAS: Record<string, { nome: string; conduta: string }> = {
   '57bed09e-bc01-4691-8272-dcd8c3c078df': {
     nome: 'Reunião Realizada',
     conduta:
-      'A reunião com o Dr. Zelmo já aconteceu. Você acolhe e passa ao humano se o lead escrever. ⛔ Não requalifique nem marque nova reunião sem ele.',
+      'A reunião com o advogado já aconteceu. Você acolhe e passa ao humano se o lead escrever. ⛔ Não requalifique nem marque nova reunião sem ele.',
   },
   'fd70e3b2-52e2-4f2c-b6e8-15450fe6c9d4': {
     nome: 'Reunião Agendada',
@@ -1280,7 +1318,7 @@ async function respostasDoFormulario(
 
 /**
  * Build the per-conversation context block appended to the system prompt.
- * Mirrors the CLIENT_MODE_BLOCK pattern: it augments the account's saved
+ * It augments the account's saved
  * SDR prompt with what we already know about THIS contact, without
  * editing it.
  *
@@ -1315,58 +1353,36 @@ export function buildContactContextBlock(args: {
     etapa,
   } = args
 
-  // Client mode already has CLIENT_MODE_BLOCK — just give it the name.
+  // FATOS apenas (16/10/2026). O que fazer com cada fato é do Agent da plataforma (OpenAI); aqui só entra
+  // o que o sistema sabe deste contato nesta resposta.
+  const CAB = 'FATOS DESTE CONTATO (informação do sistema, não instruções):'
+  const fatos: string[] = []
+  if (firstName) fatos.push(`- Nome (WhatsApp): ${firstName}`)
+
   if (isClient) {
-    if (!firstName) return null
-    return (
-      'CONTEXTO DO CONTATO (prioridade alta):\n' +
-      `- O nome do contato (pelo WhatsApp) é "${firstName}". Trate-o pelo primeiro nome.`
-    )
+    fatos.push('- Este contato JÁ É CLIENTE do escritório.')
+    return [CAB, ...fatos].join('\n')
   }
 
   const knownLead =
     hasMeeting || isReturning || !!email || qualTags.length > 0 || !!formulario
 
-  // Brand-new inbound: only the WhatsApp name is known.
+  // Contato novo: só o nome do WhatsApp é conhecido.
   if (!knownLead) {
     if (!firstName) return null
-    return (
-      'CONTEXTO DO CONTATO (prioridade alta):\n' +
-      `- O nome do contato (identificado pelo WhatsApp) é "${firstName}". Trate-o pelo primeiro nome e NÃO pergunte o nome — você já o conhece (isto SOBREPÕE qualquer instrução acima de pedir o nome).\n` +
-      '- É a PRIMEIRA conversa dele com o escritório: na sua primeira mensagem, apresente-se e diga de onde você fala. ⛔ Um "oi, tudo bem?" solto não basta — a pessoa não sabe com quem está falando.'
-    )
+    fatos.push('- Conversa: PRIMEIRA conversa dele com o escritório.')
+    return [CAB, ...fatos].join('\n')
   }
 
-  // Known lead: list what we already have and forbid re-collecting it.
-  // ⛔ Este bloco INFORMA; quem decide a ação é o roteiro. Escrito como ordem
-  // ("leve direto ao agendamento"), ele atropela tudo: em 08/08/2026 mandou
-  // oferecer horário a quem só disse "bom dia" — e ainda por cima a um lead de
-  // R$ 1-5 milhões, que pela regra do escritório nem deveria receber horário.
-  const lines: string[] = [
-    'DADOS QUE JÁ TEMOS DESTE CONTATO (use isto; NÃO peça de novo o que já está aqui e NÃO recomece a qualificação do zero — continue de onde parou):',
-    '- ⛔ Antes de qualquer coisa, responda o que a pessoa acabou de dizer. Estes dados são de antes; ela pode estar voltando por outro motivo. Nada aqui autoriza abrir a conversa falando de horário.',
-  ]
-  // A etapa manda em tudo: é ela que diz se esta conversa é de qualificação,
-  // de secretaria ou de acolhimento antes de passar para um humano.
-  if (etapa) {
-    lines.push(`- ONDE ELE ESTÁ NO FUNIL: ${etapa.nome}. ${etapa.conduta}`)
-  }
-  if (firstName) lines.push(`- Nome: ${firstName} — trate pelo nome; não pergunte o nome.`)
-  if (email) lines.push(`- E-mail: ${email} — não peça de novo.`)
-  if (qualTags.length > 0)
-    lines.push(`- Já classificado: ${qualTags.join(', ')} — não repita essa qualificação.`)
-  if (formulario) {
-    lines.push(
-      `- ⛔ ELE JÁ PREENCHEU O FORMULÁRIO DO SITE e respondeu isto:\n${formulario}\n  Ou seja: JÁ ESTÁ QUALIFICADO. ⛔ Não pergunte de novo valor, tipo de dívida, situação nem se é pessoa física ou jurídica — está tudo aí. Refazer essas perguntas a quem acabou de preencher passa a impressão de escritório que não lê o que recebe.\n  O card dele já entrou na etapa certa do funil e as mensagens automáticas já saíram — disso o sistema cuida sozinho. A sua parte é só a conversa.`,
-    )
-  }
+  if (etapa) fatos.push(`- Etapa do funil: ${etapa.nome}. ${etapa.conduta}`)
+  if (email) fatos.push(`- E-mail registrado: ${email}`)
+  if (qualTags.length > 0) fatos.push(`- Já classificado: ${qualTags.join(', ')}`)
+  if (formulario) fatos.push(`- Formulário do site, preenchido por ele:\n${formulario}`)
 
-  // Tags de ORIGEM (o intake as aplica ao criar o contato a partir do site) não são
-  // prova de conversa anterior. Em 05/10/2026 a Magali (lead novo, tag "Bancário" posta
-  // 3s depois de criada) ouviu "Que bom te ver de novo": QUAL_TAGS tornava o contato
-  // "conhecido" e o ramo final presumia retornante. Retorno só com sinal real:
-  // disparo anterior / intervalo entre sessões (isReturning), tag de qualificação feita
-  // em conversa anterior (Superqualificado/Desqualificado) ou card fora de Novo Lead.
+  // Tags de ORIGEM (o intake as aplica ao criar o contato a partir do site) não são prova de conversa
+  // anterior (caso Lead G, 05/10/2026: lead novo ouviu "Que bom te ver de novo"). Retorno só com sinal real:
+  // disparo anterior / intervalo entre sessões (isReturning), tag de qualificação de conversa anterior
+  // (Superqualificado/Desqualificado) ou card fora de Novo Lead.
   const TAGS_DE_ORIGEM = new Set(['Bancário', 'Tributário', 'PF', 'PJ'])
   const primeiraConversa =
     !isReturning &&
@@ -1374,33 +1390,26 @@ export function buildContactContextBlock(args: {
     (!etapa || etapa.nome === 'Novo Lead')
 
   if (hasMeeting) {
-    lines.push(
+    fatos.push(
       dataReuniao
-        ? `- Situação: JÁ TEM REUNIÃO MARCADA para ${dataReuniao} (horário de Brasília). Não requalifique. Se ele escrever para confirmar, essa é a data — pode confirmar com segurança. Se quiser mudar de horário, é remarcação. Se for sobre o caso/andamento ou precisar do advogado, acolha e explique que a equipe responsável vai retornar — nunca invente nada sobre o processo.`
-        : `- Situação: JÁ agendou/teve uma reunião com o escritório. Não requalifique. Se for dúvida simples/logística (reagendar, horário, documentos), ajude com naturalidade; se for sobre o caso/andamento ou precisar do advogado, acolha e explique que a equipe responsável vai retornar — nunca invente nada sobre o processo.`,
-    )
-    // ⛔ Quando NÃO há reunião, dizer isso é tão importante quanto dizer a data
-    // quando há. Em 09/08/2026 o titular perguntou "como ficou minha reunião?
-    // tá agendada?" e ela respondeu "está remarcada para quinta 20/08, às 13h"
-    // — lendo do histórico um horário que ele havia ESCOLHIDO mas que nunca
-    // chegou a ser reservado. Sem o fato na mão, ela responde de memória.
-  } else if (formulario) {
-    lines.push(
-      '- ⛔ Não há REGISTRO de reunião para ele no sistema. Isso não é o mesmo que "ele não tem reunião": há reservas que chegam por canais que o sistema não vê. Se ele PERGUNTAR se tem algo marcado, diga que não há horário reservado e ofereça marcar agora. ⛔ Mas se ele AFIRMAR que tem reunião, ou disser data e hora, ou colar um convite: NÃO o contradiga, NÃO diga que o horário não existe e NÃO oferece outras datas — quem confere compromisso marcado é uma pessoa. ⛔ E não confirme reunião a partir do que foi falado antes: horário escolhido na conversa NÃO é horário reservado.',
-      '- Situação: preencheu o formulário e AINDA NÃO agendou — parou antes de marcar. A qualificação já está feita: retome de onde ele parou, sem recomeçar. O que fazer a partir daí é a sua leitura da conversa e do critério de valor, como sempre.',
+        ? `- Reunião: marcada para ${dataReuniao} (horário de Brasília).`
+        : '- Reunião: ele já agendou ou já teve reunião com o escritório.',
     )
   } else {
-    lines.push(
-      '- ⛔ Não há REGISTRO de reunião para ele no sistema. Isso não é o mesmo que "ele não tem reunião": há reservas que chegam por canais que o sistema não vê. Se ele PERGUNTAR se tem algo marcado, diga que não há horário reservado e ofereça marcar agora. ⛔ Mas se ele AFIRMAR que tem reunião, ou disser data e hora, ou colar um convite: NÃO o contradiga, NÃO diga que o horário não existe e NÃO oferece outras datas — quem confere compromisso marcado é uma pessoa. ⛔ E não confirme reunião a partir do que foi falado antes: horário escolhido na conversa NÃO é horário reservado.',
+    // Dizer que NÃO há registro importa tanto quanto dizer a data (caso 09/08/2026: ela leu do histórico um
+    // horário escolhido que nunca foi reservado).
+    fatos.push(
+      '- Reunião: nenhum registro no sistema. Reservas podem chegar por canais que o sistema não vê, e horário escolhido na conversa NÃO é horário reservado.',
     )
-    lines.push(
+    if (formulario) fatos.push('- Estado: preencheu o formulário e ainda não agendou.')
+    fatos.push(
       primeiraConversa
-        ? `- Situação: é a PRIMEIRA conversa dele com o escritório — as tags que constam (${qualTags.join(', ') || 'nenhuma'}) vêm da origem do lead no site, não de um contato anterior. ⛔ NÃO diga "de novo", "que bom te ver outra vez" nem nada que sugira que já conversaram, e não finja lembrar de nada: o que está registrado aqui veio do site, não de conversa. Na sua primeira mensagem apresente-se ("aqui é a Márcia, do Simionato Advogados") e diga de onde você fala${firstName ? `, tratando-o por ${firstName}` : ''}. ⛔ Responda PRIMEIRO o que ele acabou de dizer; use as tags para não repetir a qualificação que elas já cobrem e conduza o resto normalmente.`
-        : `- Situação: já falou com o escritório antes e ainda não fechou. ⛔ A sua PRIMEIRA mensagem desta conversa TEM de reconhecer o retorno${firstName ? ` (ex.: "Que bom te ver de novo, ${firstName}!")` : ''} — cumprimentar como se fosse a primeira vez faz parecer que ninguém aqui lembra dele. Se já faz horas ou dias desde a última troca, vale se reapresentar em meia frase ("aqui é a Márcia, do Simionato Advogados") — ninguém guarda de cabeça com quem falou ontem. Só não recomece a coleta de dados nem a qualificação. ⛔ Responda PRIMEIRO o que ele acabou de dizer e descubra o que ele quer AGORA — o que ficou registrado aqui é do passado, e ele pode estar voltando por outro motivo. Conduza ao agendamento quando fizer sentido na conversa, ⛔ nunca já na primeira frase.`,
+        ? '- Conversa: PRIMEIRA conversa dele com o escritório (as tags vêm da origem do lead no site, não de contato anterior).'
+        : '- Conversa: RETORNO — ele já falou com o escritório antes e ainda não fechou.',
     )
   }
 
-  return lines.join('\n')
+  return [CAB, ...fatos].join('\n')
 }
 
 /**
@@ -1533,7 +1542,19 @@ export async function dispatchInboundToAiReply(
     // resposta; acolhe com texto fixo e passa para o humano.
     const textoLeadRajada = textoDoLeadNaRajada(messages)
     const deteccao = detectaProcesso(textoLeadRajada)
-    if (deteccao.gatilho && !(await contatoEhCliente(db, contactId))) {
+    // ⛔ Desbloqueio de Conta (DBC) não passa por aqui (20/10/2026, caso Lead A,
+    // bloqueio de R$ 168): quem vem da campanha/LP de DBC cita bloqueio
+    // judicial, penhora e Sisbajud em TODA conversa — é o assunto. A trava de
+    // processo, anterior à campanha, mandava todos ao humano antes de olhar o
+    // valor. Em DBC a qualificação é só pelo valor (faixas de `dbc-faixas.ts`:
+    // abaixo de 3 mil recusa suave, 3–5 mil titular, 5 mil+ agenda).
+    const ehDbc = deteccao.gatilho && (await produtoPersistido(db, contactId)) === 'DBC'
+    if (ehDbc) {
+      console.log(
+        `[sdr] conversa ${conversationId}: DBC citou processo (${deteccao.termos.join(', ')}) — qualifica pelo valor, sem handoff por processo`,
+      )
+    }
+    if (deteccao.gatilho && !ehDbc && !(await contatoEhCliente(db, contactId))) {
       console.warn(
         `[sdr] conversa ${conversationId}: lead citou processo (${deteccao.termos.join(', ')}) — handoff com acolhimento`,
       )
@@ -1654,13 +1675,11 @@ export async function dispatchInboundToAiReply(
     const slots = await agendaDoEscritorio()
 
     let systemPrompt = buildSystemPrompt({
-      userPrompt: config.systemPrompt,
+      userPrompt: config.provider === 'openai' ? null : config.systemPrompt,
       mode: 'auto_reply',
       knowledge,
       horarios: slots.map((s) => s.rotulo),
     })
-    if (isClient) systemPrompt += '\n\n' + CLIENT_MODE_BLOCK
-    else systemPrompt += '\n\n' + PROCESSO_EM_ANDAMENTO_BLOCK
     // O que o funil já sabe desta pessoa: o formulário que ela preencheu e,
     // se agendou, o dia da reunião. Sem isso a IA repergunta o que o site já
     // perguntou e desconversa sobre a própria agenda do escritório.
@@ -1683,6 +1702,33 @@ export async function dispatchInboundToAiReply(
       etapa,
     })
     if (contextBlock) systemPrompt += '\n\n' + contextBlock
+
+    // ⭐ DESBLOQUEIO DE CONTA (15/10/2026, caso Lead M, "Mais de 3000"):
+    // faixas de valor bloqueado — abaixo de 3 mil recusa suave; de 3 a 5 mil a IA
+    // NÃO dispensa, coleta processo/natureza e passa ao titular; acima de 5 mil
+    // qualifica e agenda; valor vago => pergunta o valor exato antes de classificar.
+    // O estado é recalculado a cada turno a partir do que o PRÓPRIO lead escreveu.
+    const produtoLead = isClient ? null : await produtoPersistido(db, contactId)
+    const estadoDbc = produtoLead === 'DBC' ? estadoDbcDaConversa(messages) : null
+    if (estadoDbc) {
+      systemPrompt += '\n\n' + blocoPromptDbc(estadoDbc)
+      // Faixa intermediária: assim que o valor exato está na faixa, passa ao titular (sem perguntas, sem chamar o modelo).
+      if (!hasMeeting && !etapaSensivelAgora && deveEncaminharFaixaDbc(estadoDbc)) {
+        console.warn(
+          `[dbc] conversa ${conversationId}: faixa intermediária (R$${estadoDbc.valor}) com ${estadoDbc.respostasAposFaixa} respostas — handoff com acolhimento`,
+        )
+        // a recusa gravada de um valor anterior (ex.: R$ 2.000 corrigido para R$ 3.500) deixa de valer
+        await aplicarVeredictoPiso(db, contactId, false)
+        await handoffComAcolhimento(
+          db,
+          canal,
+          `Lead de Desbloqueio de Conta na faixa intermediária de valor (declarou R$ ${estadoDbc.valor}). Passado ao titular assim que o valor ficou conhecido, sem perguntas, sem recusar e sem agendar — assuma daqui. ${buildHandoffSummary({ messages, replyCount: conv.ai_reply_count ?? 0 })}`,
+          config.handoffAgentId,
+          !!conv.assigned_agent_id,
+        )
+        return
+      }
+    }
 
     // ⛔ A PESSOA AFIRMA TER REUNIAO E O SISTEMA NAO TEM REGISTRO.
     //
@@ -1736,11 +1782,15 @@ export async function dispatchInboundToAiReply(
       if (!v1.ok) {
         console.warn(`[sdr] conversa ${conversationId}: resposta reprovada (${v1.falhas.map((f) => f.detalhe).join('; ')}) — regenerando`)
         registrarUso(gerado.usage)
+        const primeiraResposta = gerado
         gerado = await generateReply({
           config,
           systemPrompt: systemPrompt + '\n\n' + falhaParaPrompt(v1),
           messages,
         })
+        // O modelo não vê a resposta reprovada: se a 1ª trazia o horário escolhido/a reserva,
+        // a regeneração os perde (caso Lead J, 19/10) e a reunião nunca é marcada.
+        gerado = herdarMarcadoresDeAgenda(primeiraResposta, gerado)
         const v2 = gerado.text && !gerado.handoff ? validarSaida(gerado.text, { textoLead: textoLeadRajada }) : null
         if (v2 && !v2.ok) {
           console.error(`[sdr] conversa ${conversationId}: reprovada de novo (${v2.falhas.map((f) => f.detalhe).join('; ')})`)
@@ -1795,7 +1845,7 @@ export async function dispatchInboundToAiReply(
       }
     }
 
-    // ⭐ Trava de HORÁRIO ESCOLHIDO (20/09/2026, caso Douglas Santos): grava
+    // ⭐ Trava de HORÁRIO ESCOLHIDO (20/09/2026, caso Lead D): grava
     // o horário resolvido no INSTANTE em que o lead escolhe — mesmo padrão
     // do segmento acima. `slots` é a MESMA lista que a IA acabou de ler
     // nesta resposta, então o índice bate. Sobrescreve qualquer escolha
@@ -1823,25 +1873,25 @@ export async function dispatchInboundToAiReply(
     }
 
     // ⛔⛔ TRAVA DE VERDADE — PISO DE VALOR, não só o prompt (01/09/2026, caso
-    // Andreia: revelou ~R$9.000 de dívida PF e ofereceu 2 horários na MESMA
+    // Lead A: revelou ~R$9.000 de dívida PF e ofereceu 2 horários na MESMA
     // resposta, mesmo com a instrução escrita dizendo o contrário). Calcula
     // ANTES de `textoFinal`/`moveFinal` nascerem, pra travar a resposta
     // inteira — não só a reserva final, como faz a trava de PF/PJ (mais
     // abaixo): aqui o problema é a OFERTA em si, que acontece bem antes de
     // qualquer marcador de agendamento existir.
     //
-    // Reforçada no mesmo dia (caso Rogério, R$450 de cheque especial): ela
+    // Reforçada no mesmo dia (caso Lead R, R$450 de cheque especial): ela
     // reconheceu o valor na conversa mas nunca "concluiu" nada — foi direto
     // pra oferecer horário sem NUNCA emitir [[VALOR:N]]. Marcador que depende
     // da IA lembrar de emitir tem esse limite; por isso a trava agora usa
     // DUAS fontes independentes.
     //
-    // ✅ RELIGADA em 23/09/2026 (caso Claudete): a trava generica foi
+    // ✅ RELIGADA em 23/09/2026 (caso Lead L): a trava generica foi
     // desativada em 21/09 porque nao sabia diferenciar produto (barrava DBC/
     // GPIX com o corte errado de R$50k). Agora ela primeiro consulta a tag de
     // PRODUTO (produtoPersistido, gravada por automacao do CRM) e so cai no
     // generico PF/PJ quando nenhuma tag de produto foi gravada ainda — ver
-    // PISO_POR_PRODUTO acima. O caso Claudete (RCPCC, ~R$20-34k, a IA
+    // PISO_POR_PRODUTO acima. O caso Lead L (RCPCC, ~R$20-34k, a IA
     // "concluiu" acima do criterio sem checagem nenhuma) e a prova de que
     // deixar so a IA decidir nao segura sozinho.
     // A extração textual agora só aceita valor contextualizado como total,
@@ -1870,18 +1920,47 @@ export async function dispatchInboundToAiReply(
     if (bloqueioPiso && valorEfetivo !== null) {
       console.log(`[ia-valor] trava de piso não aplicada: ${bloqueioPiso} (contact ${contactId})`)
     }
-    if (PISO_GENERICO_ATIVO && valorEfetivo !== null && !bloqueioPiso) {
+    // DBC tem faixas próprias (dbc-faixas.ts); a trava genérica de piso não vale aqui.
+    let faixaDbcIntermediaria = false
+    let faixaDbcIndefinida = false
+    if (estadoDbc) {
+      if (bloqueioPiso) {
+        console.log(`[dbc] trava de faixa não aplicada: ${bloqueioPiso} (contact ${contactId})`)
+      } else if (estadoDbc.faixa === 'abaixo') {
+        console.warn(
+          `[dbc] recusa suave — valor bloqueado R${estadoDbc.valor} abaixo da faixa atendida (contact ${contactId})`,
+        )
+        valorOverride = VALOR_ABAIXO_DBC
+        await aplicarVeredictoPiso(db, contactId, true)
+      } else if (estadoDbc.faixa === 'indefinida') {
+        // Valor ausente ou vago: a IA pergunta o valor exato. Só mantém a recusa de um
+        // turno anterior quando NENHUM número apareceu na conversa desde então.
+        if (
+          estadoDbc.valor === null &&
+          !estadoDbc.vago &&
+          (await abaixoPisoPersistido(db, contactId))
+        ) {
+          valorOverride = VALOR_ABAIXO_DBC
+        } else {
+          faixaDbcIndefinida = true
+        }
+      } else {
+        // faixa intermediária ou qualificado: destrava qualquer recusa gravada antes.
+        await aplicarVeredictoPiso(db, contactId, false)
+        faixaDbcIntermediaria = estadoDbc.faixa === 'faixa_intermediaria'
+      }
+    } else if (PISO_GENERICO_ATIVO && valorEfetivo !== null && !bloqueioPiso) {
       // Fonte 1 (preferida, 23/09/2026): tag de PRODUTO gravada por
       // automacao do CRM — corte especifico e correto por produto.
-      const produto = await produtoPersistido(db, contactId)
+      const produto = produtoLead
       const seg = segmento ?? (await segmentoPersistido(db, contactId))
       // Segmento ainda não confirmado → usa o piso mais BAIXO (PF) como
-      // padrão de segurança (18/09/2026, caso Babi Blumer: PF com R$70k foi
+      // padrão de segurança (18/09/2026, caso Lead B: PF com R$70k foi
       // recusada porque o default antigo usava o piso PJ de R$100k, mais alto
       // que o dela). Falso positivo de recusar um PF bom é pior que falso
       // negativo de qualificar um PJ pequeno — o segundo um humano barra na
       // reunião; o primeiro já perdeu o lead antes de alguém ver. Substitui o
-      // default de 01/09 (Rogério), que priorizava o risco oposto.
+      // default de 01/09 (Lead R), que priorizava o risco oposto.
       // Sem tag de produto (lead antigo, ou automação ainda não pegou):
       // cai no genérico PF/PJ de sempre, como rede de segurança.
       const piso = produto ? PISO_POR_PRODUTO[produto] : seg === 'PJ' ? PISO_PJ : PISO_PF
@@ -1922,7 +2001,7 @@ export async function dispatchInboundToAiReply(
       // mandava o alerta de WhatsApp. "Assigning fires on_conversation_
       // assigned" só é verdade quando há handoffAgentId configurado E a
       // conversa ainda não tem dono; fora isso, o handoff ficava mudo dos
-      // dois lados — foi o caso de hoje (Diego, Mislene). Reusa
+      // dois lados — foi o caso de hoje (Lead X, Lead Y). Reusa
       // `passarParaHumano` em vez de duplicar a lógica.
       const summary = buildHandoffSummary({
         messages,
@@ -1970,6 +2049,16 @@ export async function dispatchInboundToAiReply(
     // acima.
     let textoFinal = valorOverride ?? text
     let moveFinal = valorOverride ? null : move
+    if (faixaDbcIntermediaria || faixaDbcIndefinida) {
+      // DBC sem classificação firme (faixa de 3 a 5 mil, ou valor ausente/vago): nada de
+      // recusar, agendar nem qualificar. Intermediária => o caso vai ao titular; indefinida
+      // => pergunta o valor exato antes de classificar.
+      if (moveFinal === 'perdido' || moveFinal === 'qualified' || moveFinal === 'super') moveFinal = null
+      if (textoIncompativelComFaixaDbc(textoFinal)) {
+        console.warn(`[dbc] texto da IA dispensava/agendava lead sem classificação firme — trocado por pergunta fixa (contact ${contactId})`)
+        textoFinal = faixaDbcIndefinida ? PERGUNTA_VALOR_EXATO_DBC : proximaPerguntaFaixaDbc(messages)
+      }
+    }
     // PERDIDO não é aplicado em etapa sensível.
     if (moveFinal === 'perdido' && !podeMarcarPerdido({ etapaSensivel: etapaSensivelAgora })) {
       console.warn(`[sdr] conversa ${conversationId}: PERDIDO ignorado em etapa sensível`)
@@ -2001,7 +2090,7 @@ export async function dispatchInboundToAiReply(
       // (`valorOverride` já teria zerado o texto acima; aqui é defesa a mais
       // pro raro caso de a IA emitir AGENDAR na mesma resposta que revela um
       // valor abaixo do piso.)
-      let agendarTravado = valorOverride ? null : agendar
+      let agendarTravado = valorOverride || faixaDbcIntermediaria || faixaDbcIndefinida ? null : agendar
       if (agendarTravado !== null) {
         const { data: temSegmento } = await db
           .from('contact_tags')
@@ -2035,6 +2124,15 @@ export async function dispatchInboundToAiReply(
         textoFinal = r.texto
         reservaFeita = r.ok
         if (r.reagendar) moveFinal = 'reagendar'
+        // Reservou: o horário escolhido cumpriu seu papel. Sem limpar, ele fica
+        // gravado na conversa e um horário velho pode ser reservado de novo
+        // quando o lead voltar a escrever.
+        if (r.ok) {
+          await db
+            .from('conversations')
+            .update({ horario_escolhido_iso: null, horario_escolhido_rotulo: null })
+            .eq('id', conversationId)
+        }
         // Desmarcou e a remarcação não saiu: o card não pode ficar parado em
         // "Reunião Agendada" sem reunião nenhuma. Vai para Reagendar, e o
         // fluxo de nutrição volta a puxar essa pessoa.
@@ -2059,19 +2157,45 @@ export async function dispatchInboundToAiReply(
       //
       // Proibir no prompt não basta: o modelo escorrega, e escorregou. Aqui a
       // frase simplesmente não sai.
-      if (!reservaFeita && !hasMeeting && AFIRMA_QUE_AGENDOU.test(textoFinal)) {
+      //
+      // ⭐ 20/10/2026 (caso Lead H): "então sigo com o dia 26 às 13:15" não tem
+      // nenhuma palavra que a regex conheça, e nada reservou. Além das frases
+      // conhecidas, vale o FATO: a resposta cita só o horário que o lead
+      // escolheu, sem perguntar nada (`respostaConfirmaHorario`). A escolha
+      // pode ter sido gravada neste mesmo turno (`slots[horarioEscolhido-1]`)
+      // ou num turno anterior (`conv.horario_escolhido_*`).
+      const slotDestaVez = horarioEscolhido ? slots[horarioEscolhido - 1] : undefined
+      const isoEscolhido = slotDestaVez?.iso ?? conv.horario_escolhido_iso
+      const rotuloEscolhido = slotDestaVez?.rotulo ?? conv.horario_escolhido_rotulo
+      const confirmaSemMarcador = respostaConfirmaHorario(textoFinal, rotuloEscolhido)
+      if (!reservaFeita && !hasMeeting && (AFIRMA_QUE_AGENDOU.test(textoFinal) || confirmaSemMarcador)) {
         console.error(
-          `[ia-agenda] ⛔ resposta afirmava reunião marcada sem reserva nenhuma — substituída. Original: ${textoFinal.slice(0, 200)}`,
+          `[ia-agenda] ⛔ resposta afirmava reunião marcada sem reserva nenhuma — substituída${confirmaSemMarcador ? ' (confirmou o horário escolhido sem marcador)' : ''}. Original: ${textoFinal.slice(0, 200)}`,
         )
-        // ⭐ 20/09/2026 (caso Douglas Santos): antes de cair no "confirme de
+        // ⭐ 20/09/2026 (caso Lead D): antes de cair no "confirme de
         // novo qual horário", tenta completar sozinho com o horário que o
         // lead já ESCOLHEU num turno anterior (gravado pelo marcador
         // HORARIO_ESCOLHIDO, acima). Resolve o sintoma real: a IA tinha
         // tudo que precisava (horário + e-mail), só não reemitiu o
         // AGENDAR — o sistema não pode depender dela lembrar sozinha.
-        const horarioPersistidoIso = conv.horario_escolhido_iso
-        const horarioPersistidoRotulo = conv.horario_escolhido_rotulo
+        const horarioPersistidoIso = isoEscolhido
+        const horarioPersistidoRotulo = rotuloEscolhido
+        // Mesma trava de verdade do caminho do AGENDAR: sem a tag PF/PJ gravada
+        // não se marca reunião, nem por aqui.
+        let faltaSegmento = false
         if (email && horarioPersistidoIso) {
+          const { data: temSegmento } = await db
+            .from('contact_tags')
+            .select('tag_id')
+            .eq('contact_id', contactId)
+            .in('tag_id', [TAG_PF, TAG_PJ])
+            .limit(1)
+          faltaSegmento = !temSegmento?.length
+          if (faltaSegmento) {
+            console.warn(`[ia-agenda] completar sozinha recusado — sem tag PF/PJ (contact ${contactId})`)
+          }
+        }
+        if (email && horarioPersistidoIso && !faltaSegmento) {
           const nomeCompleto = legibleFirstName(contactRow?.name, contactRow?.phone)
             ? (contactRow?.name?.trim() ?? null)
             : null
@@ -2100,7 +2224,7 @@ export async function dispatchInboundToAiReply(
             .eq('id', conversationId)
         }
         if (!reservaFeita) {
-          textoFinal = email ? NAO_CONFIRMADO : FALTA_EMAIL
+          textoFinal = faltaSegmento ? FALTA_SEGMENTO : email ? NAO_CONFIRMADO : FALTA_EMAIL
         }
       }
     }
@@ -2270,7 +2394,7 @@ export async function dispatchInboundToAiReply(
   }
 }
 
-/** Fila de debounce por conversa (23/09/2026, caso Claudete): mensagens em
+/** Fila de debounce por conversa (23/09/2026, caso Lead L): mensagens em
  *  rajada chegam em webhooks SEPARADOS (a Meta manda 1 POST por mensagem
  *  quando elas nao sao simultaneas de verdade) e cada requisicao do Next.js
  *  roda concorrente as outras -- sem fila, duas geracoes da IA rodavam em

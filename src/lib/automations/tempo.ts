@@ -141,13 +141,12 @@ export function naHoraRelativa(
 ): boolean {
   const alvo = Date.parse(dataISO)
   if (!Number.isFinite(alvo)) return false
-  const alvoTeorico = alvo - rel.horas_antes * 3_600_000
-  // Esta função calcula apenas a relação temporal. A trava de horário fica
-  // no disparador (`dispararPorTempo`), que não executa automações fora do
-  // expediente. Misturar as duas regras aqui fazia os testes e os lembretes
-  // relativos dependerem do horário em que o cron era consultado.
-  if (alvoTeorico > alvo) return false
-  const faltamHoras = (alvoTeorico - agora) / 3_600_000
+  // ⛔ 20/10/2026: NÃO subtrair `horas_antes` aqui. A versão de 25/09 fazia
+  // (alvo - horas_antes - agora) e comparava de novo com `horas_antes`: a
+  // janela andava `horas_antes` para o lado. A véspera só alcançava reunião
+  // 24–30h à frente e o "1h antes" exigia exatamente 1,5h (nunca saía). A
+  // trava de expediente fica no disparador (`dispararPorTempo`), não aqui.
+  const faltamHoras = (alvo - agora) / 3_600_000
   const tol = rel.janela_horas ?? 0.5
   return Math.abs(faltamHoras - rel.horas_antes) <= tol
 }

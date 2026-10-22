@@ -65,7 +65,7 @@ const REUNIAO_TEM_QUE_ESTAR_A_PELO_MENOS = 2 * DAY // senão o lembrete de vésp
 // vários contatos, é outro padrão que denuncia automação. Sorteia uma.
 const VARIACOES_TEXTO: Array<(nome: string) => string> = [
   (nome) =>
-    `${nome}, enquanto isso, se tiver mais algum detalhe do seu caso que queira já adiantar, pode me contar — ajuda o Dr. Zelmo/a Dra. Maria a chegar mais preparado(a) na nossa conversa. E se puder já separar os documentos do seu caso (contrato, extrato), facilita bastante no dia.`,
+    `${nome}, enquanto isso, se tiver mais algum detalhe do seu caso que queira já adiantar, pode me contar — ajuda a nossa equipe a chegar mais preparada na nossa conversa. E se puder já separar os documentos do seu caso (contrato, extrato), facilita bastante no dia.`,
   (nome) =>
     `${nome}, passando aqui rapidinho: se lembrar de mais algum detalhe do seu caso até lá, pode ir me contando, sem problema. Aproveita também pra já separar contrato e extrato relacionados à dívida — ajuda bastante na hora da conversa.`,
   (nome) =>

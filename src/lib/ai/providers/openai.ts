@@ -40,6 +40,23 @@ interface AgentItemsResponse {
 }
 
 /**
+ * Texto que vai ao lead = SÓ o último item do assistente que tenha texto.
+ * Itens anteriores são comentários do agente antes de chamar ferramenta
+ * ("vou checar o roteiro...") e nunca podem ser concatenados à resposta.
+ */
+export function textoFinalDoAssistente(items: AgentItem[]): string {
+  const doAssistente = items.filter((item) => item.role === 'assistant')
+  for (let i = doAssistente.length - 1; i >= 0; i--) {
+    const texto = (doAssistente[i].content || [])
+      .filter((part) => part.type === 'output_text' && typeof part.text === 'string')
+      .map((part) => part.text)
+      .join('')
+    if (texto.trim()) return texto
+  }
+  return ''
+}
+
+/**
  * Run the saved Márcia 2.0 agent through the hosted Agents API.
  * The VPS is only a client: `environment: none` deliberately prevents any
  * agent runtime, model, or sandbox from being created on the server.
@@ -134,12 +151,7 @@ export async function generateOpenAi(args: ProviderArgs): Promise<ProviderResult
   if (!itemsResponse.ok) throw await providerHttpError('OpenAI Agents', itemsResponse)
 
   const data = (await itemsResponse.json().catch(() => null)) as AgentItemsResponse | null
-  const assistantItems = (data?.data || []).filter((item) => item.role === 'assistant')
-  const text = assistantItems
-    .flatMap((item) => item.content || [])
-    .filter((part) => part.type === 'output_text' && typeof part.text === 'string')
-    .map((part) => part.text)
-    .join('')
+  const text = textoFinalDoAssistente(data?.data || [])
   if (!text || typeof text !== 'string' || !text.trim()) {
     throw new AiError('Márcia 2.0 returned an empty response.', {
       code: 'empty_response',

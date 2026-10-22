@@ -5,6 +5,7 @@ import { scheduleAiReply } from '@/lib/ai/auto-reply'
 import { loadAiConfig } from '@/lib/ai/config'
 import { transcreverAudioBuffer } from '@/lib/ai/transcreve'
 import { sendMessageToConversation } from '@/lib/whatsapp/send-message'
+import { ehPararMensagens } from '@/lib/nurture/nudge-buttons'
 
 /**
  * Ponte entrada do segundo número (Evolution/wazap) → o mesmo pipeline que o
@@ -16,7 +17,7 @@ import { sendMessageToConversation } from '@/lib/whatsapp/send-message'
  * caía no fallback do segundo número (janela oficial de 24h fechada — é o
  * caso da nutrição pré-reunião) e o lead respondia por lá, a mensagem
  * aparecia no inbox mas ficava muda pra sempre, sem sinal nenhum de que
- * faltava resposta. Achado 24/08/2026: Thomázia (5517981123627), reunião
+ * faltava resposta. Achado 24/08/2026: Lead T (5511900000001), reunião
  * confirmada, mandou texto + áudio depois do toque de nutrição e não teve
  * UMA resposta — nem da automação, nem da IA, nem aviso pra um humano.
  *
@@ -66,10 +67,21 @@ export async function POST(request: Request) {
   const db = supabaseAdmin()
   const textoOriginal = (text || '').trim()
 
-  // Mesmos dois gatilhos de conteúdo que o webhook oficial dispara pra toda
-  // mensagem nova (new_contact_created/first_inbound_message não se aplicam
-  // aqui — `guardarRecebida` só aceita contato já cadastrado no CRM).
-  for (const triggerType of ['new_message_received', 'keyword_match'] as const) {
+  // Mesmos gatilhos que o webhook oficial dispara. `first_inbound_message` é o que cria o card/negócio
+  // (automação "Auto-criar card no 1o contato"): sem ele, quem escreve pelo segundo número fica fora
+  // do funil (16/10/2026: 4 de 8 contatos desse canal sem negócio, contra 52 de 52 no oficial).
+  // `guardarRecebida` já gravou esta mensagem, então "primeira" = só ela de cliente na conversa.
+  // O passo create_deal não duplica: pula se já há negócio aberto ou se o contato é cliente.
+  const { count: msgsDoCliente } = await db
+    .from('messages')
+    .select('id', { count: 'exact', head: true })
+    .eq('conversation_id', conversationId)
+    .eq('sender_type', 'customer')
+  const ehPrimeira = (msgsDoCliente ?? 0) <= 1 && !ehPararMensagens(textoOriginal)
+  const gatilhos = ehPrimeira
+    ? (['first_inbound_message', 'new_message_received', 'keyword_match'] as const)
+    : (['new_message_received', 'keyword_match'] as const)
+  for (const triggerType of gatilhos) {
     runAutomationsForTrigger({
       accountId,
       triggerType,

@@ -8,6 +8,11 @@ import {
   valorDeclaradoPeloCliente,
   buildContactContextBlock,
 } from './auto-reply'
+import {
+  PERGUNTA_PROCESSO_DBC,
+  PERGUNTA_VALOR_EXATO_DBC,
+  VALOR_ABAIXO_DBC,
+} from './dbc-faixas'
 
 describe('emailNaConversa', () => {
   // O e-mail chega colado em outra coisa, com maiúscula, ou sozinho. Ler do
@@ -71,12 +76,12 @@ describe('valorDeclaradoPeloCliente', () => {
     ).toBe(47500)
   })
 
-  // 18/09/2026, caso Tatá: "R$ 90 mil" caía inteiro no ramo "R$ + número" e
+  // 18/09/2026, caso Lead P: "R$ 90 mil" caía inteiro no ramo "R$ + número" e
   // capturava só "90" — o "mil" ficava sem casar com nenhum ramo (o ramo
   // "número mil" exige o número colado nele mesmo, sem R$ na frente). O
   // valor real (R$90.000) virava 90, e um lead qualificado, já com reunião
   // sendo marcada, caía "abaixo do piso" por engano.
-  it('lê "R$ X mil" como X*1000, não perde o "mil" (bug real, caso Tatá)', () => {
+  it('lê "R$ X mil" como X*1000, não perde o "mil" (bug real, caso Lead P)', () => {
     expect(
       valorDeclaradoPeloCliente([{ role: 'user', content: 'acredito que o total esteja em torno de R$ 90 mil ou mais' }]),
     ).toBe(90000)
@@ -103,7 +108,7 @@ describe('valorDeclaradoPeloCliente', () => {
     ).toBe(45000)
   })
 
-  // 28/09/2026, caso 5511941707154: contrato de R$ 540 mil, parcela de R$ 2.000. A heurística
+  // 28/09/2026, caso 5511900000002: contrato de R$ 540 mil, parcela de R$ 2.000. A heurística
   // antiga leu o ÚLTIMO número (a parcela) e travou um lead de R$ 540 mil.
   it('parcela e saldo restante NUNCA entram como valor total (caso contrato R$ 540 mil / parcela R$ 2 mil)', () => {
     expect(
@@ -145,6 +150,43 @@ describe('valorDeclaradoPeloCliente', () => {
       valorDeclaradoPeloCliente([
         { role: 'user', content: '48 parcelas, terminou em 2023, meu telefone é 11987654321' },
       ]),
+    ).toBeNull()
+  })
+
+  // 13/10/2026, caso Lead C (5511900000003): valor solto "52.000,00" nao era lido e
+  // a parcela R$ 1.458 (prazo x parcela) virava "valor total", desqualificando um contrato de ~R$ 87 mil.
+  it('caso Lead C: valor solto, entrada e "60 x R$ parcela" -> nao desqualifica', () => {
+    const v = valorDeclaradoPeloCliente([
+      { role: 'user', content: 'Valor aproximado \n52.000,00 \nEntrada de 10k + 60 x R$1.458,00' },
+    ])
+    expect(v).not.toBeNull()
+    expect(v!).toBeGreaterThanOrEqual(52000)
+  })
+
+  it('so parcela (prazo x parcela), sem total claro -> null (a IA pergunta o valor)', () => {
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'entrada de 10k + 60 x R$1.458,00' }]),
+    ).toBeNull()
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'pago 12 x R$500 por mes' }]),
+    ).toBeNull()
+  })
+
+  it('"financiei 42k" le 42 mil (ainda abaixo do piso)', () => {
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'financiei 42k' }]),
+    ).toBe(42000)
+  })
+
+  it('numero solto em formato BR com contexto de total', () => {
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'o valor total foi 52.000,00' }]),
+    ).toBe(52000)
+  })
+
+  it('data com pontos nao vira valor', () => {
+    expect(
+      valorDeclaradoPeloCliente([{ role: 'user', content: 'o contrato foi assinado em 10.10.2026' }]),
     ).toBeNull()
   })
 
@@ -508,7 +550,7 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
     // teto atingido: não gera resposta da IA, só o aviso fixo de passagem ao Dr. Zelmo
     expect(h.generateReply).not.toHaveBeenCalled()
     expect(h.engineSendText).toHaveBeenCalledTimes(1)
-    expect(h.engineSendText.mock.calls[0][0].text).toContain('Dr. Zelmo')
+    expect(h.engineSendText.mock.calls[0][0].text).toContain("nossa equipe")
   })
 
   it('skips when there is nothing to reply to', async () => {
@@ -524,7 +566,7 @@ describe('dispatchInboundToAiReply — handoff', () => {
     h.generateReply.mockResolvedValue({ text: '', handoff: true })
     await dispatchInboundToAiReply(ARGS)
     expect(h.engineSendText).toHaveBeenCalledTimes(1)
-    expect(h.engineSendText.mock.calls[0][0].text).toContain('Dr. Zelmo')
+    expect(h.engineSendText.mock.calls[0][0].text).toContain("nossa equipe")
     expect(h.state.rpcCalls).toHaveLength(0)
     expect(h.state.updatePayload).toMatchObject({ ai_autoreply_disabled: true })
     expect(h.state.updatePayload?.ai_handoff_summary).toContain(
@@ -546,10 +588,10 @@ describe('dispatchInboundToAiReply — handoff', () => {
 })
 
 // Trava GENÉRICA de PISO DE VALOR — histórico: criada 01/09/2026 (caso
-// Andreia), reforçada em 01/09 (Rogério), 11/09 (rafinhamoreiradebarros) e
-// 18/09 (Babi Blumer). Desativada em 21/09 (auditoria do prompt mestre: não
+// Lead A), reforçada em 01/09 (Lead R), 11/09 (Lead R2) e
+// 18/09 (Lead B). Desativada em 21/09 (auditoria do prompt mestre: não
 // sabia diferenciar produto, barrava DBC/GPIX com corte errado). RELIGADA em
-// 23/09/2026 (caso Claudete: a IA "concluiu" acima do critério com valores
+// 23/09/2026 (caso Lead L: a IA "concluiu" acima do critério com valores
 // reais abaixo do piso, sem checagem nenhuma) — agora consultando a tag de
 // PRODUTO gravada por automação do CRM (produtoPersistido) antes de cair no
 // genérico PF/PJ, pra não repetir o erro de 21/09.
@@ -608,7 +650,7 @@ describe('dispatchInboundToAiReply — piso de valor por produto (contenção de
     )
   })
 
-  it('caso Claudete: tag de produto RCPCC, valor real do texto do cliente (regex, sem marcador) abaixo do piso R$50k trava mesmo a IA achando que está acima', async () => {
+  it('caso Lead L: tag de produto RCPCC, valor real do texto do cliente (regex, sem marcador) abaixo do piso R$50k trava mesmo a IA achando que está acima', async () => {
     h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PRODUTO_RCPCC }]
     h.buildConversationContext.mockResolvedValue([
       { role: 'user', content: 'Vim do site de Direito Bancário e gostaria de mais informações' },
@@ -704,7 +746,205 @@ describe('dispatchInboundToAiReply — piso de valor por produto (contenção de
   })
 })
 
-// Marcador HORARIO_ESCOLHIDO (20/09/2026, caso Douglas Santos): o lead
+// DESBLOQUEIO DE CONTA — faixas de valor bloqueado (regra do titular, 15/10/2026, caso
+// Lead M: "Mais de 3000" foi dispensado em 4 minutos). Abaixo de 3.000 recusa suave;
+// de 3.000 a 5.000 a IA NÃO dispensa e o caso vai ao titular; acima de 5.000 qualifica e
+// agenda; valor vago => pergunta o valor exato antes de classificar.
+describe('dispatchInboundToAiReply — DBC: faixas de valor bloqueado', () => {
+  const TAG_PRODUTO_DBC = '8a749c20-e504-46d0-8e56-92c8abc10de0'
+  const TAG_ABAIXO_PISO = '72923bee-2b12-4093-9aa9-cb773aae3928'
+  const TEXTO_DISPENSA_ANTIGO =
+    'Entendi. Infelizmente o seu caso não se enquadra. Esses custos podem não compensar, tornando a medida judicial economicamente inviável.'
+  const TEXTO_OFERECE_HORARIO = 'Perfeito! Tenho horário amanhã às 14h ou quinta às 15h — qual prefere?'
+
+  const conversa = (valor: string) => [
+    { role: 'user' as const, content: 'Vim do site de Desbloqueio de Conta e gostaria de mais informações' },
+    { role: 'assistant' as const, content: 'Qual foi o valor total bloqueado pelo banco?' },
+    { role: 'user' as const, content: valor },
+  ]
+  const resposta = (text: string, extra: Record<string, unknown> = {}) => ({
+    text,
+    handoff: false,
+    move: null,
+    agendar: null,
+    segmento: null,
+    valor: null,
+    desmarcar: false,
+    portaAberta: false,
+    usage: null,
+    ...extra,
+  })
+  // O limitador por conta (30/min, em memória) é compartilhado pelo arquivo todo: cada teste usa a sua.
+  let seq = 0
+  const disparar = () => dispatchInboundToAiReply({ ...ARGS, accountId: `acct-dbc-${++seq}` })
+  const enviado = () => h.engineSendText.mock.calls.map((c) => (c[0] as { text: string }).text)
+  const tagAbaixoGravada = () =>
+    (h.state.porTabela['contact_tags'] ?? []).some((l) => (l as { tag_id?: string }).tag_id === TAG_ABAIXO_PISO)
+  const promptDaGeracao = () => h.generateReply.mock.calls[0][0].systemPrompt as string
+
+  beforeEach(() => {
+    h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PRODUTO_DBC }]
+  })
+
+  it('R$ 2.999: recusa mantida, em mensagem suave (custo-benefício, sem inviabilidade e sem número)', async () => {
+    h.buildConversationContext.mockResolvedValue(conversa('R$ 2.999'))
+    h.generateReply.mockResolvedValue(resposta(TEXTO_OFERECE_HORARIO, { move: 'qualified', agendar: 1 }))
+    await disparar()
+    // a recusa sai em balões (um por parágrafo); juntos, são exatamente o texto aprovado
+    expect(enviado().join('\n\n')).toBe(VALOR_ABAIXO_DBC)
+    expect(enviado().join(' ')).toContain('sinto muito pelo transtorno')
+    expect(enviado().join(' ')).not.toMatch(/inviável|inviabilidade|economicamente/i)
+    expect(h.criarReserva).not.toHaveBeenCalled()
+    expect(tagAbaixoGravada()).toBe(true)
+  })
+
+  it.each([['R$ 3.000'], ['R$ 4.968'], ['4999']])(
+    '%s: NÃO dispensa, NÃO agenda e NÃO pergunta — passa ao Dr. Zelmo na hora',
+    async (valor) => {
+      h.buildConversationContext.mockResolvedValue(conversa(valor))
+      h.generateReply.mockResolvedValue(resposta(TEXTO_OFERECE_HORARIO, { move: 'qualified', agendar: 1 }))
+      await disparar()
+      // decisão de 16/10: a qualificação é só pelo valor; nada de coletar processo/origem antes
+      expect(h.generateReply).not.toHaveBeenCalled()
+      expect(enviado()).toHaveLength(1)
+      expect(enviado()[0]).toContain("nossa equipe")
+      expect(enviado().join(' ')).not.toMatch(/processo|salário|poupança/i)
+      expect(h.criarReserva).not.toHaveBeenCalled()
+      expect(tagAbaixoGravada()).toBe(false)
+      expect(h.state.updatePayload?.ai_handoff_summary).toContain('[ATENÇÃO]')
+    },
+  )
+
+  it('faixa 3–5 mil: nenhuma despedida do modelo sai (passa ao titular antes de gerar)', async () => {
+    h.buildConversationContext.mockResolvedValue(conversa('R$ 4.968'))
+    h.generateReply.mockResolvedValue(resposta(TEXTO_DISPENSA_ANTIGO, { move: 'perdido' }))
+    await disparar()
+    expect(h.generateReply).not.toHaveBeenCalled()
+    expect(enviado()).toHaveLength(1)
+    expect(enviado()[0]).toContain("nossa equipe")
+  })
+
+  it('faixa 3–5 mil: coleta concluída ([[HANDOFF]] da IA) => só o acolhimento, IA desligada, aviso com [ATENÇÃO]', async () => {
+    h.buildConversationContext.mockResolvedValue([
+      ...conversa('R$ 4.968'),
+      { role: 'assistant', content: 'Já existe algum processo em andamento?' },
+      { role: 'user', content: 'não' },
+      { role: 'assistant', content: 'O dinheiro era salário, poupança ou outra origem?' },
+      { role: 'user', content: 'era salário' },
+    ])
+    h.generateReply.mockResolvedValue({ text: '', handoff: true })
+    await disparar()
+    expect(enviado()).toHaveLength(1)
+    expect(enviado()[0]).toContain("nossa equipe")
+    expect(h.state.updatePayload).toMatchObject({ ai_autoreply_disabled: true })
+    expect(h.state.updatePayload?.ai_handoff_summary).toContain('[ATENÇÃO]')
+  })
+
+  it('faixa 3–5 mil: IA que não encerra depois de 3 respostas => o código passa ao titular', async () => {
+    h.buildConversationContext.mockResolvedValue([
+      ...conversa('R$ 4.968'),
+      { role: 'assistant', content: 'Já existe algum processo em andamento?' },
+      { role: 'user', content: 'não' },
+      { role: 'assistant', content: 'O dinheiro era salário, poupança ou outra origem?' },
+      { role: 'user', content: 'era salário' },
+      { role: 'assistant', content: 'Certo, e o banco?' },
+      { role: 'user', content: 'Itaú' },
+    ])
+    await disparar()
+    expect(h.generateReply).not.toHaveBeenCalled()
+    expect(enviado()).toHaveLength(1)
+    expect(enviado()[0]).toContain("nossa equipe")
+    expect(h.state.updatePayload?.ai_handoff_summary).toContain('faixa intermediária')
+    expect(h.state.updatePayload?.ai_handoff_summary).toContain('[ATENÇÃO]')
+  })
+
+  it('faixa 3–5 mil com processo citado: cai no handoff de processo (sem gerar resposta)', async () => {
+    h.buildConversationContext.mockResolvedValue(conversa('bloquearam R$ 4.000 por causa de um processo'))
+    await disparar()
+    expect(h.generateReply).not.toHaveBeenCalled()
+    expect(enviado()).toHaveLength(1)
+    expect(enviado()[0]).toContain("nossa equipe")
+  })
+
+  // 20/10/2026, caso Lead A: DBC cita "bloqueio judicial" em toda conversa; o valor decide, não a palavra.
+  it('abaixo de 3 mil citando "bloqueio judicial": recusa suave, sem passar ao humano por processo', async () => {
+    h.buildConversationContext.mockResolvedValue(
+      conversa('R$ 168,86, entrei na conta e está com bloqueio judicial'),
+    )
+    h.generateReply.mockResolvedValue(resposta(TEXTO_OFERECE_HORARIO, { move: 'qualified', agendar: 1 }))
+    await disparar()
+    expect(enviado().join('\n\n')).toBe(VALOR_ABAIXO_DBC)
+    expect(h.criarReserva).not.toHaveBeenCalled()
+  })
+
+  it('5 mil ou mais citando "bloqueio judicial" e penhora: qualifica e agenda, sem handoff por processo', async () => {
+    h.buildConversationContext.mockResolvedValue(
+      conversa('R$ 6.000, bloqueio judicial por penhora online'),
+    )
+    h.generateReply.mockResolvedValue(resposta(TEXTO_OFERECE_HORARIO, { move: 'qualified' }))
+    await disparar()
+    expect(h.generateReply).toHaveBeenCalled()
+    expect(enviado()).toEqual([TEXTO_OFERECE_HORARIO])
+  })
+
+  it.each([['R$ 5.000'], ['R$ 5.001'], ['6 mil']])('%s: qualifica e agenda como hoje (texto da IA intacto)', async (valor) => {
+    h.buildConversationContext.mockResolvedValue(conversa(valor))
+    h.generateReply.mockResolvedValue(resposta(TEXTO_OFERECE_HORARIO, { move: 'qualified' }))
+    await disparar()
+    expect(enviado()).toEqual([TEXTO_OFERECE_HORARIO])
+    expect(promptDaGeracao()).toContain('valor bloqueado qualificado')
+    expect(tagAbaixoGravada()).toBe(false)
+  })
+
+  it('valor vago ("Mais de 3000", caso Lead M): pergunta o valor exato, não dispensa nem agenda', async () => {
+    h.buildConversationContext.mockResolvedValue(conversa('Mais de 3000'))
+    h.generateReply.mockResolvedValue(resposta(TEXTO_DISPENSA_ANTIGO, { move: 'perdido' }))
+    await disparar()
+    expect(enviado()).toEqual([PERGUNTA_VALOR_EXATO_DBC])
+    expect(tagAbaixoGravada()).toBe(false)
+    expect(promptDaGeracao()).toContain('valor ainda não definido')
+  })
+
+  it('valor vago: pergunta legítima da IA sai como escrita', async () => {
+    const pergunta = 'Para eu entender direitinho, qual foi o valor exato que o banco bloqueou?'
+    h.buildConversationContext.mockResolvedValue(conversa('Mais de 3000'))
+    h.generateReply.mockResolvedValue(resposta(pergunta))
+    await disparar()
+    expect(enviado()).toEqual([pergunta])
+  })
+
+  it('lead que estava abaixo e corrige para a faixa: a recusa gravada é destravada', async () => {
+    h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PRODUTO_DBC }, { tag_id: TAG_ABAIXO_PISO }]
+    h.buildConversationContext.mockResolvedValue([
+      ...conversa('R$ 2.000'),
+      { role: 'assistant', content: 'Entendi.' },
+      { role: 'user', content: 'na verdade foram R$ 3.500' },
+    ])
+    h.generateReply.mockResolvedValue(resposta('Já existe algum processo ou ação em andamento sobre esse bloqueio?'))
+    await disparar()
+    expect(h.generateReply).not.toHaveBeenCalled()
+    expect(enviado()[0]).toContain("nossa equipe")
+    expect(tagAbaixoGravada()).toBe(false)
+  })
+
+  it('recusa gravada em turno anterior só vale se NENHUM número aparece na conversa', async () => {
+    h.state.porTabela['contact_tags'] = [{ tag_id: TAG_PRODUTO_DBC }, { tag_id: TAG_ABAIXO_PISO }]
+    h.buildConversationContext.mockResolvedValue([{ role: 'user', content: 'ok, obrigado' }])
+    h.generateReply.mockResolvedValue(resposta(TEXTO_OFERECE_HORARIO))
+    await disparar()
+    expect(enviado().join('\n\n')).toBe(VALOR_ABAIXO_DBC)
+  })
+
+  it('sem a tag do produto DBC, a faixa não se aplica (fica a trava genérica de sempre)', async () => {
+    h.state.porTabela['contact_tags'] = [{ tag_id: 'outra-tag' }]
+    h.buildConversationContext.mockResolvedValue(conversa('R$ 4.000'))
+    h.generateReply.mockResolvedValue(resposta('Certo.'))
+    await disparar()
+    expect(promptDaGeracao()).not.toContain('DESBLOQUEIO DE CONTA —')
+  })
+})
+
+// Marcador HORARIO_ESCOLHIDO (20/09/2026, caso Lead D): o lead
 // escolheu horário, deu o e-mail num turno seguinte, e a IA não reemitiu
 // [[AGENDAR:N]] — só afirmou "agendei". A trava AFIRMA_QUE_AGENDOU pegou a
 // mentira, mas só sabia reperguntar o horário sem saber qual já tinha sido
@@ -770,17 +1010,18 @@ describe('dispatchInboundToAiReply — HORARIO_ESCOLHIDO', () => {
   })
 
   it('trava AFIRMA_QUE_AGENDOU completa o agendamento de verdade com o horário já escolhido + e-mail que já tem', async () => {
+    h.state.porTabela['contact_tags'] = [{ tag_id: '9f870fd7-1155-4ede-9da8-8678360c0ae9' }] // PF gravada
     h.state.conv = {
       ...h.state.conv,
       horario_escolhido_iso: SLOT.iso,
       horario_escolhido_rotulo: SLOT.rotulo,
     }
     h.state.porTabela.contacts = [
-      { name: 'Douglas Santos', phone: '+5511988887777', email: 'douglas@example.com' },
+      { name: 'Lead D', phone: '+5511988887777', email: 'lead.d@example.com' },
     ]
     // A IA não reemitiu [[AGENDAR:N]] neste turno — só afirmou que agendou.
     h.generateReply.mockResolvedValue({
-      text: 'Prontinho, Douglas! Agendei pra você.',
+      text: 'Prontinho, Lead D! Agendei pra você.',
       handoff: false,
       move: null,
       agendar: null,
@@ -791,16 +1032,16 @@ describe('dispatchInboundToAiReply — HORARIO_ESCOLHIDO', () => {
       portaAberta: false,
       usage: null,
     })
-    h.criarReserva.mockResolvedValue({ ok: true, uid: 'uid-douglas', inicio: SLOT.iso })
+    h.criarReserva.mockResolvedValue({ ok: true, uid: 'uid-lead-d', inicio: SLOT.iso })
 
     await dispatchInboundToAiReply(ARGS)
 
     expect(h.criarReserva).toHaveBeenCalledWith(
-      expect.objectContaining({ iso: SLOT.iso, email: 'douglas@example.com', nome: 'Douglas Santos' }),
+      expect.objectContaining({ iso: SLOT.iso, email: 'lead.d@example.com', nome: 'Lead D' }),
     )
     const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
     expect(enviado).toContain(SLOT.rotulo)
-    expect(enviado).not.toBe('Prontinho, Douglas! Agendei pra você.')
+    expect(enviado).not.toBe('Prontinho, Lead D! Agendei pra você.')
     // A trava só serve para UM turno: sucesso ou falha, some depois de usada.
     expect(h.state.updatePayload).toEqual({
       horario_escolhido_iso: null,
@@ -809,16 +1050,17 @@ describe('dispatchInboundToAiReply — HORARIO_ESCOLHIDO', () => {
   })
 
   it('se a reserva automática falhar mesmo assim, cai no reperguntar honesto — nunca finge que marcou', async () => {
+    h.state.porTabela['contact_tags'] = [{ tag_id: '9f870fd7-1155-4ede-9da8-8678360c0ae9' }] // PF gravada
     h.state.conv = {
       ...h.state.conv,
       horario_escolhido_iso: SLOT.iso,
       horario_escolhido_rotulo: SLOT.rotulo,
     }
     h.state.porTabela.contacts = [
-      { name: 'Douglas Santos', phone: '+5511988887777', email: 'douglas@example.com' },
+      { name: 'Lead D', phone: '+5511988887777', email: 'lead.d@example.com' },
     ]
     h.generateReply.mockResolvedValue({
-      text: 'Prontinho, Douglas! Agendei pra você.',
+      text: 'Prontinho, Lead D! Agendei pra você.',
       handoff: false,
       move: null,
       agendar: null,
@@ -844,9 +1086,78 @@ describe('dispatchInboundToAiReply — HORARIO_ESCOLHIDO', () => {
     })
   })
 
+  const respostaSemMarcador = (text: string) => ({
+    text,
+    handoff: false,
+    move: null,
+    agendar: null,
+    horarioEscolhido: null,
+    segmento: null,
+    valor: null,
+    desmarcar: false,
+    portaAberta: false,
+    usage: null,
+  })
+
+  it('caso Lead H: "então sigo com o dia 26 às 14h" (sem marcador e sem "agendei") reserva o horário já escolhido', async () => {
+    h.state.porTabela['contact_tags'] = [{ tag_id: '9f870fd7-1155-4ede-9da8-8678360c0ae9' }] // PF gravada
+    h.state.conv = {
+      ...h.state.conv,
+      horario_escolhido_iso: SLOT.iso,
+      horario_escolhido_rotulo: SLOT.rotulo,
+    }
+    h.state.porTabela.contacts = [
+      { name: 'Lead H', phone: '+5511900000005', email: 'lead.h@example.com' },
+    ]
+    h.generateReply.mockResolvedValue(respostaSemMarcador('Perfeito, Lead H. Então sigo com o dia 25 às 14h.'))
+    h.criarReserva.mockResolvedValue({ ok: true, uid: 'uid-lead-h', inicio: SLOT.iso })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.criarReserva).toHaveBeenCalledWith(
+      expect.objectContaining({ iso: SLOT.iso, email: 'lead.h@example.com', nome: 'Lead H' }),
+    )
+  })
+
+  it('resposta que só LISTA opções ou pergunta não reserva nada, mesmo com horário escolhido gravado', async () => {
+    h.state.porTabela['contact_tags'] = [{ tag_id: '9f870fd7-1155-4ede-9da8-8678360c0ae9' }]
+    h.state.conv = {
+      ...h.state.conv,
+      horario_escolhido_iso: SLOT.iso,
+      horario_escolhido_rotulo: SLOT.rotulo,
+    }
+    h.state.porTabela.contacts = [
+      { name: 'Lead H', phone: '+5511900000005', email: 'lead.h@example.com' },
+    ]
+    h.generateReply.mockResolvedValue(respostaSemMarcador('Tenho dia 25 às 14h ou dia 26 às 10h. Qual fica melhor?'))
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.criarReserva).not.toHaveBeenCalled()
+  })
+
+  it('sem a tag PF/PJ gravada, completar sozinha NÃO reserva e pergunta o segmento', async () => {
+    h.state.porTabela['contact_tags'] = []
+    h.state.conv = {
+      ...h.state.conv,
+      horario_escolhido_iso: SLOT.iso,
+      horario_escolhido_rotulo: SLOT.rotulo,
+    }
+    h.state.porTabela.contacts = [
+      { name: 'Lead H', phone: '+5511900000005', email: 'lead.h@example.com' },
+    ]
+    h.generateReply.mockResolvedValue(respostaSemMarcador('Perfeito, Lead H. Então sigo com o dia 25 às 14h.'))
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.criarReserva).not.toHaveBeenCalled()
+    const enviado = h.engineSendText.mock.calls.map((c) => c[0].text).join('\n\n')
+    expect(enviado).toContain('pessoal')
+  })
+
   it('sem horário persistido de turno anterior, a trava cai direto no reperguntar (comportamento antigo preservado)', async () => {
     h.state.porTabela.contacts = [
-      { name: 'Douglas Santos', phone: '+5511988887777', email: 'douglas@example.com' },
+      { name: 'Lead D', phone: '+5511988887777', email: 'lead.d@example.com' },
     ]
     h.generateReply.mockResolvedValue({
       text: 'Prontinho, agendei pra você!',
@@ -870,7 +1181,7 @@ describe('dispatchInboundToAiReply — HORARIO_ESCOLHIDO', () => {
 })
 
 
-// scheduleAiReply — debounce por conversa (23/09/2026, caso Claudete: rajada
+// scheduleAiReply — debounce por conversa (23/09/2026, caso Lead L: rajada
 // de mensagens em webhooks separados disparava gerações concorrentes, cada
 // uma cega da mensagem que a outra tinha processado — resultado, respostas
 // quase duplicadas). 1º toque responde na hora; demais esperam DEBOUNCE_MS
@@ -921,10 +1232,10 @@ describe('scheduleAiReply — debounce por conversa', () => {
 })
 
 describe('buildContactContextBlock — retorno x lead novo', () => {
-  // Caso Magali, 05/10/2026: lead NOVO do site, só com tag de origem, ouviu
+  // Caso Lead G, 05/10/2026: lead NOVO do site, só com tag de origem, ouviu
   // "Que bom te ver de novo". Tag de origem não é prova de conversa anterior.
   const base = {
-    firstName: 'Magali',
+    firstName: 'Lead G',
     email: null,
     qualTags: ['Bancário'],
     isClient: false,
@@ -938,25 +1249,25 @@ describe('buildContactContextBlock — retorno x lead novo', () => {
   it('lead novo só com tag de origem NÃO é tratado como retornante', () => {
     const b = buildContactContextBlock(base) ?? ''
     expect(b).toContain('PRIMEIRA conversa')
-    expect(b).not.toContain('reconhecer o retorno')
+    expect(b).not.toContain("RETORNO")
     expect(b).not.toContain('Que bom te ver de novo')
   })
 
   it('PF + Bancário (qualificação feita nesta conversa) continua lead novo', () => {
     const b = buildContactContextBlock({ ...base, qualTags: ['Bancário', 'PF'] }) ?? ''
     expect(b).toContain('PRIMEIRA conversa')
-    expect(b).not.toContain('reconhecer o retorno')
+    expect(b).not.toContain("RETORNO")
   })
 
   it('isReturning (disparo ou intervalo entre sessões) continua reconhecendo o retorno', () => {
     const b = buildContactContextBlock({ ...base, isReturning: true }) ?? ''
-    expect(b).toContain('reconhecer o retorno')
+    expect(b).toContain("RETORNO")
     expect(b).not.toContain('PRIMEIRA conversa')
   })
 
   it('tag de qualificação de conversa anterior (Desqualificado) continua retornante', () => {
     const b = buildContactContextBlock({ ...base, qualTags: ['Bancário', 'Desqualificado'] }) ?? ''
-    expect(b).toContain('reconhecer o retorno')
+    expect(b).toContain("RETORNO")
   })
 
   it('card fora de Novo Lead (FUP) continua retornante', () => {
@@ -965,12 +1276,12 @@ describe('buildContactContextBlock — retorno x lead novo', () => {
         ...base,
         etapa: { nome: 'FUP - Reativar Lead', conduta: 'esfriou' },
       }) ?? ''
-    expect(b).toContain('reconhecer o retorno')
+    expect(b).toContain("RETORNO")
   })
 
   it('lead totalmente sem sinal (só nome) segue no ramo de primeira conversa', () => {
     const b = buildContactContextBlock({ ...base, qualTags: [], etapa: null }) ?? ''
-    expect(b).toContain('apresente-se')
-    expect(b).not.toContain('reconhecer o retorno')
+    expect(b).toContain("PRIMEIRA conversa")
+    expect(b).not.toContain("RETORNO")
   })
 })
