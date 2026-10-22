@@ -7,7 +7,7 @@ import { remarcarReserva } from '@/lib/appointments/calcom-reschedule'
 // aconteceu FORA dos caminhos automáticos (Cal.com direto ou o botão
 // "Preciso remarcar" do WhatsApp): reunião que já passou (Cal.com recusa
 // mexer nela pela própria tela) e foi remarcada por telefone/pessoalmente,
-// por exemplo — o caso real que motivou isto (Anderson, 19-24/08/2026):
+// por exemplo — o caso real que motivou isto (Lead E, 19-24/08/2026):
 // reagendado na mão, sem nenhum campo do CRM acompanhar, e o lembrete
 // automático saiu com a data velha.
 //
@@ -19,7 +19,7 @@ import { remarcarReserva } from '@/lib/appointments/calcom-reschedule'
 // primeira vez).
 //
 // Sempre reabre o negócio (status -> open) e garante a etapa "Reunião
-// Agendada": foi o segundo bloqueio silencioso do caso Anderson — o card
+// Agendada": foi o segundo bloqueio silencioso do caso Lead E — o card
 // carregava `status: lost` por baixo mesmo estando na coluna certa.
 //
 // ⛔ NÃO dispara a automação de confirmação (fireStageAutomation é coisa do

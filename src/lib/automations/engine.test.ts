@@ -627,19 +627,19 @@ describe("automacaoVaiResponder", () => {
 // Card sem nome de gente é card que ninguém reconhece no funil.
 describe("tituloDoCard", () => {
   const args = { contactId: "c1", context: {} } as unknown as Parameters<typeof tituloDoCard>[1];
-  const contato = async () => ({ name: "Ademir Souza", phone: "5511999999999" });
+  const contato = async () => ({ name: "Lead Teste", phone: "5511999999999" });
   const semNome = async () => ({ name: "", phone: "5511999999999" });
 
   it("troca {{contact.name}} pelo nome do contato", async () => {
-    expect(await tituloDoCard("{{contact.name}}", args, contato)).toBe("Ademir Souza");
+    expect(await tituloDoCard("{{contact.name}}", args, contato)).toBe("Lead Teste");
   });
 
   it("aceita texto junto da variavel", async () => {
-    expect(await tituloDoCard("Lead — {{contact.name}}", args, contato)).toBe("Lead — Ademir Souza");
+    expect(await tituloDoCard("Lead — {{contact.name}}", args, contato)).toBe("Lead — Lead Teste");
   });
 
   it("titulo em branco cai no nome do contato", async () => {
-    expect(await tituloDoCard("", args, contato)).toBe("Ademir Souza");
+    expect(await tituloDoCard("", args, contato)).toBe("Lead Teste");
   });
 
   it("sem nome, usa o telefone — nunca card anonimo", async () => {

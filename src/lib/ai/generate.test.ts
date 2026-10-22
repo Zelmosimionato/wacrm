@@ -112,7 +112,7 @@ describe('parseGeneration', () => {
     expect(parseGeneration('Qual horário fica melhor?').agendar).toBeNull()
   })
 
-  // Trava de piso (01/09/2026, caso Andreia): o valor precisa sair do texto
+  // Trava de piso (01/09/2026, caso Lead A): o valor precisa sair do texto
   // igual ao AGENDAR/PF/PJ — se escapasse, o cliente leria "[[VALOR:9000]]"
   // no WhatsApp; se não fosse lido, a trava de auto-reply.ts não teria como
   // decidir se a resposta pode sair.

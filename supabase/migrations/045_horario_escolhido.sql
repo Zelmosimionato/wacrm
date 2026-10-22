@@ -1,7 +1,7 @@
 -- 20/09/2026: quando o lead escolhe um horário mas ainda não deu o e-mail
 -- (ou vice-versa), a IA às vezes "esquece" a escolha entre turnos e volta a
 -- perguntar "qual horário você prefere?" mesmo já tendo a resposta — achado
--- real (caso Douglas Santos, conversa ec6ed411). Mesmo padrão já usado pra
+-- real (caso Lead D, conversa ec6ed411). Mesmo padrão já usado pra
 -- valor/segmento (achado 01/09): grava o INSTANTE em que a informação
 -- aparece, o sistema nunca depende da IA lembrar depois.
 

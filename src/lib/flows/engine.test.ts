@@ -1214,13 +1214,13 @@ describe("dispatchInboundToFlows — book_meeting node", () => {
     // contato de verdade.
     vi.stubEnv("CALCOM_API_KEY", "sk_test");
     vi.stubEnv("CALCOM_EVENT_TYPE_ID", "42");
-    h.state.contactRow = { name: "Zelmo Simionato", phone: "5511996004560", email: "zelmo@example.com" };
+    h.state.contactRow = { name: "Zelmo Simionato", phone: "5511900000007", email: "zelmo@example.com" };
     h.state.criarReservaReturn = { ok: true, uid: "uid-real", inicio: "2026-08-12T18:00:00.000Z" };
 
     await sendBookMeetingReply({ horario_escolhido: "2026-08-12T18:00:00.000Z" });
 
     expect(criarReserva).toHaveBeenCalledWith(
-      expect.objectContaining({ telefone: "+5511996004560" }),
+      expect.objectContaining({ telefone: "+5511900000007" }),
     );
   });
 

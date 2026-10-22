@@ -987,7 +987,7 @@ async function processMessage(
 
   if (!flowConsumed && !automacaoResponde && textoParaIa &&
       (!interactiveReplyId || iaPedidaPeloBotao)) {
-    // Debounce por conversa (23/09/2026, caso Claudete): nao chama
+    // Debounce por conversa (23/09/2026, caso Lead L): nao chama
     // dispatchInboundToAiReply direto -- rajadas de mensagens em webhooks
     // separados rodavam geracoes concorrentes e mandavam respostas quase
     // duplicadas. isFirstInboundMessage ja esta calculado acima (sincrono,

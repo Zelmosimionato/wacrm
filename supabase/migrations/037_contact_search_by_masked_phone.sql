@@ -3,7 +3,7 @@
 --
 -- The contact list shows the number masked: "(12) 99162-4095".
 -- Copying that straight back into the search box never matched,
--- because `contacts.phone` stores it unmasked ("+5512991624095")
+-- because `contacts.phone` stores it unmasked ("+5511900000008")
 -- and the search compared the typed text literally.
 --
 -- `phone_normalized` already holds the digits with no mask, so the

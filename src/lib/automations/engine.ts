@@ -994,7 +994,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       // (que ja existe e ja roda no caminho do botao da vespera,
       // `handleVesperaButton`) nunca foi portado pra automacao nativa
       // quando o script antigo (`reagendar_watcher.js`) foi desligado em
-      // 14/08. A Daniela (5512991059294) ficou com reuniao reservada de
+      // 14/08. A Lead F (5511900000006) ficou com reuniao reservada de
       // verdade no Cal.com mesmo com o card em "Reagendar reuniao".
       //
       // Sem config: sempre o contato do evento. Sem uid ou sem chave, ou

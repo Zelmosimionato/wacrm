@@ -71,7 +71,7 @@ export interface GenerateResult {
    *  mostrada nesta resposta), ou null. É índice, nunca data: o modelo escolhe
    *  da lista lida do Cal.com e assim não tem como inventar horário. */
   agendar: number | null
-  /** 20/09/2026 (caso Douglas Santos): a pessoa acabou de ESCOLHER um horário
+  /** 20/09/2026 (caso Lead D): a pessoa acabou de ESCOLHER um horário
    *  da lista, nesta mesma resposta, mas a IA ainda não tem o resto (e-mail,
    *  nome) pra fechar com `[[AGENDAR:N]]` na mesma mensagem — ou null se
    *  este turno não tratou disso. Mesmo índice do campo `agendar` acima,
