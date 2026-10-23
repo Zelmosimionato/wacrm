@@ -424,11 +424,11 @@ export function valorDeclaradoPeloCliente(messages: ChatMessage[]): number | nul
   // "entrada de ..." nunca sao total. Na duvida (so parcela, sem total claro)
   // devolve null: a trava nao dispara e a IA pergunta o valor do contrato.
   const PADRAO =
-    /R\$\s*([\d.,]+)\s*(mil)?\b|([\d.,]+)\s*mil\b|([\d.,]+)\s*reais\b|(?<![\d.,])(\d{1,3}(?:\.\d{3})+(?:,\d{2})?)(?![\d.,])|(?<![\d.,])(\d{1,3})\s*k\b/gi
+    /R\$\s*([\d.,]+)\s*(mil)?\b|([\d.,]+)\s*mil\b|([\d.,]+)\s*reais\b|(?<![\d.,])(\d{1,3}(?:\.\d{3})+(?:,\d{2})?)(?![\d.,])|(?<![\d.,])(\d{1,3})\s*k\b|(?<![\d.,])(\d{5,8}(?:,\d{2})?|\d{4,8},\d{2})(?![\d.,])/gi
   // Não basta encontrar o último número. Em conversas bancárias é comum o
   // cliente informar o contrato e, depois, a parcela ou o saldo restante.
   // O valor da parcela nunca pode substituir o valor total para fins de piso.
-  const CONTEXTO_TOTAL = /\b(total|d[ií]vida|contrat[oa]|contratado|liberad[oa]|devo|montante|empr[eé]stimo|financ\w*)\b/i
+  const CONTEXTO_TOTAL = /\b(total|valor(?:es)?|d[ií]vidas?|contrat[oa]s?|contratado|liberad[oa]|devo|montante|empr[eé]stimo|financ\w*)\b/i
   const CONTEXTO_NAO_TOTAL = /\b(parcela|presta[cç][aã]o|mensalidade|mensal|saldo\s+(?:restante|devedor|atual)|resta(?:m|va[mn])?|falta(?:m|va[mn])?|j[aá]\s+paguei|paguei|pago)\b/i
   const CONTEXTO_FAIXA = /\b(entre|de\s+\d|chega|chegar|fica|ficam|aproximad[oa]|cerca\s+de)\b/i
   const candidatosTotais: number[] = []
@@ -463,6 +463,14 @@ export function valorDeclaradoPeloCliente(messages: ChatMessage[]): number | nul
       } else if (match[6] !== undefined) {
         bruto = match[6]
         ehMil = true
+      } else if (match[7] !== undefined) {
+        // Valor solto sem "R$" (23/10/2026, caso Lead J: "31860,51" nao era lido
+        // e a trava de piso nunca disparou). Sem virgula decimal vale so com 5+
+        // digitos, e nunca logo depois de "n.o", CPF, conta, agencia etc.
+        bruto = match[7]
+        ehMil = false
+        const antesSolto = m.content.slice(Math.max(0, match.index - 25), match.index)
+        if (!bruto.includes(',') && /(n[º°o]\.?|n[úu]mero|num\.?|c[óo]digo|protocolo|cpf|cnpj|conta|ag[êe]ncia)\s*[:\-]?\s*$/i.test(antesSolto)) continue
       }
       if (bruto === undefined) continue
       const numero = normalizaValorBr(bruto)
@@ -535,6 +543,38 @@ async function temReuniaoAgora(
     .eq('contact_id', contactId)
     .eq('tag_id', TAG_AGENDOU)
   return (count ?? 0) > 0
+}
+
+/** "Ok", "obrigado", "valeu" e afins — mensagem que nao pede resposta nem humano. */
+export function ehSoAgradecimento(texto: string): boolean {
+  const palavras = texto
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+  if (palavras.length === 0) return texto.trim().length > 0 && texto.trim().length <= 8 // so emoji
+  if (palavras.length > 4) return false
+  const OK = new Set(['ok', 'okay', 'okk', 'certo', 'combinado', 'blz', 'beleza', 'valeu', 'show', 'perfeito', 'entendi',
+    'obrigado', 'obrigada', 'muito', 'fico', 'agradeco', 'grato', 'grata', 'agradecido', 'agradecida', 'otimo', 'tudo', 'bem', 'isso', 'sim', 'ta', 'tranquilo', 'fechado', 'amem'])
+  return palavras.every((w) => OK.has(w))
+}
+
+async function ultimaDoLeadEhSoAgradecimento(
+  db: ReturnType<typeof supabaseAdmin>,
+  conversationId: string,
+): Promise<boolean> {
+  const { data } = await db
+    .from('messages')
+    .select('content_text, content_type')
+    .eq('conversation_id', conversationId)
+    .eq('sender_type', 'customer')
+    .order('created_at', { ascending: false })
+    .limit(1)
+  const ultima = data?.[0] as { content_text: string | null; content_type: string } | undefined
+  if (!ultima || ultima.content_type !== 'text' || !ultima.content_text) return false
+  return ehSoAgradecimento(ultima.content_text)
 }
 
 async function desfazerReuniao(
@@ -1508,6 +1548,13 @@ export async function dispatchInboundToAiReply(
     // lead falava e ninguém respondia mais, sem nenhum sinal para o escritório.
     // Bateu no teto, a conversa é de humano.
     if (conv.ai_reply_count >= config.autoReplyMaxPerConversation) {
+      // 23/10/2026, caso Lead J: reuniao ja marcada, o lead respondeu "Ok" e o
+      // teto chamou o titular com [ATENCAO]. Agradecimento depois de agendar
+      // nao precisa de gente: fica quieta. Pergunta de verdade segue pro humano.
+      if ((await temReuniaoAgora(db, contactId)) && (await ultimaDoLeadEhSoAgradecimento(db, conversationId))) {
+        console.log(`[ai auto-reply] conversa ${conversationId} no teto, reuniao marcada e so agradecimento — sem handoff.`)
+        return
+      }
       console.warn(
         `[ai auto-reply] conversa ${conversationId} bateu o teto de ${config.autoReplyMaxPerConversation} respostas — passando para humano.`,
       )
