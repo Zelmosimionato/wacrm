@@ -89,7 +89,17 @@ export async function resolveImportTagIds(
     }
   }
 
-  return { tagIdByKey, skippedNames };
+  // O mapa acima nasce com TODAS as etiquetas da conta (serve de busca). Quem chama
+  // usa os valores dele como "as etiquetas pedidas" (API v1: add_tags e tags), entao
+  // devolvemos so as que foram pedidas por nome. Caso 26/10/2026: o webhook da bio pedia 3
+  // etiquetas e o contato recebia as 26 da conta.
+  const pedidas = new Map<string, string>();
+  for (const name of uniqueNames) {
+    const key = name.toLowerCase();
+    const id = tagIdByKey.get(key);
+    if (id) pedidas.set(key, id);
+  }
+  return { tagIdByKey: pedidas, skippedNames };
 }
 
 export interface ContactTagAssignment {
