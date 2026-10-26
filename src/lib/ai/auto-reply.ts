@@ -475,7 +475,10 @@ export function valorDeclaradoPeloCliente(messages: ChatMessage[]): number | nul
       if (bruto === undefined) continue
       const numero = normalizaValorBr(bruto)
       if (numero === null) continue
-      const valor = ehMil ? numero * 1000 : numero
+      // 26/10/2026 ("Foi de 8000mil"): se o numero antes do "mil" ja e 1.000 ou mais, o "mil"
+      // sobra e o valor e o proprio numero ("8000mil" e "8.000 mil" = 8.000), nunca x1000.
+      const milRedundante = ehMil && numero >= 1000
+      const valor = ehMil && !milRedundante ? numero * 1000 : numero
       // "60 x R$ 1.458" (parcela) e "entrada de 10k" nunca são o valor total.
       const antes = m.content.slice(Math.max(0, match.index - 25), match.index)
       if (/\d+\s*[xX]\s*(?:de\s*)?$/.test(antes)) continue
