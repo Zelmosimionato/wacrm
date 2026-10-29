@@ -300,7 +300,7 @@ const RE_NARRACAO: RegExp[] = [
   /\b(?:sem|para nao|pra nao) repetir o que (?:ja|a gente) (?:sabemos|sabe|temos|tem)\b/,
   // "roteiro" só reprova quando é o roteiro INTERNO do produto ou quando o agente diz
   // que o está seguindo/consultando; "o roteiro da reunião" dito ao lead é fala normal.
-  /\broteiro d[oae]s? (?:rcpcc|dbc|def|gpix|rcv|gpass|produto|nicho|atendimento|qualificacao)\b/,
+  /\broteiro d[oae]s? (?:rcpcc|dbc|def|gpix|rcv|gpass|bancario|superendividamento|revisional|desbloqueio|passivos|produto|nicho|atendimento|qualificacao)\b/,
   /\b(?:seguindo|segundo|conforme|consultando|consultei|conferi|pelo) (?:o )?roteiro\b/,
   // (B) o agente falando das próprias regras e instruções
   /\b(?:sem|para nao|pra nao) (?:mexer|alterar|mudar|modificar|quebrar|violar|burlar|ferir) (?:n?as?|em) (?:minhas |suas )?(?:regras|instrucoes|diretrizes)\b/,
@@ -314,6 +314,14 @@ const RE_NARRACAO: RegExp[] = [
   /\b(?:a|o|essa|esse|esta|este) lead\b/,
   /\b(?:siga|continue|prossiga|mantenha|retome) (?:com )?(?:uma|1) pergunta por vez\b/,
   /\bsem repetir a (?:saudacao|apresentacao)\b/,
+  // (E) o agente narrando COMO vai responder (tom, fluxo, perguntas) em vez de responder
+  new RegExp(
+    `\\b${NARRA_AUXILIAR} ${NARRA_FOLGA}responder (?:de (?:forma|maneira|modo)|em tom|` +
+      'com (?:acolhimento|empatia|cuidado|objetividade|clareza|uma pergunta|tom)|como (?:a )?marcia|' +
+      'no fluxo|ao \\w+ com uma pergunta|sem (?:adiantar|repetir|fazer)|so pedir|curto)',
+  ),
+  /\bno fluxo certo\b/,
+  /\b(?:sem|para nao|pra nao) (?:repetir|adiantar) (?:a |as |o |os )?(?:triagem|perguntas desnecessarias|qualificacao)\b/,
 ]
 
 function dividirBaloes(texto: string): string[] {

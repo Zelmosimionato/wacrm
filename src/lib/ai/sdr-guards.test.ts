@@ -77,6 +77,45 @@ describe('validarSaida — narração de processo interno', () => {
   })
 })
 
+describe('validarSaida — roteiro do produto e narração do modo de responder (28/10)', () => {
+  it('reprova roteiro do bancário/superendividamento e variantes', () => {
+    for (const t of [
+      'Vou checar o roteiro do bancário e seguir daí.',
+      'Vou conferir o roteiro do bancário e seguir a conversa.',
+      'Vou ver o roteiro do superendividamento.',
+    ]) {
+      const r = validarSaida(t)
+      expect(r.ok).toBe(false)
+      expect(r.falhas.some((f) => f.codigo === 'narracao')).toBe(true)
+    }
+  })
+
+  it('reprova o agente narrando COMO vai responder', () => {
+    for (const t of [
+      'Vou responder no fluxo certo e sem adiantar perguntas desnecessárias.',
+      'Vou responder com acolhimento e só pedir o que falta.',
+      'Vou responder como a Márcia e seguir o fluxo de desbloqueio.',
+      'Vou responder de forma curta e acolhedora, sem repetir a triagem.',
+      'Entendi. Esse financiamento está no seu nome?Vou responder ao Bruno com uma pergunta objetiva.',
+    ]) {
+      const r = validarSaida(t)
+      expect(r.ok).toBe(false)
+      expect(r.falhas.some((f) => f.codigo === 'narracao')).toBe(true)
+    }
+  })
+
+  it('não reprova "vou responder" dito ao lead sobre o caso dele', () => {
+    for (const t of [
+      'Vou responder sua dúvida: sim, é possível revisar esse contrato.',
+      'Vou te responder assim que o advogado analisar o seu caso.',
+      'Vou responder isso na reunião com o advogado, tudo bem?',
+      'Como a Márcia, serei responsável pelo seu atendimento. Como posso te chamar?',
+    ]) {
+      expect(validarSaida(t).ok).toBe(true)
+    }
+  })
+})
+
 describe('regeneração do validador — marcadores de agenda (caso Lead J, 19/10)', () => {
   const base = { text: 'x', agendar: null as number | null, horarioEscolhido: null as number | null }
 

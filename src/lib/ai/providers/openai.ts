@@ -1,3 +1,4 @@
+import { textoParaOLead } from './estruturado'
 import { AiError, type ProviderResult } from '../types'
 import {
   normalizeUsage,
@@ -151,7 +152,7 @@ export async function generateOpenAi(args: ProviderArgs): Promise<ProviderResult
   if (!itemsResponse.ok) throw await providerHttpError('OpenAI Agents', itemsResponse)
 
   const data = (await itemsResponse.json().catch(() => null)) as AgentItemsResponse | null
-  const text = textoFinalDoAssistente(data?.data || [])
+  const text = textoParaOLead(textoFinalDoAssistente(data?.data || []))
   if (!text || typeof text !== 'string' || !text.trim()) {
     throw new AiError('Márcia 2.0 returned an empty response.', {
       code: 'empty_response',
