@@ -43,6 +43,18 @@ const EMAIL_RUIM = /email_domain_cannot_receive_mail|cannot receive mail|invalid
 /** Marcadores de "esse horário não é mais reservável" no corpo de erro da v2. */
 const INDISPONIVEL = /no_available_users|already.*booked|slot.*not.*available|booking_time_out_of_bounds|no longer available|minimum.*notice/i
 
+/** O Cal.com recusa (400 invalid_number) celular brasileiro de 8 dígitos depois do DDD —
+ *  o formato antigo, que alguns WhatsApp ainda usam (ex.: 55 11 98765432). Achado
+ *  ao vivo em 28/10/2026: a IA não conseguiu reservar e passou a conversa para humano.
+ *  Aqui só o que VAI para o Cal.com ganha o 9º dígito; o número do contato no CRM
+ *  (o do WhatsApp) não muda. Fixo (começa com 2–5) e número que já tem 9 dígitos
+ *  ficam como estão. */
+export function telefoneParaCal(telefone: string): string {
+  const d = telefone.replace(/\D/g, '')
+  const m = d.match(/^55(\d{2})([6-9]\d{7})$/)
+  return m ? `+55${m[1]}9${m[2]}` : telefone.startsWith('+') ? telefone : `+${d}`
+}
+
 export async function criarReserva(args: {
   eventTypeId: string | number
   apiKey: string
@@ -53,7 +65,8 @@ export async function criarReserva(args: {
   /** E.164 com o "+" — é o campo "Whatsapp" obrigatório do formulário. */
   telefone: string
 }): Promise<Reserva> {
-  const { eventTypeId, apiKey, iso, nome, email, telefone } = args
+  const { eventTypeId, apiKey, iso, nome, email } = args
+  const telefone = telefoneParaCal(args.telefone)
   try {
     const res = await fetch(`${CAL_API}/bookings`, {
       method: 'POST',
