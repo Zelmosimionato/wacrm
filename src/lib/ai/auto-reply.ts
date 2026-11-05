@@ -433,8 +433,24 @@ export function valorDeclaradoPeloCliente(messages: ChatMessage[]): number | nul
   const CONTEXTO_FAIXA = /\b(entre|de\s+\d|chega|chegar|fica|ficam|aproximad[oa]|cerca\s+de)\b/i
   const candidatosTotais: number[] = []
   const estimadosPorParcela: number[] = []
-  for (const m of messages) {
+  for (const [mi, m] of messages.entries()) {
     if (m.role !== 'user') continue
+    // 04/11/2026: resposta SECA a pergunta do valor ("7010" depois de "qual o
+    // valor total aproximado?") nao tem R$/mil/reais e tem so 4 digitos, entao
+    // nenhum padrao abaixo a le e a trava de piso nao disparava. Aqui o
+    // contexto vem da pergunta da IA imediatamente anterior.
+    const seca = m.content.trim().match(/^(?:R\$\s*)?(\d{1,3}(?:\.\d{3})+|\d{3,8})(,\d{2})?$/)
+    const perguntaIa = messages[mi - 1]
+    if (seca && perguntaIa?.role === 'assistant') {
+      const q = perguntaIa.content
+      const pedeValor = /\b(valor|quanto)\b/i.test(q) && /\?/.test(q)
+      const pedeParcela = /\b(parcelas?|presta[cç][aãoõ]\w*|mensalidade)\b/i.test(q) && !/\btotal\b/i.test(q)
+      if (pedeValor && !pedeParcela) {
+        const v = normalizaValorBr(seca[1] + (seca[2] ?? ''))
+        if (v !== null) candidatosTotais.push(v)
+        continue
+      }
+    }
     // "60 x R$ 1.458": prazo x parcela. Serve só de ALTA (nunca de piso).
     const NX = /(\d{1,3})\s*[xX]\s*(?:de\s*)?R\$\s*([\d.,]+)/g
     let nx: RegExpExecArray | null
@@ -1279,6 +1295,9 @@ async function marcarCardParaAtencao(
     .eq('id', card.id)
 }
 
+/** Etapa Perdido do funil de vendas da IA: a IA nao atende quem esta aqui. */
+const ETAPA_PERDIDO_ID = '0d0382a5-f15d-4e43-88aa-0c70337d94d4'
+
 /** Etapas em que a conversa é de gente, não de máquina. */
 const ETAPAS_SENSIVEIS = new Set([
   'ef0adf54-fe31-4492-8bbe-40ef49a249eb',
@@ -1739,6 +1758,22 @@ export async function dispatchInboundToAiReply(
       isClient ? Promise.resolve(null) : etapaDoCard(db, contactId),
     ])
     const etapaSensivelAgora = !!(etapa && ETAPAS_SENSIVEIS.has(etapa.id))
+    // Perdido e ponto final (04/11/2026): lead cujo card esta em Perdido nao e mais
+    // atendido pela IA. Ela nao responde nem qualifica; a conversa vai para um humano,
+    // com aviso, para o silencio nao passar despercebido.
+    if (etapa && etapa.id === ETAPA_PERDIDO_ID && !isClient) {
+      console.log(`[ai auto-reply] card em Perdido - IA nao atende, passado para humano (conversa ${conversationId})`)
+      await passarParaHumano(
+        db,
+        accountId,
+        contactId,
+        conversationId,
+        `${MARCA_ATENCAO} Lead escreveu com o card em "Perdido". A IA nao atende lead perdido e nao respondeu - assuma daqui se fizer sentido.`,
+        config.handoffAgentId,
+        !!conv.assigned_agent_id,
+      )
+      return
+    }
 
     const contextBlock = buildContactContextBlock({
       firstName,

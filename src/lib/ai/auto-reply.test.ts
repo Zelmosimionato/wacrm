@@ -1285,3 +1285,39 @@ describe('buildContactContextBlock — retorno x lead novo', () => {
     expect(b).not.toContain("RETORNO")
   })
 })
+
+describe('dispatchInboundToAiReply — card em Perdido (04/11/2026)', () => {
+  const ETAPA_PERDIDO = '0d0382a5-f15d-4e43-88aa-0c70337d94d4'
+  it('card em Perdido: a IA nao responde nem chama o modelo, e passa para humano', async () => {
+    h.state.porTabela['deals'] = [{ stage_id: ETAPA_PERDIDO }]
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.generateReply).not.toHaveBeenCalled()
+    expect(h.engineSendText).not.toHaveBeenCalled()
+    expect(h.state.updatePayload).toEqual(expect.objectContaining({ ai_autoreply_disabled: true }))
+  })
+  it('card fora de Perdido: segue atendendo normalmente', async () => {
+    h.state.porTabela['deals'] = [{ stage_id: 'outra-etapa' }]
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.generateReply).toHaveBeenCalled()
+  })
+})
+
+describe("valorDeclaradoPeloCliente — resposta seca a pergunta do valor (04/11)", () => {
+  const pergunta = { role: "assistant" as const, content: "Entendi. Você sabe me dizer o valor total aproximado desse consignado?" }
+  it("lê 7010 solto como valor total", () => {
+    expect(valorDeclaradoPeloCliente([pergunta, { role: "user", content: "7010" }])).toBe(7010)
+  })
+  it("lê 7.010 e R$ 7010 soltos", () => {
+    expect(valorDeclaradoPeloCliente([pergunta, { role: "user", content: "7.010" }])).toBe(7010)
+    expect(valorDeclaradoPeloCliente([pergunta, { role: "user", content: "R$ 7010" }])).toBe(7010)
+  })
+  it("não lê número solto sem pergunta de valor antes", () => {
+    const outra = { role: "assistant" as const, content: "Qual o seu CEP?" }
+    expect(valorDeclaradoPeloCliente([outra, { role: "user", content: "7010" }])).toBeNull()
+    expect(valorDeclaradoPeloCliente([{ role: "user", content: "7010" }])).toBeNull()
+  })
+  it("não toma o valor da parcela como total", () => {
+    const p = { role: "assistant" as const, content: "Qual o valor da parcela?" }
+    expect(valorDeclaradoPeloCliente([p, { role: "user", content: "700" }])).toBeNull()
+  })
+})
