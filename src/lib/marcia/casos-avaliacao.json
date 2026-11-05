@@ -1,0 +1,309 @@
+{
+  "descricao": "Casos reais para avaliar o MODELO (leitura do valor). Cada caso: conversa e o valorTotal esperado. null = o cliente ainda não deu o valor total. Rodar contra o modelo exige chave de API (pendente).",
+  "casos": [
+    {
+      "id": "consignado-7010-04-11",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "ia",
+          "Você sabe me dizer o valor total aproximado desse consignado?"
+        ],
+        [
+          "cliente",
+          "7010"
+        ]
+      ],
+      "valorTotal": 7010
+    },
+    {
+      "id": "cartao-15-16-mil-04-11",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "ia",
+          "Qual o valor total das faturas?"
+        ],
+        [
+          "cliente",
+          "as duas juntas dão uns 15, 16 mil reais"
+        ]
+      ],
+      "valorTotal": 16000
+    },
+    {
+      "id": "r-90-mil-18-09",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "ia",
+          "Qual o valor da dívida?"
+        ],
+        [
+          "cliente",
+          "R$ 90 mil"
+        ]
+      ],
+      "valorTotal": 90000
+    },
+    {
+      "id": "valor-52000-com-entrada-e-parcela-13-10",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "cliente",
+          "Valor aproximado\n52.000,00\nEntrada de 10k + 60 x R$1.458,00"
+        ]
+      ],
+      "valorTotalMinimo": 52000,
+      "obs": "aceita de 52 mil a ~97 mil; nunca a parcela de 1.458 nem a entrada de 10k"
+    },
+    {
+      "id": "so-parcela-nao-e-total",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "ia",
+          "Qual o valor da parcela?"
+        ],
+        [
+          "cliente",
+          "R$ 1.458,00"
+        ]
+      ],
+      "valorTotal": null
+    },
+    {
+      "id": "valor-solto-decimal-23-10",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "ia",
+          "Qual o valor total?"
+        ],
+        [
+          "cliente",
+          "31860,51"
+        ]
+      ],
+      "valorTotal": 31861
+    },
+    {
+      "id": "8000mil-26-10",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "ia",
+          "Qual o valor da dívida?"
+        ],
+        [
+          "cliente",
+          "Foi de 8000mil"
+        ]
+      ],
+      "valorTotal": 8000
+    },
+    {
+      "id": "quase-17-mil",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "ia",
+          "Qual o valor total?"
+        ],
+        [
+          "cliente",
+          "quase 17 mil"
+        ]
+      ],
+      "valorTotal": 17000
+    },
+    {
+      "id": "cheque-especial-450-01-09",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "cliente",
+          "devo R$450,00 de cheque especial"
+        ]
+      ],
+      "valorTotal": 450
+    },
+    {
+      "id": "pf-9614-11-09",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "ia",
+          "Qual o valor da dívida?"
+        ],
+        [
+          "cliente",
+          "9614.69"
+        ]
+      ],
+      "valorTotal": 9615
+    },
+    {
+      "id": "dbc-mais-de-3000-15-10",
+      "area": "DBC",
+      "conversa": [
+        [
+          "ia",
+          "Qual o valor bloqueado?"
+        ],
+        [
+          "cliente",
+          "Mais de 3000"
+        ]
+      ],
+      "valorTotal": null,
+      "obs": "vago: o modelo deve devolver null e perguntar o valor exato"
+    },
+    {
+      "id": "dbc-valor-exato",
+      "area": "DBC",
+      "conversa": [
+        [
+          "ia",
+          "Qual o valor bloqueado?"
+        ],
+        [
+          "cliente",
+          "bloquearam 6.200 na minha conta"
+        ]
+      ],
+      "valorTotal": 6200
+    },
+    {
+      "id": "sem-valor-ainda",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "cliente",
+          "Tô com consignado BMG queria ver se tem como baixar"
+        ]
+      ],
+      "valorTotal": null
+    },
+    {
+      "id": "telefone-e-data-nao-sao-valor",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "cliente",
+          "meu telefone é 11 99873 5631, nasci em 12/03/1980"
+        ]
+      ],
+      "valorTotal": null
+    },
+    {
+      "id": "h-dbc-uns-4-mil",
+      "area": "DBC",
+      "conversa": [
+        [
+          "ia",
+          "Qual o valor bloqueado?"
+        ],
+        [
+          "cliente",
+          "uns 4 mil"
+        ]
+      ],
+      "valorTotal": null
+    },
+    {
+      "id": "h-dbc-exato-com-contexto",
+      "area": "DBC",
+      "conversa": [
+        [
+          "cliente",
+          "tinha 12 mil na conta e levaram tudo"
+        ]
+      ],
+      "valorTotal": 12000
+    },
+    {
+      "id": "h-rcpcc-mais-de-60-mil",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "ia",
+          "Qual o valor total?"
+        ],
+        [
+          "cliente",
+          "mais de 60 mil"
+        ]
+      ],
+      "valorTotal": 60000
+    },
+    {
+      "id": "h-rcpcc-soma-de-contratos",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "cliente",
+          "são 3 contratos, um de 20 mil e outro de 35 mil"
+        ]
+      ],
+      "valorTotal": 55000
+    },
+    {
+      "id": "h-rcpcc-20mil-colado",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "ia",
+          "Qual o valor da dívida?"
+        ],
+        [
+          "cliente",
+          "20mil"
+        ]
+      ],
+      "valorTotal": 20000
+    },
+    {
+      "id": "h-rcpcc-100-mil",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "ia",
+          "Qual o valor total?"
+        ],
+        [
+          "cliente",
+          "100 mil"
+        ]
+      ],
+      "valorTotal": 100000
+    },
+    {
+      "id": "h-rcpcc-saldo-vs-contrato",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "cliente",
+          "ainda devo 2.300 de um empréstimo de 8.000"
+        ]
+      ],
+      "valorTotal": 8000
+    },
+    {
+      "id": "h-rcpcc-salario-nao-e-divida",
+      "area": "RCPCC",
+      "conversa": [
+        [
+          "ia",
+          "Qual o valor total das dívidas?"
+        ],
+        [
+          "cliente",
+          "meu salário é 5 mil e as dívidas dão 30 mil"
+        ]
+      ],
+      "valorTotal": 30000
+    }
+  ]
+}
