@@ -2,14 +2,14 @@
 // modo 'sombra': decide e REGISTRA (arquivo de log), não envia nem grava nada no CRM.
 // modo 'ligado': executa de verdade. Falha nunca é silenciosa: erro do modelo → 1 nova tentativa → equipe + alerta.
 // ⛔ Ainda NÃO está ligado a nenhum webhook; só é chamado por scripts até o titular aprovar a troca.
-import { appendFileSync, existsSync, readFileSync } from 'node:fs'
+import { appendFileSync } from 'node:fs'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { fetchAgentConfig } from '../ai/agent-config'
 import { agendaDoEscritorio } from '../ai/auto-reply'
 import { loadAiConfig } from '../ai/config'
 import { buildConversationContext } from '../ai/context'
 import { executar, type ResumoExecucao } from './executor'
 import { fatosParaTexto, lerFatos } from './fatos'
+import { carregarInstrucoes } from './instrucoes'
 import { decidirComModelo, lerValorFocado } from './modelo'
 import { portasReais } from './portas-reais'
 import { MENSAGENS } from './mensagens'
@@ -56,9 +56,7 @@ export async function processarMensagem(a: EntradaArgs): Promise<SaidaProcessar>
   const textoDoCliente = conversa.filter((m) => m.role === 'user').map((m) => m.content).join('\n')
   const fatos = { ...lidos.fatos, textoDoCliente }
 
-  const arquivo = process.env.MARCIA_V2_INSTRUCOES_FILE
-  const agente = arquivo && existsSync(arquivo) ? null : await fetchAgentConfig(config.apiKey)
-  const instrucoes = arquivo && existsSync(arquivo) ? readFileSync(arquivo, 'utf8') : (agente?.instructions ?? config.systemPrompt ?? '')
+  const { texto: instrucoes } = await carregarInstrucoes(config.apiKey, config.systemPrompt ?? null)
   const { data: contato } = await db.from('contacts').select('name, phone, email').eq('id', a.contactId).maybeSingle()
   const c = contato as { name: string | null; phone: string | null; email: string | null } | null
   const { data: conv } = await db.from('conversations').select('assigned_agent_id').eq('id', a.conversationId).maybeSingle()

@@ -1,6 +1,6 @@
 // REPLAY (só leitura): passa conversas reais antigas pela Márcia v2 e compara com o que a Márcia atual fez.
 // Não envia nada, não grava nada. Uso: tsx scripts/marcia-replay.ts [dias=45] [maxChamadas=120] [modelo]
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 
 for (const l of readFileSync('/root/wacrm/.env.local', 'utf8').split('\n')) {
   const m = l.match(/^([A-Z0-9_]+)=(.*)$/)
@@ -13,7 +13,7 @@ const MAX = Number(process.argv[3] ?? 120)
 async function main() {
   const { createClient } = await import('@supabase/supabase-js')
   const { decrypt } = await import('../src/lib/whatsapp/encryption')
-  const { fetchAgentConfig } = await import('../src/lib/ai/agent-config')
+  const { carregarInstrucoes } = await import('../src/lib/marcia/instrucoes')
   const { lerFatos, fatosParaTexto } = await import('../src/lib/marcia/fatos')
   const { decidirComModelo, lerValorFocado } = await import('../src/lib/marcia/modelo')
   const { decidir } = await import('../src/lib/marcia/porteiro')
@@ -22,10 +22,10 @@ async function main() {
   const { data: cfg } = await db.from('ai_configs').select('model, api_key').eq('is_active', true).limit(1)
   const apiKey = decrypt(cfg![0].api_key)
   const model = process.argv[4] ?? cfg![0].model
-  const arquivo = process.env.MARCIA_V2_INSTRUCOES_FILE
-  const agente = arquivo && existsSync(arquivo) ? { instructions: readFileSync(arquivo, 'utf8') } : await fetchAgentConfig(apiKey)
-  if (!agente) throw new Error('não consegui ler as instruções do agente (plataforma)')
-  console.log('instruções:', arquivo && existsSync(arquivo) ? 'ARQUIVO ' + arquivo : 'agente vivo da plataforma', '| caracteres', agente.instructions.length)
+  const ins = await carregarInstrucoes(apiKey, null)
+  if (!ins.texto) throw new Error('não consegui ler as instruções (plataforma)')
+  const agente = { instructions: ins.texto }
+  console.log('instruções:', ins.origem, '| caracteres', ins.texto.length)
   const amostra: string[] = []
 
   const desde = new Date(Date.now() - DIAS * 86_400_000).toISOString()
