@@ -1853,6 +1853,27 @@ export async function dispatchInboundToAiReply(
         usage: u,
       })
 
+    // Márcia 3.0 ASSUME no lugar da atual (05/11/2026): com MARCIA_V3_LIGADA=1 o módulo novo decide e executa a resposta.
+    // O fluxo antigo abaixo fica intacto e volta a valer ao tirar a variável (+ pm2 restart wacrm).
+    // Erro ANTES de qualquer efeito (config, fatos, instruções) cai no fluxo antigo; falha do modelo já vira handoff dentro do módulo.
+    if (process.env.MARCIA_V3_LIGADA === '1') {
+      try {
+        const { processarMensagem } = await import('../marcia/processar')
+        await processarMensagem({
+          db,
+          accountId,
+          userId: configOwnerUserId,
+          contactId,
+          conversationId,
+          canal: channel === 'web' ? 'web' : 'api',
+          modo: 'ligado',
+        })
+        return
+      } catch (err) {
+        console.error('[marcia 3.0] falhou antes de responder; usando o fluxo antigo:', err instanceof Error ? err.message : err)
+      }
+    }
+
     // Márcia v2 em MODO SOMBRA (04/11/2026): decide em paralelo e só REGISTRA em log; não envia nem grava nada no CRM.
     // Liga/desliga por MARCIA_V2_SOMBRA=1. Nunca pode atrapalhar a resposta atual (fire-and-forget, erro só vai ao log).
     if (process.env.MARCIA_V2_SOMBRA === '1') {
