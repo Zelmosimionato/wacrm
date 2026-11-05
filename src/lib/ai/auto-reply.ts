@@ -50,7 +50,7 @@ import {
 /** Horários livres do escritório (rótulo para a frase + ISO para reservar).
  *  Silencioso por desenho: sem chave, sem tipo de evento ou com a API fora,
  *  devolve [] e a IA simplesmente não fala de horário. */
-async function agendaDoEscritorio(): Promise<SlotLivre[]> {
+export async function agendaDoEscritorio(): Promise<SlotLivre[]> {
   const chave = process.env.CALCOM_API_KEY
   const evento = process.env.CALCOM_EVENT_TYPE_ID
   if (!chave || !evento) return []
@@ -58,7 +58,7 @@ async function agendaDoEscritorio(): Promise<SlotLivre[]> {
 }
 
 /** Link público do evento — a saída de emergência quando a reserva não sai. */
-const AGENDA_LINK = 'https://cal.com/simionato-advogados-n4sm0p/45min'
+export const AGENDA_LINK = 'https://cal.com/simionato-advogados-n4sm0p/45min'
 
 /**
  * Textos que SUBSTITUEM a resposta da IA quando a reserva não se concretiza.
@@ -67,7 +67,7 @@ const AGENDA_LINK = 'https://cal.com/simionato-advogados-n4sm0p/45min'
  * não existe. Cada texto vai ao ar como mensagem de WhatsApp para cliente
  * real: mudar aqui é mudar a voz do escritório.
  */
-const FALTA_EMAIL =
+export const FALTA_EMAIL =
   'Para eu já deixar a sua reunião confirmada, preciso do seu e-mail — é para lá que vai o convite com o link da videochamada.\n\nPode me passar, por gentileza?'
 const FALTA_NOME =
   'Para eu já deixar a sua reunião confirmada, me confirma o seu nome completo, por gentileza?'
@@ -113,7 +113,7 @@ export const VALOR_ABAIXO_DO_PISO =
   'Entendi. Pelas informações que você me passou, infelizmente o seu caso não se enquadra no perfil de atendimento que estamos trabalhando neste momento.\n\nComo trabalhamos com processos judiciais, precisamos considerar os custos envolvidos em relação aos benefícios que podem ser obtidos. No seu caso, esses custos podem não compensar, tornando a medida judicial economicamente inviável.\n\nMas agradecemos muito o seu contato. Estaremos sempre de portas abertas caso futuramente precise nos procurar novamente.\n\nMas você não fica sem nada: no nosso blog e nos materiais gratuitos tem bastante coisa que ajuda. Blog: https://simionatoadvogados.com.br/blog/ · Materiais: https://simionatoadvogados.com.br/materiais-gratuitos/'
 const EMAIL_NAO_RECEBE =
   'Esse e-mail não está recebendo mensagens — deve ter escapado um errinho de digitação.\n\nPode conferir e me mandar de novo? É para lá que vai o convite da videochamada.'
-const HORARIO_TOMADO =
+export const HORARIO_TOMADO =
   'Esse horário acabou de ser reservado, me desculpe.\n\nVocê consegue escolher outro por aqui — o que aparecer na tela está livre de verdade: ' +
   AGENDA_LINK
 const FALHA_AGENDA =
@@ -159,7 +159,7 @@ const JA_TEM_REUNIAO =
  * REALMENTE sair. Regra única: só a resposta da IA sai quando a reunião foi
  * criada; qualquer outro desfecho vira um texto honesto.
  */
-async function reservarHorario(args: {
+export async function reservarHorario(args: {
   db: ReturnType<typeof supabaseAdmin>
   contactId: string
   indice: number
@@ -367,7 +367,7 @@ async function abaixoPisoPersistido(
  *  vira um loop que nunca desliga sozinho). Mantém a porta aberta de
  *  verdade: se a pessoa mais tarde declarar um valor novo igual ou acima do
  *  piso, a tag some e ela deixa de estar travada. */
-async function aplicarVeredictoPiso(
+export async function aplicarVeredictoPiso(
   db: ReturnType<typeof supabaseAdmin>,
   contactId: string,
   abaixo: boolean,
@@ -580,7 +580,7 @@ async function ultimaDoLeadEhSoAgradecimento(
   return ehSoAgradecimento(ultima.content_text)
 }
 
-async function desfazerReuniao(
+export async function desfazerReuniao(
   db: ReturnType<typeof supabaseAdmin>,
   contactId: string,
 ): Promise<boolean> {
@@ -615,7 +615,7 @@ async function desfazerReuniao(
   return cancelado
 }
 
-async function applyAiCardMove(
+export async function applyAiCardMove(
   db: ReturnType<typeof supabaseAdmin>,
   args: {
     accountId: string
@@ -1064,7 +1064,7 @@ async function contatoEhCliente(
   return false
 }
 
-interface CanalDeEnvio {
+export interface CanalDeEnvio {
   accountId: string
   userId: string
   conversationId: string
@@ -1073,7 +1073,7 @@ interface CanalDeEnvio {
 }
 
 /** Envia um texto fixo ao lead pelo canal da conversa, marcado como da IA. Nunca lança. */
-async function enviarTextoDaIa(
+export async function enviarTextoDaIa(
   db: ReturnType<typeof supabaseAdmin>,
   c: CanalDeEnvio,
   texto: string,
@@ -1108,7 +1108,7 @@ async function enviarTextoDaIa(
  * Grava o handoff (desliga a IA, notifica; o resumo leva `[ATENÇÃO]`) e depois
  * envia o acolhimento fixo ao lead.
  */
-async function handoffComAcolhimento(
+export async function handoffComAcolhimento(
   db: ReturnType<typeof supabaseAdmin>,
   c: CanalDeEnvio,
   resumo: string,
@@ -1461,7 +1461,7 @@ export function buildContactContextBlock(args: {
  * human types. Capped so a long reply cannot fan out into a wall of pings;
  * overflow is merged back into the last bubble rather than dropped.
  */
-function splitBubbles(text: string): string[] {
+export function splitBubbles(text: string): string[] {
   const parts = text
     .split(/\n\s*\n/)
     .map((s) => s.trim())
