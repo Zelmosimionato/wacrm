@@ -13,6 +13,7 @@ import { carregarInstrucoes } from './instrucoes'
 import { decidirComModelo, lerValorFocado } from './modelo'
 import { portasReais } from './portas-reais'
 import { MENSAGENS } from './mensagens'
+import { validarSaida } from '../ai/sdr-guards'
 import { decidir, type Decisao, type Resultado } from './porteiro'
 
 export type Modo = 'sombra' | 'ligado'
@@ -92,8 +93,22 @@ export async function processarMensagem(a: EntradaArgs): Promise<SaidaProcessar>
       decidirComModelo({ apiKey: config.apiKey, model: config.model, instrucoes, fatosTexto: fatosParaTexto(lidos, horarios), conversa, produto: fatos.produto }),
     )
     const foc = await comUmaRepeticao(() => lerValorFocado({ apiKey: config.apiKey, model: config.model, produto: fatos.produto, conversa }))
-    const decisao: Decisao = { ...r.decisao, valorTotal: foc.valorTotal, valorRelacao: foc.valorRelacao, valorTipo: foc.valorTipo, valorTrecho: foc.valorTrecho }
-    const resultado = decidir(decisao, fatos)
+    let decisao: Decisao = { ...r.decisao, valorTotal: foc.valorTotal, valorRelacao: foc.valorRelacao, valorTipo: foc.valorTipo, valorTrecho: foc.valorTrecho }
+    let resultado = decidir(decisao, fatos)
+
+    // 05/11/2026 (1o teste ao vivo): mensagem barrada pelo filtro de saida (ex.: 2 perguntas) ia direto para a equipe.
+    // Como no fluxo antigo, reescreve antes de desistir: ate 2 regeneracoes com a falha anexada; so entao o executor passa a equipe.
+    for (let i = 0; i < 2 && resultado.acao.tipo === 'enviar'; i++) {
+      const v = validarSaida(resultado.acao.texto, { textoLead: textoDoCliente })
+      if (v.ok) break
+      const aviso = `Instrução do sistema: sua resposta anterior foi reprovada (${v.falhas.map((f) => f.detalhe).join('; ')}). Reescreva a mensagem ao lead corrigindo isso: no máximo UMA pergunta, sem marcadores [[ ]], sem narrar processo interno e sem citar valores de corte.`
+      const r2 = await comUmaRepeticao(() =>
+        decidirComModelo({ apiKey: config.apiKey, model: config.model, instrucoes, fatosTexto: `${fatosParaTexto(lidos, horarios)}
+${aviso}`, conversa, produto: fatos.produto }),
+      )
+      decisao = { ...r2.decisao, valorTotal: foc.valorTotal, valorRelacao: foc.valorRelacao, valorTipo: foc.valorTipo, valorTrecho: foc.valorTrecho }
+      resultado = decidir(decisao, fatos)
+    }
 
     if (a.modo === 'sombra') {
       appendFileSync(
