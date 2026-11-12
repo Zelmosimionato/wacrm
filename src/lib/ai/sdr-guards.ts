@@ -108,6 +108,12 @@ const PADROES_PROCESSO: PadraoProcesso[] = [
   { nome: 'intimacao', re: /\bintimac(?:ao|oes)\b|\bintimad[oa]s?\b/g },
   { nome: 'audiencia', re: /\baudienc(?:ia|ias)\b/g },
   { nome: 'bloqueio_judicial', re: /\bbloqueio\s+judicial\b|\boficial\s+de\s+justica\b|\barresto\b/g },
+  // 09/11/2026 (lead de bloqueio por tributo, 07/11): conta/saldo bloqueado e bloqueio judicial na pratica. Fora do
+  // Desbloqueio de Conta (DBC, isento no chamador) a IA para e passa ao titular, como em "bloqueio judicial".
+  {
+    nome: 'conta_bloqueada',
+    re: /\bbloqueio\s+(?:(?:de|da|do|das|dos|na|no|nas|nos|em)\s+)?(?:(?:minha|meu|minhas|meus|sua|seu)\s+)?(?:conta|contas|saldo|salario|dinheiro|valor|valores|poupanca|aplicac(?:ao|oes))\b|\b(?:conta|contas|saldo|salario|dinheiro|valor|valores|poupanca)\s+(?:\S+\s+){0,2}bloquead[oa]s?\b|\bbloque(?:aram|ou)\s+(?:(?:a|o|as|os|minha|meu|minhas|meus|na|no|todo|toda)\s+)*(?:conta|contas|saldo|salario|dinheiro|valor|valores|poupanca)\b/g,
+  },
   { nome: 'juiz', re: /\bjuiz(?:a|o|ado)?\b/g },
   { nome: 'sentenca', re: /\bsentenca\b/g },
   { nome: 'justica', re: /\bna\s+justica\b|\bforum\b|\btribunal\b|\bvara\s+(?:civel|federal|da|do|de|empresarial|fazenda)\b/g },

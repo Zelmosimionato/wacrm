@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decidir, type Decisao, type Fatos } from './porteiro'
+import { decidir, saldoPorParcelas, type Decisao, type Fatos } from './porteiro'
 
 const fatos = (o: Partial<Fatos> = {}): Fatos => ({
   produto: 'RCPCC',
@@ -65,7 +65,8 @@ describe('porteiro — piso (caso 04/11: consignado 7010, RCPCC)', () => {
     expect(decidir(dec({ valorTotal: 70_000, segmento: 'PJ' }), fatos({ produto: null })).acao.tipo).toBe('recusa')
   })
   it('recusa gravada vale em turno sem valor novo', () => {
-    expect(decidir(dec(), fatos({ abaixoPisoGravado: true })).acao).toEqual({ tipo: 'recusa', motivo: 'piso' })
+    // 09/11: já recusado e sem valor novo = silêncio (a recusa não se repete)
+    expect(decidir(dec(), fatos({ abaixoPisoGravado: true })).acao).toEqual({ tipo: 'silencio' })
   })
   it('FALHA FECHADA: sem valor lido, oferecer horário vira pergunta do valor', () => {
     expect(decidir(dec({ intencao: 'oferecer_horarios' }), fatos()).acao).toEqual({ tipo: 'perguntar_valor' })
@@ -100,7 +101,7 @@ describe('porteiro — Desbloqueio de Conta (faixas 3 mil / 5 mil)', () => {
     expect(decidir(dec({ intencao: 'oferecer_horarios' }), dbc()).acao).toEqual({ tipo: 'perguntar_valor' })
   })
   it('recusa gravada sem valor novo mantém a recusa', () => {
-    expect(decidir(dec(), dbc({ abaixoPisoGravado: true })).acao).toEqual({ tipo: 'recusa', motivo: 'dbc_abaixo' })
+    expect(decidir(dec(), dbc({ abaixoPisoGravado: true })).acao).toEqual({ tipo: 'silencio' })
   })
 })
 
@@ -111,6 +112,9 @@ describe('porteiro — agenda', () => {
   })
   it('registra horário válido', () => {
     expect(decidir(dec({ ...ok, intencao: 'horario_escolhido', horarioN: 2 }), fatos()).acao).toMatchObject({ tipo: 'enviar', efeito: 'registrar_horario', horarioN: 2 })
+    // 09/11: e-mail já conhecido (cadastro ou nesta mensagem) + horário escolhido = reserva direto
+    expect(decidir(dec({ ...ok, intencao: 'horario_escolhido', horarioN: 1 }), fatos({ emailNoCadastro: 'x@y.com' })).acao).toMatchObject({ tipo: 'enviar', efeito: 'agendar', horarioN: 1, email: 'x@y.com' })
+    expect(decidir(dec({ ...ok, intencao: 'horario_escolhido', horarioN: 1, email: 'a@b.com' }), fatos()).acao).toMatchObject({ tipo: 'enviar', efeito: 'agendar', horarioN: 1, email: 'a@b.com' })
   })
   it('confirmar sem e-mail pede o e-mail', () => {
     expect(decidir(dec({ ...ok, intencao: 'confirmar_agendamento', horarioN: 1 }), fatos()).acao).toEqual({ tipo: 'pedir_email' })
@@ -119,12 +123,20 @@ describe('porteiro — agenda', () => {
     const r = decidir(dec({ ...ok, intencao: 'confirmar_agendamento', horarioN: 1 }), fatos({ emailNoCadastro: 'x@y.com' }))
     expect(r.acao).toMatchObject({ tipo: 'enviar', efeito: 'agendar', horarioN: 1, email: 'x@y.com' })
   })
+  it('quem ja tem reuniao nao reserva de novo: confirmar/escolher/oferecer viram conversa, sem reservar nem mover card (06/11 Clecius e Adilia)', () => {
+    const f = fatos({ temReuniao: true, emailNoCadastro: 'x@y.com' })
+    for (const intencao of ['confirmar_agendamento', 'horario_escolhido', 'oferecer_horarios'] as const) {
+      expect(decidir(dec({ ...ok, intencao, horarioN: 1 }), f).acao).toMatchObject({ tipo: 'enviar', efeito: 'nenhum' })
+    }
+  })
   it('desmarcar, reagendar, recusar e porta aberta', () => {
     const f = fatos({ temReuniao: true })
     expect(decidir(dec({ intencao: 'desmarcar' }), f).acao).toMatchObject({ efeito: 'desmarcar' })
     expect(decidir(dec({ intencao: 'reagendar' }), f).acao).toMatchObject({ efeito: 'reagendar' })
     expect(decidir(dec({ intencao: 'recusou' }), f).acao).toMatchObject({ efeito: 'perdido' })
-    expect(decidir(dec({ intencao: 'encerrar_porta_aberta' }), f).acao).toMatchObject({ efeito: 'porta_aberta' })
+    // 09/11: com reuniao marcada, despedida nao manda o "Se mudar de ideia" (caso Adilia 07/11)
+    expect(decidir(dec({ intencao: 'encerrar_porta_aberta' }), f).acao).toMatchObject({ tipo: 'enviar', efeito: 'nenhum' })
+    expect(decidir(dec({ intencao: 'encerrar_porta_aberta' }), fatos()).acao).toMatchObject({ efeito: 'porta_aberta' })
   })
 })
 
@@ -177,5 +189,37 @@ describe('porteiro — recusa só com total explícito e trecho conferido (repla
   })
   it('qualificar (acima do piso) não exige confirmação', () => {
     expect(decidir(dec({ valorTotal: 80_000, valorTipo: 'outro', valorTrecho: null, intencao: 'oferecer_horarios' }), fatos()).acao.tipo).toBe('enviar')
+  })
+})
+
+describe('porteiro — saldo pelas parcelas que o lead escreveu (09/11)', () => {
+  const alison = 'Analise de empréstimos contratados. | 1 empréstimo consignado e pessoal | Não me lembro. | Pessoal 19 parcelas de 275,37 | Consignado: 72 parcelas de 322,15 | Isto.'
+  it('soma quantidade × parcela, sem contar repetição', () => {
+    expect(saldoPorParcelas(alison)).toBeCloseTo(28426.83, 2)
+    expect(saldoPorParcelas('48 X 1662,29 | Dei 20 mil de entrada | 48 X 1662,29')).toBeCloseTo(79789.92, 2)
+    expect(saldoPorParcelas('faltam 10 parcelas de R$ 1.200,00')).toBe(12000)
+    expect(saldoPorParcelas('tenho uma divida de 7010 reais no consignado')).toBeNull()
+  })
+  it('na hora de agendar, saldo abaixo do corte recusa (caso Alison)', () => {
+    const r = decidir(dec({ intencao: 'oferecer_horarios', valorTotal: null, valorTipo: null, valorTrecho: null }), fatos({ textoDoCliente: alison }))
+    expect(r.acao).toEqual({ tipo: 'recusa', motivo: 'piso' })
+    expect(r.gravarAbaixoPiso).toBe(true)
+  })
+  it('modelo devolveu valor como "outro": ainda vale o saldo na hora de agendar', () => {
+    const r = decidir(dec({ intencao: 'confirmar_agendamento', horarioN: 1, valorTotal: 26786, valorTipo: 'outro' }), fatos({ textoDoCliente: alison }))
+    expect(r.acao).toEqual({ tipo: 'recusa', motivo: 'piso' })
+  })
+  it('no meio da conversa (só um contrato informado) não recusa', () => {
+    const r = decidir(dec({ intencao: 'conversar', valorTotal: null, valorTipo: null }), fatos({ textoDoCliente: 'Pessoal 19 parcelas de 275,37' }))
+    expect(r.acao).toMatchObject({ tipo: 'enviar', efeito: 'nenhum' })
+  })
+  it('saldo acima do corte segue para os horários', () => {
+    const r = decidir(dec({ intencao: 'oferecer_horarios', valorTotal: null, valorTipo: null }), fatos({ textoDoCliente: '48 X 1662,29 | e mais 30 parcelas de 900' }))
+    expect(r.acao).toMatchObject({ tipo: 'enviar', efeito: 'oferecer_horarios' })
+    expect(r.gravarAbaixoPiso).toBe(false)
+  })
+  it('total explícito do lead prevalece sobre o saldo', () => {
+    const r = decidir(dec({ intencao: 'oferecer_horarios', valorTotal: 80000, valorTipo: 'total', valorTrecho: '80 mil' }), fatos({ textoDoCliente: 'devo uns 80 mil | 10 parcelas de 300' }))
+    expect(r.acao).toMatchObject({ tipo: 'enviar', efeito: 'oferecer_horarios' })
   })
 })

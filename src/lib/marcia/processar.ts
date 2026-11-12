@@ -18,6 +18,8 @@ import { decidir, type Decisao, type Resultado } from './porteiro'
 
 export type Modo = 'sombra' | 'ligado'
 const LOG_SOMBRA = process.env.MARCIA_V2_LOG ?? '/root/marcia-v2-sombra.log'
+// 06/11/2026: no modo ligado a decisao do modelo nao ficava registrada; sem isso nao se sabe por que a Marcia agiu (casos Clecius/Adilia).
+const LOG_DECISOES = process.env.MARCIA_DECISOES_LOG ?? '/root/marcia-v3-decisoes.log'
 
 export interface EntradaArgs {
   db: SupabaseClient
@@ -118,6 +120,14 @@ ${aviso}`, conversa, produto: fatos.produto }),
       return { decisao, resultado, execucao: null, erro: null }
     }
     const execucao = await executar(resultado, decisao, fatos, portas)
+    try {
+      appendFileSync(
+        LOG_DECISOES,
+        JSON.stringify({ quando: new Date().toISOString(), conversa: a.conversationId, produto: fatos.produto, intencao: decisao.intencao, horarioN: decisao.horarioN, temReuniao: fatos.temReuniao, acao: resultado.acao.tipo, efeito: resultado.acao.tipo === 'enviar' ? resultado.acao.efeito : null, efeitos: execucao.efeitos, mensagem: (decisao.mensagem ?? '').slice(0, 160) }) + '\n',
+      )
+    } catch {
+      /* o registro nunca pode atrapalhar a resposta ao lead */
+    }
     return { decisao, resultado, execucao, erro: null }
   } catch (e) {
     const erro = e instanceof Error ? e.message : String(e)

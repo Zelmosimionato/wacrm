@@ -74,6 +74,8 @@ export type Acao =
   | { tipo: 'perguntar_valor' }
   | { tipo: 'pedir_email' }
   | { tipo: 'horario_indisponivel' }
+  /** Já recusado antes e nada novo: não responde (a recusa saiu uma vez só). */
+  | { tipo: 'silencio' }
   | {
       tipo: 'enviar'
       texto: string
@@ -138,6 +140,35 @@ export function recusaConfirmada(d: Decisao, f: Fatos): boolean {
     .some((t) => t.length >= 2 && texto.includes(t))
 }
 
+/** Valor escrito pelo lead em reais (aceita 1.662,29 · 322,15 · 322.15 · 1662). */
+function reais(s: string): number {
+  if (s.includes(',')) return Number(s.replace(/\./g, '').replace(',', '.'))
+  if (/\.\d{2}$/.test(s)) return Number(s)
+  return Number(s.replace(/\./g, ''))
+}
+
+/**
+ * 09/11/2026 (lead que respondeu "19 parcelas de 275,37" e "72 parcelas de 322,15" ≈ R$ 28,4 mil e foi agendado):
+ * saldo aproximado = soma de (quantidade × parcela) que o PRÓPRIO lead escreveu. Conta do sistema, não do modelo.
+ * Mesmo par repetido conta uma vez. null se não houver nenhum par.
+ */
+export function saldoPorParcelas(textoDoCliente: string): number | null {
+  const t = norm(textoDoCliente)
+  const re = /(\d{1,3})\s*(?:x|vezes|parcelas?|prestacoes|prestacao)\s*(?:de|x)?\s*(?:r\$\s*)?(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?)/g
+  const vistos = new Set<string>()
+  let total = 0
+  for (const m of t.matchAll(re)) {
+    const n = Number(m[1])
+    const v = reais(m[2])
+    if (!(n >= 2 && n <= 480 && v >= 50 && v <= 200_000)) continue
+    const chave = `${n}|${v}`
+    if (vistos.has(chave)) continue
+    vistos.add(chave)
+    total += n * v
+  }
+  return vistos.size ? Math.round(total * 100) / 100 : null
+}
+
 function pronto(acao: Acao, extra: Partial<Resultado> = {}): Resultado {
   return { acao, gravarAbaixoPiso: null, handoffDepois: false, ...extra }
 }
@@ -166,21 +197,29 @@ export function decidir(d: Decisao, f: Fatos): Resultado {
       if (faixa === 'intermediaria') return pronto({ tipo: 'encaminhar_equipe' }, { gravarAbaixoPiso: false })
       if (faixa === 'qualifica') gravar = false
       if (faixa === 'indefinida') {
-        if (f.abaixoPisoGravado) return pronto({ tipo: 'recusa', motivo: 'dbc_abaixo' })
+        // 09/11: recusa já enviada (tag gravada) e nenhum valor novo: silêncio, não repete a recusa a cada mensagem.
+        if (f.abaixoPisoGravado) return pronto({ tipo: 'silencio' })
         if (AGENDA.has(d.intencao)) return pronto({ tipo: 'perguntar_valor' })
       }
     } else {
       const piso = pisoDe(f, d)
-      const valorNovo = valorUtil(d, piso)
+      let valorNovo = valorUtil(d, piso)
+      // 09/11: sem total explícito, o saldo pelas parcelas que o lead escreveu vale como total, mas só na hora de
+      // agendar (o modelo já confirmou que são todos os contratos). No meio da conversa não decide nada.
+      const totalExplicito = d.valorTipo === 'total' && valorNovo !== null
+      const saldo = totalExplicito ? null : saldoPorParcelas(f.textoDoCliente)
+      const porSaldo = saldo !== null && AGENDA.has(d.intencao)
+      if (porSaldo) valorNovo = saldo
       if (valorNovo !== null) {
         if (valorNovo < piso) {
-          // Recusa só com total explícito e trecho conferido; senão pergunta o total (nunca recusa à toa).
-          if (!recusaConfirmada(d, f)) return pronto({ tipo: 'perguntar_valor' })
+          // Recusa só com total explícito e trecho conferido, ou com o saldo calculado das parcelas; senão pergunta o total.
+          if (!porSaldo && !recusaConfirmada(d, f)) return pronto({ tipo: 'perguntar_valor' })
           return pronto({ tipo: 'recusa', motivo: 'piso' }, { gravarAbaixoPiso: true })
         }
         gravar = false
       } else if (f.abaixoPisoGravado) {
-        return pronto({ tipo: 'recusa', motivo: 'piso' })
+        // 09/11 (lead de 07/11 recebeu a recusa 3x, até no "obg"): já recusado e sem valor novo = silêncio.
+        return pronto({ tipo: 'silencio' })
       } else if (AGENDA.has(d.intencao)) {
         // Falha fechada: sem valor lido, não agenda.
         return pronto({ tipo: 'perguntar_valor' })
@@ -194,9 +233,21 @@ export function decidir(d: Decisao, f: Fatos): Resultado {
   const enviar = (efeito: Extract<Acao, { tipo: 'enviar' }>['efeito'], extra: { horarioN?: number; email?: string } = {}): Resultado =>
     pronto({ tipo: 'enviar', texto: d.mensagem, efeito, ...extra }, { gravarAbaixoPiso: gravar, handoffDepois: f.etapaSensivel })
 
+  // 06/11/2026 (casos Clecius e Adilia): quem JA tem reuniao marcada nao reserva de novo. O modelo devolveu
+  // 'confirmar_agendamento' (num "Obrigado, ate segunda" e num "Isso"), o executor tentou reservar, achou a reuniao
+  // existente, moveu o card para Reagendar e a automacao CANCELOU a reuniao e mandou "vi que voce cancelou".
+  // Remarcar de verdade e a intencao 'reagendar' (tratada abaixo); aqui so se conversa, sem efeito.
+  if (f.temReuniao && AGENDA.has(d.intencao)) return enviar('nenhum')
+  // 09/11/2026 (Adilia de novo, 07/11): quem ja tem reuniao e se despede ("ok, obrigada") so conversa; nunca o
+  // "Se mudar de ideia... escolher o melhor horario" com link/botao de agenda, que soa como se nao estivesse agendada.
+  if (f.temReuniao && d.intencao === 'encerrar_porta_aberta') return enviar('nenhum')
+
   switch (d.intencao) {
     case 'horario_escolhido':
       if (!horarioValido) return pronto({ tipo: 'horario_indisponivel' }, { gravarAbaixoPiso: gravar })
+      // 09/11 (lead que deu o e-mail ANTES de escolher): com e-mail conhecido, escolher o horário já reserva.
+      // Antes só registrava e esperava um "confirmo" que o texto não pedia; a conversa parava sem reserva.
+      if (email) return enviar('agendar', { horarioN: d.horarioN!, email })
       return enviar('registrar_horario', { horarioN: d.horarioN! })
     case 'confirmar_agendamento':
       if (!email) return pronto({ tipo: 'pedir_email' }, { gravarAbaixoPiso: gravar })

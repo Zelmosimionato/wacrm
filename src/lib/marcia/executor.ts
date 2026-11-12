@@ -48,6 +48,9 @@ export async function executar(
       await reg(`handoff:${a.motivo}${a.silencioso ? ':silencioso' : ''}`, () => p.passarParaHumano(a.motivo, !a.silencioso))
       return resumo()
 
+    case 'silencio':
+      return resumo()
+
     case 'recusa': {
       if (res.gravarAbaixoPiso !== null) await reg(`piso:${res.gravarAbaixoPiso}`, () => p.gravarAbaixoPiso(res.gravarAbaixoPiso!))
       await reg('texto:recusa', () => p.enviarTexto(p.textoFixo(a.motivo === 'dbc_abaixo' ? 'recusa_dbc' : 'recusa_piso')))

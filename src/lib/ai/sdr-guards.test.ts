@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { falhaParaPrompt, herdarMarcadoresDeAgenda, validarSaida } from './sdr-guards'
+import { detectaProcesso, falhaParaPrompt, herdarMarcadoresDeAgenda, validarSaida } from './sdr-guards'
 import { textoFinalDoAssistente } from './providers/openai'
 
 describe('validarSaida — narração de processo interno', () => {
@@ -171,5 +171,26 @@ describe('textoFinalDoAssistente', () => {
   it('cai para o item anterior se o último vier vazio; vazio se nada', () => {
     expect(textoFinalDoAssistente([item('Oi'), item('   ')])).toBe('Oi')
     expect(textoFinalDoAssistente([item('x', 'user')])).toBe('')
+  })
+})
+
+describe('detectaProcesso — conta bloqueada passa ao titular (09/11)', () => {
+  it('dispara em bloqueio de conta/saldo/valores, como bloqueio judicial', () => {
+    for (const t of [
+      'gostaria  de  saber se poderia analisar  um caso  de bloqueio  de conta corrente\npor   tributos',
+      'minha conta foi bloqueada',
+      'estou com a conta bloqueada pela receita',
+      'bloquearam minha conta',
+      'tive valores bloqueados no banco',
+      'bloqueio na minha poupança',
+      'bloqueio judicial na conta',
+    ]) {
+      expect(detectaProcesso(t).gatilho, t).toBe(true)
+    }
+  })
+  it('não dispara em negação nem em cartão/senha bloqueados', () => {
+    for (const t of ['não tenho conta bloqueada', 'meu cartão foi bloqueado', 'bloquearam meu cartão', 'senha bloqueada no app', 'tenho dívida de cartão e empréstimo']) {
+      expect(detectaProcesso(t).gatilho, t).toBe(false)
+    }
   })
 })

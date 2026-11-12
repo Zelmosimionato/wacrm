@@ -45,3 +45,6 @@ next-env.d.ts
 
 # Relatorios do radar do funil: trazem nomes e IDs de clientes. NUNCA versionar.
 relatorios_funil/
+
+# 12/11/2026: estado local do CLI do Supabase
+supabase/.temp/

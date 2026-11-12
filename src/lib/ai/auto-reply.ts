@@ -1870,7 +1870,20 @@ export async function dispatchInboundToAiReply(
         })
         return
       } catch (err) {
-        console.error('[marcia 3.0] falhou antes de responder; usando o fluxo antigo:', err instanceof Error ? err.message : err)
+        // 06/11/2026: so a Marcia 3.0 atende. Antes, uma falha aqui caia no fluxo antigo e a Marcia antiga respondia.
+        // Agora a conversa vai para a equipe, com aviso. Voltar ao fluxo antigo = tirar MARCIA_V3_LIGADA do .env.local.
+        const motivo = err instanceof Error ? err.message : String(err)
+        console.error('[marcia 3.0] falhou antes de responder; passando para humano (fluxo antigo desligado):', motivo)
+        await passarParaHumano(
+          db,
+          accountId,
+          contactId,
+          conversationId,
+          `${MARCA_ATENCAO} A Marcia 3.0 falhou antes de responder (${motivo.slice(0, 120)}). A IA nao respondeu - assuma daqui.`,
+          config.handoffAgentId,
+          !!conv.assigned_agent_id,
+        )
+        return
       }
     }
 
