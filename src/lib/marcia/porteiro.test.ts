@@ -119,12 +119,20 @@ describe('porteiro — agenda', () => {
     const r = decidir(dec({ ...ok, intencao: 'confirmar_agendamento', horarioN: 1 }), fatos({ emailNoCadastro: 'x@y.com' }))
     expect(r.acao).toMatchObject({ tipo: 'enviar', efeito: 'agendar', horarioN: 1, email: 'x@y.com' })
   })
+  it('quem ja tem reuniao nao reserva de novo: confirmar/escolher/oferecer viram conversa, sem reservar nem mover card (06/11 Clecius e Adilia)', () => {
+    const f = fatos({ temReuniao: true, emailNoCadastro: 'x@y.com' })
+    for (const intencao of ['confirmar_agendamento', 'horario_escolhido', 'oferecer_horarios'] as const) {
+      expect(decidir(dec({ ...ok, intencao, horarioN: 1 }), f).acao).toMatchObject({ tipo: 'enviar', efeito: 'nenhum' })
+    }
+  })
   it('desmarcar, reagendar, recusar e porta aberta', () => {
     const f = fatos({ temReuniao: true })
     expect(decidir(dec({ intencao: 'desmarcar' }), f).acao).toMatchObject({ efeito: 'desmarcar' })
     expect(decidir(dec({ intencao: 'reagendar' }), f).acao).toMatchObject({ efeito: 'reagendar' })
     expect(decidir(dec({ intencao: 'recusou' }), f).acao).toMatchObject({ efeito: 'perdido' })
-    expect(decidir(dec({ intencao: 'encerrar_porta_aberta' }), f).acao).toMatchObject({ efeito: 'porta_aberta' })
+    expect(decidir(dec({ intencao: 'encerrar_porta_aberta' }), fatos()).acao).toMatchObject({ efeito: 'porta_aberta' })
+    // com reuniao marcada a despedida e so conversa (06/11 Adilia: "ok, obrigada" disparou o botao de novo horario)
+    expect(decidir(dec({ intencao: 'encerrar_porta_aberta' }), f).acao).toMatchObject({ efeito: 'nenhum' })
   })
 })
 

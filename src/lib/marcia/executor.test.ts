@@ -95,7 +95,9 @@ describe('executor — fluxo normal', () => {
     expect((await rodar(dec({ intencao: 'desmarcar' }), f)).log).toEqual(['desmarcar', 'envia:MENSAGEM-DO-MODELO'])
     expect((await rodar(dec({ intencao: 'reagendar' }), f)).log).toEqual(['envia:MENSAGEM-DO-MODELO', 'card:reagendar'])
     expect((await rodar(dec({ intencao: 'recusou' }), f)).log).toEqual(['desmarcar', 'envia:MENSAGEM-DO-MODELO', 'card:perdido'])
-    expect((await rodar(dec({ intencao: 'encerrar_porta_aberta' }), f)).log).toEqual(['envia:MENSAGEM-DO-MODELO', 'portaAberta'])
+    expect((await rodar(dec({ intencao: 'encerrar_porta_aberta' }), fatos())).log).toEqual(['envia:MENSAGEM-DO-MODELO', 'portaAberta'])
+    // com reuniao marcada a despedida nao reabre a porta (06/11 Adilia: "ok, obrigada" mandou o botao de novo horario)
+    expect((await rodar(dec({ intencao: 'encerrar_porta_aberta' }), f)).log).toEqual(['envia:MENSAGEM-DO-MODELO'])
   })
   it('etapa sensível: acolhe e entrega à equipe depois', async () => {
     const { log } = await rodar(dec(), fatos({ etapaSensivel: true }))

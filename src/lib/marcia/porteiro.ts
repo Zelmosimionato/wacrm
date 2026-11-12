@@ -194,6 +194,14 @@ export function decidir(d: Decisao, f: Fatos): Resultado {
   const enviar = (efeito: Extract<Acao, { tipo: 'enviar' }>['efeito'], extra: { horarioN?: number; email?: string } = {}): Resultado =>
     pronto({ tipo: 'enviar', texto: d.mensagem, efeito, ...extra }, { gravarAbaixoPiso: gravar, handoffDepois: f.etapaSensivel })
 
+  // 06/11/2026 (casos Clecius e Adilia): quem JA tem reuniao marcada nao reserva de novo. O modelo devolveu
+  // 'confirmar_agendamento' (num "Obrigado, ate segunda" e num "Isso"), o executor tentou reservar, achou a reuniao
+  // existente, moveu o card para Reagendar e a automacao CANCELOU a reuniao e mandou "vi que voce cancelou".
+  // Remarcar de verdade e a intencao 'reagendar' (tratada abaixo); aqui so se conversa, sem efeito.
+  // Despedida ("ok, obrigada") de quem JA tem reuniao: nao oferece "se mudar de ideia, escolha outro horario".
+  // A porta aberta e para quem saiu sem agendar (caso Adilia, 06/11, depois do pedido de desculpas).
+  if (f.temReuniao && (AGENDA.has(d.intencao) || d.intencao === 'encerrar_porta_aberta')) return enviar('nenhum')
+
   switch (d.intencao) {
     case 'horario_escolhido':
       if (!horarioValido) return pronto({ tipo: 'horario_indisponivel' }, { gravarAbaixoPiso: gravar })
